@@ -241,6 +241,18 @@
     }, 4200);
   }
 
+  function clearErrorToasts() {
+    const stack = document.getElementById("toast-stack");
+    if (!stack) {
+      return;
+    }
+    stack.querySelectorAll(".toast.is-err, .toast.is-error").forEach(function (node) {
+      if (node.parentNode) {
+        node.parentNode.removeChild(node);
+      }
+    });
+  }
+
   function updateAuthUi(warningMsg) {
     const btnLabel = document.getElementById("auth-btn-label");
     const banner = document.getElementById("auth-warning-banner");
@@ -336,12 +348,14 @@
         const match = t.match(/T(\d{2}:\d{2}:\d{2})/);
         timeEl.textContent = match ? match[1] : t.slice(0, 19);
       }
+      return state.health;
     } catch (err) {
       if (statusEl) {
         statusEl.textContent = "连接失败";
         statusEl.className = "status-val is-err";
       }
       console.warn("Health check failed:", err);
+      return null;
     }
   }
 
@@ -753,6 +767,60 @@
     return objUrl;
   }
 
+  function renderCoverActionState(coverContainer, book, statusMessage, buttonLabel, titlesContainer) {
+    if (!coverContainer || !book) {
+      return;
+    }
+    coverContainer.innerHTML =
+      '<div class="cover-placeholder">' +
+        '<div class="cover-placeholder-msg">' + escapeHtml(statusMessage) + '</div>' +
+        '<button type="button" class="btn btn-xs btn-primary mt-sm" data-gen-cover-book="' + escapeHtml(book.book_id) + '">' +
+          escapeHtml(buttonLabel) +
+        '</button>' +
+      '</div>';
+    const genBtn = coverContainer.querySelector("[data-gen-cover-book]");
+    if (genBtn) {
+      genBtn.addEventListener("click", function () {
+        generateAiCoverForBook(book, coverContainer, titlesContainer);
+      });
+    }
+  }
+
+  async function generateAiCoverForBook(book, coverContainer, titlesContainer) {
+    if (!book || !book.book_id) {
+      return false;
+    }
+    if (coverContainer) {
+      coverContainer.innerHTML = '<div class="cover-placeholder">正在生成 600×800 AI 封面…</div>';
+    }
+    try {
+      const coverRes = await apiRequest(
+        formatApiRoute(API_ROUTES.BOOK_COVER, { book_id: book.book_id }),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ base_mode: "ai_image" }),
+        }
+      );
+      const generatedPath = (coverRes && (coverRes.output_path || coverRes.cover_path)) || "generated";
+      book.cover_path = generatedPath;
+      const inState = state.books.find(function (b) {
+        return b.book_id === book.book_id;
+      });
+      if (inState) {
+        inState.cover_path = generatedPath;
+      }
+      await renderBookPreviewInto(book, coverContainer, titlesContainer);
+      return true;
+    } catch (err) {
+      if (coverContainer) {
+        const hint = "请先在 CPA 面板配置 image 生图模型后再生成封面（" + (err && err.message ? err.message : "生图失败") + "）";
+        renderCoverActionState(coverContainer, book, hint, "🎨 重试生成 AI 封面", titlesContainer);
+      }
+      return false;
+    }
+  }
+
   async function renderBookPreviewInto(book, coverContainer, titlesContainer) {
     if (!book) {
       return;
@@ -771,13 +839,23 @@
     }
 
     if (coverContainer) {
+      if (!book.cover_path) {
+        renderCoverActionState(coverContainer, book, "尚未生成封面", "🎨 生成 AI 封面", titlesContainer);
+        return;
+      }
       coverContainer.innerHTML = '<div class="cover-placeholder">正在加载 600×800 封面…</div>';
       try {
         const coverUrl = formatApiRoute(API_ROUTES.BOOK_COVER, { book_id: book.book_id });
         const blobUrl = await fetchAuthenticatedImageUrl(coverUrl);
         coverContainer.innerHTML = '<img src="' + escapeHtml(blobUrl) + '" alt="' + escapeHtml(book.title || "书籍封面") + '">';
       } catch (err) {
-        coverContainer.innerHTML = '<div class="cover-placeholder">' + escapeHtml(err.message) + '</div>';
+        renderCoverActionState(
+          coverContainer,
+          book,
+          err && err.message ? err.message : "封面加载失败",
+          "🎨 重试生成 AI 封面",
+          titlesContainer
+        );
       }
     }
   }
@@ -952,11 +1030,14 @@
         return b.book_id === projectId;
       });
       if (createdBook) {
-        await renderBookPreviewInto(
-          createdBook,
-          document.getElementById("cover-preview-box"),
-          document.getElementById("alt-titles-box")
-        );
+        const coverBox = document.getElementById("cover-preview-box");
+        const titlesBox = document.getElementById("alt-titles-box");
+        if (!createdBook.cover_path) {
+          await renderBookPreviewInto(createdBook, null, titlesBox);
+          await generateAiCoverForBook(createdBook, coverBox, titlesBox);
+        } else {
+          await renderBookPreviewInto(createdBook, coverBox, titlesBox);
+        }
       }
     } catch (err) {
       showToast("自动立项失败：" + err.message, "err");
@@ -1722,6 +1803,9 @@
       const payload = await apiRequest(formatApiRoute(API_ROUTES.BOOK_CHAPTERS, { book_id: bookId }), {
         method: "GET",
       });
+      if (state.readerBookId !== bookId) {
+        return;
+      }
       const chapters = Array.isArray(payload)
         ? payload
         : (payload && (payload.chapters || payload.items)) || [];
@@ -1731,7 +1815,7 @@
       }
       renderChapterList();
     } catch (err) {
-      if (listEl) {
+      if (state.readerBookId === bookId && listEl) {
         listEl.innerHTML = '<div class="empty-state">加载章节失败：' + escapeHtml(err.message) + '</div>';
       }
     }
@@ -1766,7 +1850,8 @@
   }
 
   async function loadChapterDetail(bookId, chapterNo) {
-    state.readerSelectedChapter = Number(chapterNo);
+    const targetChapter = Number(chapterNo);
+    state.readerSelectedChapter = targetChapter;
     renderChapterList();
     const titleEl = document.getElementById("reader-chapter-title");
     const metaEl = document.getElementById("reader-chapter-meta");
@@ -1777,13 +1862,16 @@
 
     try {
       const detail = await apiRequest(
-        formatApiRoute(API_ROUTES.BOOK_CHAPTER_DETAIL, { book_id: bookId, chapter: chapterNo }),
+        formatApiRoute(API_ROUTES.BOOK_CHAPTER_DETAIL, { book_id: bookId, chapter: targetChapter }),
         { method: "GET" }
       );
+      if (state.readerBookId !== bookId || state.readerSelectedChapter !== targetChapter) {
+        return;
+      }
       state.readerChapterDetail = detail;
       const locked = Boolean(detail && detail.locked);
       if (titleEl) {
-        titleEl.textContent = "第 " + chapterNo + " 章 · " + ((detail && detail.public_title) || "未命名");
+        titleEl.textContent = "第 " + targetChapter + " 章 · " + ((detail && detail.public_title) || "未命名");
       }
       if (metaEl) {
         metaEl.innerHTML =
@@ -1814,20 +1902,29 @@
         lockBtn.textContent = locked ? "🔓 解锁章节" : "🔒 锁章保护";
       }
     } catch (err) {
-      showToast("读取章节详情失败：" + err.message, "err");
+      if (state.readerBookId === bookId && state.readerSelectedChapter === targetChapter) {
+        showToast("读取章节详情失败：" + err.message, "err");
+      }
     }
   }
 
   async function toggleChapterLock() {
-    if (!state.readerBookId || !state.readerSelectedChapter || !state.readerChapterDetail) {
+    const targetBookId = state.readerBookId;
+    const targetChapter = state.readerSelectedChapter;
+    const detail = state.readerChapterDetail;
+    if (!targetBookId || !targetChapter || !detail) {
       return;
     }
-    const nextLocked = !Boolean(state.readerChapterDetail.locked);
+    const lockBtn = document.getElementById("btn-toggle-lock");
+    if (lockBtn) {
+      lockBtn.disabled = true;
+    }
+    const nextLocked = !Boolean(detail.locked);
     try {
       await apiRequest(
         formatApiRoute(API_ROUTES.BOOK_CHAPTER_LOCK, {
-          book_id: state.readerBookId,
-          chapter: state.readerSelectedChapter,
+          book_id: targetBookId,
+          chapter: targetChapter,
         }),
         {
           method: "POST",
@@ -1839,10 +1936,20 @@
         }
       );
       showToast(nextLocked ? "已锁章保护，禁止重跑覆盖" : "已解锁该章节", "ok");
-      await loadBookChapters(state.readerBookId);
-      await loadChapterDetail(state.readerBookId, state.readerSelectedChapter);
+      if (state.readerBookId !== targetBookId || state.readerSelectedChapter !== targetChapter) {
+        return;
+      }
+      await loadBookChapters(targetBookId);
+      if (state.readerBookId !== targetBookId || state.readerSelectedChapter !== targetChapter) {
+        return;
+      }
+      await loadChapterDetail(targetBookId, targetChapter);
     } catch (err) {
       showToast("切换锁章状态失败：" + err.message, "err");
+    } finally {
+      if (lockBtn && state.readerBookId === targetBookId && state.readerSelectedChapter === targetChapter) {
+        lockBtn.disabled = false;
+      }
     }
   }
 
@@ -1922,12 +2029,22 @@
 
     const btnSaveToken = document.getElementById("btn-save-token");
     if (btnSaveToken) {
-      btnSaveToken.addEventListener("click", function () {
+      btnSaveToken.addEventListener("click", async function () {
         const inp = document.getElementById("auth-token-input");
-        persistSessionToken(inp ? inp.value : "");
+        const tokenVal = inp ? inp.value.trim() : "";
+        persistSessionToken(tokenVal);
         closeModal("auth-modal");
-        refreshAll();
-        connectSse();
+        if (!tokenVal && (!state.health || state.health.admin_auth_required !== false)) {
+          state.authRequired = true;
+          updateAuthUi("当前服务端要求 Bearer Token（XIAOSHUO_ADMIN_TOKEN），请点击右侧按钮输入密钥。");
+          return;
+        }
+        clearErrorToasts();
+        await refreshAll();
+        if (!state.authRequired) {
+          clearErrorToasts();
+          connectSse();
+        }
       });
     }
 
@@ -1935,11 +2052,16 @@
     if (btnClearToken) {
       btnClearToken.addEventListener("click", function () {
         persistSessionToken("");
+        disconnectSse();
         const inp = document.getElementById("auth-token-input");
         if (inp) {
           inp.value = "";
         }
         closeModal("auth-modal");
+        if (!state.health || state.health.admin_auth_required !== false) {
+          state.authRequired = true;
+          updateAuthUi("已清除本地令牌，请输入有效管理员 Bearer Token");
+        }
         showToast("已清除本地令牌", "ok");
       });
     }
@@ -2201,18 +2323,35 @@
     });
   }
 
-  async function refreshAll() {
-    await loadHealth();
+  async function refreshAll(opts) {
+    const health = (opts && opts.skipHealth) ? state.health : await loadHealth();
+    const authRequired = !health || health.admin_auth_required !== false;
+    if (!state.authToken && authRequired) {
+      state.authRequired = true;
+      updateAuthUi("当前服务端要求 Bearer Token（XIAOSHUO_ADMIN_TOKEN），请点击右侧按钮输入密钥。");
+      return;
+    }
     await loadBooks();
-    loadCpaUsage();
+    if (!state.authRequired) {
+      loadCpaUsage();
+    }
   }
 
-  function init() {
+  async function init() {
     updateAuthUi();
     updateSseStatusUi();
     bindEvents();
-    refreshAll();
-    connectSse();
+    const health = await loadHealth();
+    const authRequired = !health || health.admin_auth_required !== false;
+    if (!state.authToken && authRequired) {
+      state.authRequired = true;
+      updateAuthUi("当前服务端要求 Bearer Token（XIAOSHUO_ADMIN_TOKEN），请点击右侧按钮输入密钥。");
+      return;
+    }
+    await refreshAll({ skipHealth: true });
+    if (!state.authRequired) {
+      connectSse();
+    }
   }
 
   if (document.readyState === "loading") {

@@ -5,14 +5,25 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sys
 import tempfile
-from typing import List, Optional
+import threading
+import time
+from typing import Any, Dict, List, Mapping, Optional
+
+import yaml
 
 from .backup import export_backup, git_incremental_backup, import_backup, verify_backup
 from .checker import AITicChecker
 from .compiler import PromptCompiler
-from .cover import generate_cover_for_project
+from .contracts import (
+    CompanionLeaseRequest,
+    CompanionLeaseResponse,
+    CompanionTaskType,
+    StockpileStatus,
+)
+from .cover import generate_cover, generate_cover_for_project
 from .deconstructor import BestsellerDeconstructor
 from .engine import NovelGenerationEngine
 from .evolution import MotifWeightStore
@@ -20,17 +31,22 @@ from .exporter import export_project_bundle
 from .genres import get_genre, list_genres
 from .llm import (
     AnthropicProvider,
+    CPAManagementClient,
     FaultInjectionProvider,
     FileBridgeProvider,
+    LLMConfigurationError,
     LLMProvider,
     OpenAICompatibleProvider,
     RoleEndpointConfig,
     RoleModelRouter,
+    UsageBudgetLedger,
 )
 from .loader import load_project
 from .models import ChapterArtifact, resolve_chapter_path
 from .planner import AutoNovelPlanner
+from .server import MatrixHTTPServer, create_server
 from .state import WorldStateManager
+from .telegram_bot import TelegramBotConfig, TelegramControlBot
 from .transcreator import (
     WebnovelTranscreator,
     build_glossary,
@@ -402,13 +418,26 @@ def _cmd_cover(args: argparse.Namespace) -> int:
                     )
                 }
             )
-    result = generate_cover_for_project(
-        project,
-        args.output,
-        base_mode=args.base_mode,
-        router=router,
-        output_format=args.format,
-    )
+    pen_name_override = getattr(args, "pen_name", None)
+    if pen_name_override is not None:
+        result = generate_cover(
+            title=project.meta.title,
+            pen_name=str(pen_name_override),
+            output_path=args.output,
+            genre=project.meta.genre,
+            synopsis=project.meta.synopsis,
+            base_mode=args.base_mode,
+            router=router,
+            output_format=args.format,
+        )
+    else:
+        result = generate_cover_for_project(
+            project,
+            args.output,
+            base_mode=args.base_mode,
+            router=router,
+            output_format=args.format,
+        )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     return 0
 
@@ -523,6 +552,512 @@ def _cmd_backup_git(args: argparse.Namespace) -> int:
     return 0
 
 
+def _split_csv(raw: Optional[str]) -> List[str]:
+    if not raw or not str(raw).strip():
+        return []
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def _build_serve_cpa_client(args: argparse.Namespace) -> Optional[CPAManagementClient]:
+    cpa_url = _resolve_env_or_arg(
+        getattr(args, "cpa_url", None),
+        "CPA_MANAGEMENT_URL",
+        "XIAOSHUO_CPA_URL",
+        "CPA_BASE_URL",
+    )
+    cpa_key = _resolve_env_or_arg(
+        getattr(args, "cpa_management_key", None),
+        "CPA_MANAGEMENT_KEY",
+        "XIAOSHUO_CPA_MANAGEMENT_KEY",
+        "CPA_MANAGEMENT_SECRET",
+    )
+    if not cpa_url and not cpa_key:
+        return None
+    return CPAManagementClient(base_url=cpa_url, management_key=cpa_key)
+
+
+def _build_serve_router(
+    args: argparse.Namespace,
+    db_path: Path,
+) -> Optional[RoleModelRouter]:
+    budget_raw = getattr(args, "daily_budget_limit", None)
+    if budget_raw is None:
+        env_budget = os.environ.get("XIAOSHUO_DAILY_BUDGET_LIMIT", "").strip()
+        budget_limit = float(env_budget) if env_budget else None
+    else:
+        budget_limit = float(budget_raw)
+
+    chapter_raw = getattr(args, "daily_chapter_limit", None)
+    if chapter_raw is None:
+        env_chap = os.environ.get("XIAOSHUO_DAILY_CHAPTER_LIMIT", "").strip()
+        chapter_limit = int(env_chap) if env_chap else None
+    else:
+        chapter_limit = int(chapter_raw)
+
+    ledger_path = _resolve_env_or_arg(
+        getattr(args, "ledger_path", None),
+        "XIAOSHUO_LEDGER_PATH",
+    ) or str(db_path.with_name("usage_ledger.json"))
+    ledger = UsageBudgetLedger(
+        daily_budget_limit=budget_limit,
+        daily_chapter_limit=chapter_limit,
+        state_path=ledger_path,
+    )
+
+    router_cfg_path = _resolve_env_or_arg(
+        getattr(args, "router_config", None),
+        "XIAOSHUO_ROUTER_CONFIG",
+    )
+    if router_cfg_path:
+        cfg_file = Path(router_cfg_path).resolve()
+        if not cfg_file.is_file():
+            raise LLMConfigurationError(f"Router configuration file not found: '{cfg_file}'")
+        raw_text = cfg_file.read_text(encoding="utf-8")
+        loaded = json.loads(raw_text) if cfg_file.suffix.lower() == ".json" else yaml.safe_load(raw_text)
+        if not isinstance(loaded, Mapping):
+            raise LLMConfigurationError(f"Router configuration in '{cfg_file}' must be a mapping.")
+        return RoleModelRouter.from_dict(loaded, ledger=ledger)
+
+    default_url = _resolve_env_or_arg(
+        getattr(args, "base_url", None),
+        "XIAOSHUO_BASE_URL",
+        "OPENAI_BASE_URL",
+    )
+    default_keys_raw = _resolve_env_or_arg(
+        getattr(args, "api_key", None),
+        "XIAOSHUO_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    default_model = _resolve_env_or_arg(
+        getattr(args, "model", None),
+        "XIAOSHUO_MODEL",
+        "OPENAI_MODEL",
+    )
+
+    text_roles = ("planner", "writer", "critic", "polisher")
+    role_overrides: Dict[str, Dict[str, Optional[str]]] = {}
+    any_llm_setting = bool(default_url or default_keys_raw or default_model)
+    for role in (*text_roles, "image"):
+        env_prefix = f"XIAOSHUO_{role.upper()}"
+        r_url = _resolve_env_or_arg(getattr(args, f"{role}_base_url", None), f"{env_prefix}_BASE_URL")
+        r_keys = _resolve_env_or_arg(getattr(args, f"{role}_api_key", None), f"{env_prefix}_API_KEY")
+        r_model = _resolve_env_or_arg(getattr(args, f"{role}_model", None), f"{env_prefix}_MODEL")
+        r_ptype = _resolve_env_or_arg(
+            getattr(args, f"{role}_provider_type", None),
+            f"{env_prefix}_PROVIDER_TYPE",
+        )
+        role_overrides[role] = {
+            "base_url": r_url,
+            "api_keys": r_keys,
+            "model": r_model,
+            "provider_type": r_ptype,
+        }
+        if any((r_url, r_keys, r_model)):
+            any_llm_setting = True
+
+    if not any_llm_setting:
+        return None
+
+    roles_cfg: Dict[str, RoleEndpointConfig] = {}
+    for role in text_roles:
+        ov = role_overrides[role]
+        eff_url = ov["base_url"] or default_url
+        eff_keys = _split_csv(ov["api_keys"] or default_keys_raw)
+        eff_model = ov["model"] or default_model
+        eff_ptype = ov["provider_type"] or "openai"
+        roles_cfg[role] = RoleEndpointConfig(
+            role=role,
+            base_url=eff_url or "",
+            model=eff_model or "",
+            api_keys=eff_keys,
+            provider_type=eff_ptype,
+        )
+
+    img_ov = role_overrides["image"]
+    if any((img_ov["base_url"], img_ov["api_keys"], img_ov["model"])):
+        roles_cfg["image"] = RoleEndpointConfig(
+            role="image",
+            base_url=(img_ov["base_url"] or default_url) or "",
+            model=img_ov["model"] or "",
+            api_keys=_split_csv(img_ov["api_keys"] or default_keys_raw),
+            provider_type=img_ov["provider_type"] or "auto",
+        )
+
+    return RoleModelRouter(roles_cfg, ledger=ledger)
+
+
+def build_serve_server(args: argparse.Namespace) -> MatrixHTTPServer:
+    host = _resolve_env_or_arg(getattr(args, "host", None), "XIAOSHUO_HOST") or "127.0.0.1"
+    raw_port = getattr(args, "port", None)
+    if raw_port is None:
+        env_port = os.environ.get("XIAOSHUO_PORT", "").strip()
+        port = int(env_port) if env_port else 8765
+    else:
+        port = int(raw_port)
+
+    projects_root = Path(
+        _resolve_env_or_arg(getattr(args, "projects_root", None), "XIAOSHUO_PROJECTS_ROOT") or "projects"
+    ).resolve()
+    db_path = Path(
+        _resolve_env_or_arg(getattr(args, "db_path", None), "XIAOSHUO_DB_PATH") or "data/matrix.db"
+    ).resolve()
+    admin_token = _resolve_env_or_arg(getattr(args, "admin_token", None), "XIAOSHUO_ADMIN_TOKEN")
+    companion_secret = _resolve_env_or_arg(
+        getattr(args, "companion_hmac_secret", None),
+        "XIAOSHUO_COMPANION_HMAC_SECRET",
+        "XIAOSHUO_COMPANION_SECRET",
+    )
+
+    tg_env_present = bool(
+        (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+        or (os.environ.get("TELEGRAM_OWNER_USER_ID") or "").strip()
+        or getattr(args, "tg_bot_token", None)
+        or getattr(args, "tg_owner_user_id", None)
+    )
+    with_tg = (
+        not bool(getattr(args, "no_tg_bot", False))
+        and (
+            bool(getattr(args, "with_tg_bot", False))
+            or (_resolve_env_or_arg(None, "XIAOSHUO_WITH_TG_BOT") or "").lower() in ("1", "true", "yes")
+            or tg_env_present
+        )
+    )
+    tg_config: Optional[TelegramBotConfig] = None
+    if with_tg:
+        tg_state = _resolve_env_or_arg(getattr(args, "tg_state_path", None), "TELEGRAM_STATE_PATH")
+        if tg_state is None:
+            tg_state = str(db_path.with_name("tg_bot_state.json"))
+        tg_config = TelegramBotConfig.from_env(
+            bot_token=getattr(args, "tg_bot_token", None),
+            owner_user_id=getattr(args, "tg_owner_user_id", None),
+            api_base_url=getattr(args, "tg_api_base_url", None),
+            state_path=tg_state,
+        )
+
+    cpa_client = _build_serve_cpa_client(args)
+    router = _build_serve_router(args, db_path)
+    motif_path = _resolve_env_or_arg(
+        getattr(args, "motif_store", None),
+        "XIAOSHUO_MOTIF_STORE",
+    ) or str(db_path.with_name("motif_weights.json"))
+    motif_store = MotifWeightStore(motif_path)
+
+    server = create_server(
+        host=host,
+        port=port,
+        db_path=db_path,
+        projects_root=projects_root,
+        admin_token=admin_token,
+        companion_secret=companion_secret,
+        provider=router,
+        cpa_client=cpa_client,
+        motif_store=motif_store,
+        static_dir=getattr(args, "static_dir", None),
+        sse_heartbeat_sec=float(getattr(args, "sse_heartbeat_sec", 15.0)),
+    )
+    if tg_config is not None:
+        try:
+            server.telegram_bot = TelegramControlBot(server.scheduler, config=tg_config)
+        except Exception:
+            server.server_close()
+            server.db.close()
+            raise
+    return server
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    server = build_serve_server(args)
+    stop_event = threading.Event()
+    bound_host, bound_port = server.server_address[:2]
+
+    def _request_stop(_signum: int, _frame: Any) -> None:
+        stop_event.set()
+
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    prev_sigint = signal.getsignal(signal.SIGINT) if is_main_thread else None
+    prev_sigterm = (
+        signal.getsignal(signal.SIGTERM)
+        if is_main_thread and hasattr(signal, "SIGTERM")
+        else None
+    )
+    if is_main_thread:
+        signal.signal(signal.SIGINT, _request_stop)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, _request_stop)
+
+    http_thread: Optional[threading.Thread] = None
+    try:
+        if not bool(getattr(args, "no_scheduler_loop", False)):
+            server.scheduler.start_background_loop(
+                poll_interval_sec=float(getattr(args, "scheduler_interval", 10.0))
+            )
+        http_thread = threading.Thread(
+            target=server.serve_forever,
+            name="xiaoshuo-http-server",
+            daemon=True,
+        )
+        http_thread.start()
+        tg_flag = "enabled" if server.telegram_bot is not None else "disabled"
+        cpa_flag = "configured" if server.cpa_client is not None else "unconfigured"
+        print(
+            f"[xiaoshuo-bot] Cloud matrix server listening on http://{bound_host}:{bound_port} "
+            f"(projects={server.scheduler.projects_root}, tg_bot={tg_flag}, cpa={cpa_flag})",
+            flush=True,
+        )
+        while not stop_event.is_set() and http_thread.is_alive():
+            stop_event.wait(timeout=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if is_main_thread and prev_sigint is not None:
+            signal.signal(signal.SIGINT, prev_sigint)
+        if is_main_thread and prev_sigterm is not None and hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, prev_sigterm)
+        if http_thread is not None and http_thread.is_alive():
+            server.shutdown_and_close()
+            http_thread.join(timeout=5.0)
+        else:
+            server.stop_event.set()
+            server.stop_telegram_bot()
+            server.scheduler.stop_background_loop()
+            server.server_close()
+        server.db.close()
+    return 0
+
+
+def _build_non_chapter_lease(
+    task_dict: Mapping[str, Any],
+    *,
+    account_id: str,
+    default_author_name: str,
+) -> CompanionLeaseResponse:
+    known_top = {
+        "task_id",
+        "task_type",
+        "book_id",
+        "book_title",
+        "author_name",
+        "fanqie_book_id",
+        "chapter",
+        "public_title",
+        "body",
+        "author_note",
+        "sha256",
+        "status",
+        "lease_expires_at",
+        "scheduled_publish_at",
+        "metadata",
+    }
+    merged_meta: Dict[str, Any] = {}
+    if isinstance(task_dict.get("metadata"), Mapping):
+        merged_meta.update(dict(task_dict["metadata"]))
+    for k, v in task_dict.items():
+        if k not in known_top:
+            merged_meta[k] = v
+
+    return CompanionLeaseResponse(
+        task_id=str(task_dict["task_id"]),
+        task_type=str(task_dict["task_type"]),
+        book_id=str(task_dict["book_id"]),
+        book_title=str(task_dict.get("book_title") or task_dict.get("old_title") or ""),
+        author_name=str(task_dict.get("author_name") or default_author_name or ""),
+        fanqie_book_id=str(task_dict.get("fanqie_book_id") or ""),
+        chapter=int(task_dict.get("chapter") or 0),
+        public_title=str(task_dict.get("public_title") or task_dict.get("new_title") or ""),
+        body=str(task_dict.get("body") or ""),
+        author_note=str(task_dict.get("author_note") or ""),
+        sha256=str(task_dict.get("sha256") or ""),
+        status=StockpileStatus.LEASED.value,
+        scheduled_publish_at=str(task_dict.get("scheduled_publish_at") or ""),
+        metadata=merged_meta,
+    )
+
+
+def _select_companion_target_url(
+    task_type: str,
+    task_metadata: Mapping[str, Any],
+    *,
+    default_url: str,
+    metrics_url: Optional[str] = None,
+    star_cards_url: Optional[str] = None,
+    signing_url: Optional[str] = None,
+    rotate_url: Optional[str] = None,
+) -> str:
+    meta_url = str(task_metadata.get("target_url") or "").strip()
+    if meta_url:
+        return meta_url
+    if task_type == CompanionTaskType.COLLECT_METRICS.value and metrics_url:
+        return metrics_url
+    if task_type == CompanionTaskType.CREATE_STAR_CARDS.value and star_cards_url:
+        return star_cards_url
+    if task_type == CompanionTaskType.SUBMIT_SIGNING_DRAFT.value and signing_url:
+        return signing_url
+    if task_type == CompanionTaskType.ROTATE_PACKAGING.value and rotate_url:
+        return rotate_url
+    return default_url
+
+
+def run_companion_daemon(
+    args: argparse.Namespace,
+    *,
+    stop_event: Optional[threading.Event] = None,
+) -> int:
+    from .companion import (
+        BrowserLaunchConfig,
+        CompanionConfigError,
+        CompanionHttpClient,
+        TomatoBrowserWorker,
+        Woff2FontDecoder,
+    )
+
+    server_url = _resolve_env_or_arg(getattr(args, "server_url", None), "XIAOSHUO_SERVER_URL")
+    if not server_url:
+        raise CompanionConfigError("Missing --server-url (or XIAOSHUO_SERVER_URL)")
+
+    hmac_secret = _resolve_env_or_arg(
+        getattr(args, "hmac_secret", None),
+        "XIAOSHUO_COMPANION_HMAC_SECRET",
+        "XIAOSHUO_COMPANION_SECRET",
+    )
+    if not hmac_secret:
+        raise CompanionConfigError(
+            "Missing --hmac-secret (or XIAOSHUO_COMPANION_HMAC_SECRET / XIAOSHUO_COMPANION_SECRET)"
+        )
+
+    account_id = _resolve_env_or_arg(
+        getattr(args, "account_id", None),
+        "XIAOSHUO_COMPANION_ACCOUNT_ID",
+    )
+    if not account_id:
+        raise CompanionConfigError("Missing --account-id (or XIAOSHUO_COMPANION_ACCOUNT_ID)")
+
+    target_url = _resolve_env_or_arg(
+        getattr(args, "target_url", None),
+        "XIAOSHUO_COMPANION_TARGET_URL",
+    )
+    if not target_url:
+        raise CompanionConfigError("Missing --target-url (or XIAOSHUO_COMPANION_TARGET_URL)")
+
+    author_name = _resolve_env_or_arg(
+        getattr(args, "author_name", None),
+        "XIAOSHUO_COMPANION_AUTHOR_NAME",
+    ) or ""
+    book_ids = _split_csv(
+        _resolve_env_or_arg(getattr(args, "book_ids", None), "XIAOSHUO_COMPANION_BOOK_IDS")
+    )
+    profile_root = Path(
+        _resolve_env_or_arg(getattr(args, "profile_root", None), "XIAOSHUO_COMPANION_PROFILE_ROOT")
+        or "chrome_profiles"
+    ).resolve()
+    outbox_db = _resolve_env_or_arg(
+        getattr(args, "outbox_db", None),
+        "XIAOSHUO_COMPANION_OUTBOX_DB",
+    ) or str(profile_root / f"{account_id}_outbox.db")
+
+    raw_channel = getattr(args, "chrome_channel", "chrome")
+    if raw_channel is None or str(raw_channel).strip().lower() in ("", "none"):
+        chrome_channel: Optional[str] = None
+    else:
+        chrome_channel = str(raw_channel).strip()
+
+    headless = bool(getattr(args, "headless", False))
+    once = bool(getattr(args, "once", False))
+    poll_interval = max(0.1, float(getattr(args, "poll_interval", 2.0)))
+    poll_timeout = max(0, min(25, int(getattr(args, "poll_timeout", 25))))
+    review_pause_sec = float(getattr(args, "review_pause_sec", 0.8))
+    woff2_cache_dir = getattr(args, "woff2_cache_dir", None)
+    screenshot_dir = getattr(args, "screenshot_dir", None)
+    client_id = getattr(args, "client_id", None) or f"companion-{account_id}"
+
+    metrics_url = getattr(args, "metrics_url", None)
+    star_cards_url = getattr(args, "star_cards_url", None)
+    signing_url = getattr(args, "signing_url", None)
+    rotate_url = getattr(args, "rotate_url", None)
+
+    decoder = Woff2FontDecoder(cache_dir=Path(woff2_cache_dir).resolve() if woff2_cache_dir else None)
+    launch_cfg = BrowserLaunchConfig(
+        profile_root=profile_root,
+        channel=chrome_channel,
+        headless=headless,
+        review_pause_sec=review_pause_sec,
+        screenshot_dir=Path(screenshot_dir).resolve() if screenshot_dir else None,
+    )
+
+    client = CompanionHttpClient(
+        base_url=server_url,
+        hmac_secret=hmac_secret,
+        client_id=client_id,
+        outbox_db_path=outbox_db,
+        poll_timeout_sec=poll_timeout,
+    )
+    signal_stop = stop_event or threading.Event()
+    try:
+        with TomatoBrowserWorker(
+            account_id,
+            launch_cfg,
+            client=client,
+            font_decoder=decoder,
+        ) as worker:
+            while not signal_stop.is_set():
+                client.flush_outbox()
+                tasks = client.poll_tasks(
+                    account_id,
+                    author_name=author_name,
+                    book_ids=book_ids or None,
+                    timeout_sec=0 if once else poll_timeout,
+                )
+                for task_dict in tasks:
+                    task_type = str(task_dict.get("task_type") or CompanionTaskType.PUBLISH_CHAPTER.value)
+                    task_id = str(task_dict["task_id"])
+                    book_id = str(task_dict["book_id"])
+                    chapter = int(task_dict.get("chapter") or 0)
+
+                    if task_type == CompanionTaskType.PUBLISH_CHAPTER.value:
+                        lease = client.lease_task(
+                            CompanionLeaseRequest(
+                                task_id=task_id,
+                                book_id=book_id,
+                                chapter=chapter,
+                                account_id=account_id,
+                            )
+                        )
+                    else:
+                        lease = _build_non_chapter_lease(
+                            task_dict,
+                            account_id=account_id,
+                            default_author_name=author_name,
+                        )
+
+                    eff_url = _select_companion_target_url(
+                        lease.task_type,
+                        lease.metadata,
+                        default_url=target_url,
+                        metrics_url=metrics_url,
+                        star_cards_url=star_cards_url,
+                        signing_url=signing_url,
+                        rotate_url=rotate_url,
+                    )
+                    outcome = worker.execute_task(lease, target_url=eff_url)
+                    print(
+                        json.dumps(outcome.to_dict(), ensure_ascii=False),
+                        flush=True,
+                    )
+
+                if once:
+                    break
+                if not tasks:
+                    signal_stop.wait(timeout=poll_interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        client.close()
+    return 0
+
+
+def _cmd_companion(args: argparse.Namespace) -> int:
+    return run_companion_daemon(args)
+
+
 def _add_provider_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--provider",
@@ -623,6 +1158,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cov = sub.add_parser("cover", help="Generate 600x800 compliant book cover with bundled SIL OFL font")
     p_cov.add_argument("--project", required=True, help="Path to novel project directory")
     p_cov.add_argument("--output", required=True, help="Output PNG or JPEG file path")
+    p_cov.add_argument("--pen-name", help="Author pen name override (uses project.yaml pen_name/author_name if omitted)")
     p_cov.add_argument("--base-mode", choices=["ai_image", "procedural"], default="ai_image")
     p_cov.add_argument("--format", choices=["PNG", "JPEG"], default="PNG")
     p_cov.add_argument("--api-key", help="Image API key override")
@@ -680,6 +1216,97 @@ def build_parser() -> argparse.ArgumentParser:
     p_bak_git.add_argument("--message", help="Commit message override")
     p_bak_git.add_argument("--push", action="store_true", help="Push commit to remote")
     p_bak_git.set_defaults(func=_cmd_backup_git)
+
+    p_srv = sub.add_parser("serve", help="Start cloud matrix HTTP/SSE server, scheduler, and optional Telegram bot")
+    p_srv.add_argument("--host", help="Bind host (default 127.0.0.1 or XIAOSHUO_HOST)")
+    p_srv.add_argument("--port", type=int, help="Bind port (default 8765 or XIAOSHUO_PORT)")
+    p_srv.add_argument("--projects-root", help="Projects root directory (default ./projects)")
+    p_srv.add_argument(
+        "--db-path",
+        "--db",
+        dest="db_path",
+        help="SQLite stockpile DB path (default ./data/matrix.db)",
+    )
+    p_srv.add_argument("--admin-token", help="Admin Bearer token (env XIAOSHUO_ADMIN_TOKEN; >=24 chars for non-loopback)")
+    p_srv.add_argument(
+        "--companion-hmac-secret",
+        "--companion-secret",
+        dest="companion_hmac_secret",
+        help="Companion HMAC-SHA256 secret (env XIAOSHUO_COMPANION_HMAC_SECRET)",
+    )
+    p_srv.add_argument("--cpa-url", help="CPA base/management URL (env CPA_MANAGEMENT_URL)")
+    p_srv.add_argument(
+        "--cpa-management-key",
+        "--cpa-secret",
+        dest="cpa_management_key",
+        help="CPA management key/secret (env CPA_MANAGEMENT_KEY)",
+    )
+    p_srv.add_argument("--router-config", help="Path to 5-role RoleModelRouter JSON/YAML config")
+    p_srv.add_argument("--base-url", help="Default CPA/OpenAI base URL for RoleModelRouter")
+    p_srv.add_argument("--api-key", help="Default CPA/OpenAI API key (or comma-separated pool)")
+    p_srv.add_argument("--model", help="Default model for text roles")
+    p_srv.add_argument("--planner-model", help="Model override for planner role")
+    p_srv.add_argument("--planner-base-url", help="Base URL override for planner role")
+    p_srv.add_argument("--planner-api-key", help="API key override for planner role")
+    p_srv.add_argument("--planner-provider-type", help="Provider type override for planner role")
+    p_srv.add_argument("--writer-model", help="Model override for writer role")
+    p_srv.add_argument("--writer-base-url", help="Base URL override for writer role")
+    p_srv.add_argument("--writer-api-key", help="API key override for writer role")
+    p_srv.add_argument("--writer-provider-type", help="Provider type override for writer role")
+    p_srv.add_argument("--critic-model", help="Model override for critic role")
+    p_srv.add_argument("--critic-base-url", help="Base URL override for critic role")
+    p_srv.add_argument("--critic-api-key", help="API key override for critic role")
+    p_srv.add_argument("--critic-provider-type", help="Provider type override for critic role")
+    p_srv.add_argument("--polisher-model", help="Model override for polisher role")
+    p_srv.add_argument("--polisher-base-url", help="Base URL override for polisher role")
+    p_srv.add_argument("--polisher-api-key", help="API key override for polisher role")
+    p_srv.add_argument("--polisher-provider-type", help="Provider type override for polisher role")
+    p_srv.add_argument("--image-model", help="Model override for image role")
+    p_srv.add_argument("--image-base-url", help="Base URL override for image role")
+    p_srv.add_argument("--image-api-key", help="API key override for image role")
+    p_srv.add_argument("--image-provider-type", help="Provider type override for image role")
+    p_srv.add_argument("--daily-budget-limit", type=float, help="Daily USD budget circuit breaker")
+    p_srv.add_argument("--daily-chapter-limit", type=int, help="Daily chapter count circuit breaker")
+    p_srv.add_argument("--ledger-path", help="UsageBudgetLedger JSON path")
+    p_srv.add_argument("--motif-store", help="MotifWeightStore JSON path")
+    p_srv.add_argument("--static-dir", help="Optional static Web console directory override")
+    p_srv.add_argument("--sse-heartbeat-sec", type=float, default=15.0, help="SSE heartbeat interval in seconds")
+    p_srv.add_argument("--scheduler-interval", type=float, default=10.0, help="Scheduler poll interval in seconds")
+    p_srv.add_argument("--no-scheduler-loop", action="store_true", help="Disable background scheduler loop")
+    p_srv.add_argument("--with-tg-bot", action="store_true", help="Run embedded TelegramControlBot polling thread")
+    p_srv.add_argument("--no-tg-bot", action="store_true", help="Disable embedded TelegramControlBot even if TG env vars are set")
+    p_srv.add_argument("--tg-bot-token", help="Telegram Bot token override (env TELEGRAM_BOT_TOKEN)")
+    p_srv.add_argument("--tg-owner-user-id", help="Telegram owner user ID override (env TELEGRAM_OWNER_USER_ID)")
+    p_srv.add_argument("--tg-api-base-url", help="Telegram Bot API base URL override")
+    p_srv.add_argument("--tg-state-path", help="Telegram bot state JSON path")
+    p_srv.set_defaults(func=_cmd_serve)
+
+    p_cmp = sub.add_parser("companion", help="Run local outbound Playwright publishing & metrics companion")
+    p_cmp.add_argument("--server-url", help="Cloud matrix server URL (env XIAOSHUO_SERVER_URL)")
+    p_cmp.add_argument(
+        "--hmac-secret",
+        help="Cloud-edge HMAC-SHA256 secret (env XIAOSHUO_COMPANION_HMAC_SECRET)",
+    )
+    p_cmp.add_argument("--account-id", help="Tomato author account ID (env XIAOSHUO_COMPANION_ACCOUNT_ID)")
+    p_cmp.add_argument("--author-name", help="Expected Tomato author pen name")
+    p_cmp.add_argument("--book-ids", help="Comma-separated book IDs managed by this companion")
+    p_cmp.add_argument("--profile-root", help="Root directory for isolated Chrome profiles (default ./chrome_profiles)")
+    p_cmp.add_argument("--outbox-db", help="Local SQLite WAL outbox DB path")
+    p_cmp.add_argument("--chrome-channel", default="chrome", help="Playwright browser channel (default chrome)")
+    p_cmp.add_argument("--headless", action="store_true", help="Run browser headless (default False)")
+    p_cmp.add_argument("--target-url", help="Target Tomato writer URL (env XIAOSHUO_COMPANION_TARGET_URL)")
+    p_cmp.add_argument("--metrics-url", help="Optional override URL for COLLECT_METRICS tasks")
+    p_cmp.add_argument("--star-cards-url", help="Optional override URL for CREATE_STAR_CARDS tasks")
+    p_cmp.add_argument("--signing-url", help="Optional override URL for SUBMIT_SIGNING_DRAFT tasks")
+    p_cmp.add_argument("--rotate-url", help="Optional override URL for ROTATE_PACKAGING tasks")
+    p_cmp.add_argument("--once", action="store_true", help="Execute a single poll-and-run cycle and exit")
+    p_cmp.add_argument("--poll-interval", type=float, default=2.0, help="Idle poll interval in seconds")
+    p_cmp.add_argument("--poll-timeout", type=int, default=25, help="Server long-poll timeout in seconds (0..25)")
+    p_cmp.add_argument("--woff2-cache-dir", help="Optional directory for caching decoded WOFF2 font maps")
+    p_cmp.add_argument("--review-pause-sec", type=float, default=0.8, help="Pause after inserting prose (seconds)")
+    p_cmp.add_argument("--screenshot-dir", help="Optional directory for captcha sentinel screenshots")
+    p_cmp.add_argument("--client-id", help="Optional HMAC client_id override")
+    p_cmp.set_defaults(func=_cmd_companion)
 
     return parser
 

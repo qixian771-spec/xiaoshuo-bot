@@ -1,29 +1,54 @@
-# xiaoshuo-bot · 资产驱动型中文长篇小说生产引擎
+# xiaoshuo-bot · 番茄爆款全自动矩阵引擎与云边协同套件
 
-`xiaoshuo-bot` 是一套面向严肃长篇/中篇中文叙事生产的工程化生成管线。系统将**角色行为锚点 (`Character_Identity_Anchor`)**、**器物物理状态机 (`Current_Asset_State`)**、**跨章伏笔账本 (`Foreshadow_Plan`)**、**人类作家颗粒度样本 (`Style_Samples`)** 与 **确定性反 AI 套话静态扫描器 (`AI-TIC-CHECK`)** 闭环整合，命中任何叙事禁令即判定为生产事故并自动触发靶向重写。
+`xiaoshuo-bot` 是一套面向中文网文（番茄小说 / 七猫 / 知乎盐选 / 英文 Webnovel）的**资产驱动型长篇小说生产、质量门禁、云端矩阵调度、Telegram 远控与本地 Chrome 发布回采伴侣**全链路工程系统。
 
 ---
 
-## 核心特性
+## 核心架构升级（M1 + M2 + M3）
 
-1. **生产级五段式动态提示词编译 (`compiler.py`)**
-   - 自动按当前章纲 (`SceneOutline`) 裁剪注入在场角色的性格底色、语言习惯、微动作锚点与 OOC 禁区。
-   - 实时从世界状态机 (`WorldStateManager`) 注入受控器物在**当前章节时刻**的最新物理位置、持有人、磨损细节与跨章流转记录。
-   - 自动区分并注入**本章到期必收伏笔**与**本章待埋设物理伏笔**，同时附带上一章结尾切片确保时空无缝衔接。
+### 1. M1：爆款核心生产与自进化引擎
+- **领域契约与分卷加载 (`models.py`, `loader.py`)**：
+  - 全仓统一零依赖北京时间常量 `SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")`，杜绝跨系统（Windows / 韩国 `UTC+9`）时区偏差。
+  - 统一 `:04d` 章节与快照路径规范（`chapter_0001.txt` + `.meta.json`），兼容存量 `:02d` 项目只读恢复，并阻止 `:02d`/`:04d` 同章双写歧义。
+  - 分卷大纲 `outline/vol_*.yaml` 加载，校验番茄 `<=15` 字书名、连续压抑 `<=2` 章与跨卷/终卷伏笔清账。
+- **CPA 流式网关与五角色动态路由 (`llm/`)**：
+  - `OpenAICompatibleProvider` 默认启用 `stream=True` SSE 长文流式拼接（容忍 `: keepalive` 心跳，`300s` 超时，强校验 `finish_reason == "stop"`）。
+  - `RoleModelRouter` 支持 `planner` / `writer` / `critic` / `polisher` / `image` 五角色独立端点与同档多 Key 轮询抗 429 冷却（**零跨档降级**，全池耗尽立即抛 `QuotaExhaustedError`）。
+  - `UsageBudgetLedger` 每日预算与章节熔断；`CPAManagementClient` 对接本机 `CLIProxyAPI` `/v0/management/*` 凭据热加载与 OAuth 管理。
+- **十大爆款类目、反 AI 起名与架空合规 (`genres.py`, `namer.py`, `sanitizers.py`)**：
+  - 内置男女频 10 大番茄爆款配方 + `literary_suspense` 兼容类目、黄金三章节拍与题材硬常识防穿帮卡。
+  - `namer.py` 封杀 AI 高频名黑名单，并使用 `pypinyin` 防止全书角色同音混淆与生僻字。
+  - `sanitizers.py` 拦截现代真地名/公检法番号、插符号变体绕审与违规推文别名。
+- **百万字五维防吃书状态机与四级分层记忆 (`state.py`, `memory.py`)**：
+  - 维护器物物理状态、货币/物资/战力数值账本与 `VolumeCapLock`、角色生死不可逆与过期称谓禁用图、期待感倒计时账本（强校验证据词）与虚拟日历伤势锁；支持含锁章 SHA256 校验的 `save_snapshot` / `load_snapshot`。
+  - `MemoryPyramid`（L0 上章尾 ~260 字、L1 近 5 章、L2 每 10 章、L3 每 100 章 + 实体精准召回）控制注入上下文体积。
+- **参数化 `AI-TIC-CHECK` 2.0 与手术刀精修 (`checker.py`, `compiler.py`, `critic_polisher.py`)**：
+  - 支持 `third_limited` / `first_person` 人称与受控 `【系统】` 面板（`TTS_001` 限制 `<=65` 字），新增首屏 200 字冲突检测（`HOOK_001`）、章末泄气拦截（`HOOK_002`）、反圣母（`OOC_SAINT`）、状态交叉校验与节奏 Burstiness 诊断。
+  - `TomatoCriticPolisher` 对草稿四维打分，仅对低分段落做局部手术重写，并强制二次复检 `AITicChecker` 与生成隔离的 `author_note`。
+- **三源自动立项、防洗稿查重与留存自进化 (`plagiarism_guard.py`, `deconstructor.py`, `planner.py`, `evolution.py`)**：
+  - 支持热榜风向 + 配方库 + 五维拆书换皮三源立项，强制连续汉字重合 `<=7` 字及 200 字滑窗 4-gram Jaccard `<5%` + 本机跨书查重。
+  - `lv0_1`（15～20 万字紧凑完本）vs `lv2_plus`（2 万字责编 6 要素签约表 + 首秀测书 + 60～80 章换地图续纲）。
+  - 确定性赛马决策器（晋级加更 `PROMOTE_DAILY_UPDATE` / 冷启动换名换封 `ROTATE_PACKAGING` / 止损切书 `SUGGEST_CUT`，未结算抛 `MetricsNotSettledError` 绝不按 0 误判），并锁死 `<= max_published_chapter` 已发章。
+- **600×800 双阶封面、多平台导出与便携备份 (`cover.py`, `exporter.py`, `transcreator.py`, `backup.py`, `fonts/`)**：
+  - 内置 SIL OFL 1.1 免费商用开源中文字体与 `OFL.txt`；支持 `ai_image`（Gemini 原生生图底图）与 `procedural` 离线排版，将书名与笔名精准压印于 `600×800` 安全框内。
+  - 导出番茄（双框无 `第X章` 标题 + 隔离 `author_note` + 星耀卡 + 达人推文包）、七猫、知乎盐选及英文 Webnovel 转译包；`backup export/verify/import` 剥离密钥并附 SHA256 清单校验。
 
-2. **六维确定性 `AI-TIC-CHECK` 质量门禁 (`checker.py`)**
-   - **格式污染门禁 (`FORMAT_VIOLATION`)**：强制校验首字符即为正文首字；拦截标题、小标题、章节号、分割线、Markdown 代码围栏与创作手记。
-   - **总结腔/升华词门禁 (`SUMMARY_CLICHE`)**：拦截“命运的齿轮”、“总而言之”、“由此可见”、“某种意义上”、“仿佛在诉说着”、“一切才刚刚开始”等议论升华套话。
-   - **身体反应套路门禁 (`BODY_TIC_CLICHE`)**：拦截“不禁一愣”、“心中一紧”、“眸光微闪”、“瞳孔微缩”、“嘴角勾起一抹”、“倒吸一口凉气”、“苦笑一声”及惯性副词“不禁”。
-   - **结构化对称门禁 (`STRUCTURAL_SYMMETRY`)**：正则拦截“不是A，而是B”、“并非A，而是B”、“与其说是A，不如说是B”及“是……，是……，是……”三连排比。
-   - **第三人称限知视角门禁 (`POV_VIOLATION`)**：对话掩码剥离后，精准拦截叙述段第一人称“我”泄露、全知上帝视角词（“殊不知”、“没有人知道”、“与此同时在另一边”）及非视点角色内心独白越界（如视点为林晚时出现“周叙心想”）。
-   - **伏笔回收与篇幅门禁 (`FORESHADOW_UNRECOVERED` / `LENGTH_VIOLATION`)**：强制核验到期伏笔的物理证据词是否真正落入正文，并校验章纲字数上下限。
+### 2. M2：云端矩阵中枢、Web 控制台、Telegram 远控与本地发布伴侣
+- **云端调度与 HTTP/SSE 服务 (`server/`)**：
+  - `auth.py`：非回环监听强制校验 `>=24` 字符 `XIAOSHUO_ADMIN_TOKEN`（否则抛 `InsecureBindError`），连续 5 次失败 IP 封禁 30 分钟；伴侣路由强制 HMAC-SHA256 + `±60s` 时间戳 + Nonce 防重放。
+  - `stockpile_db.py`：SQLite WAL 幂等囤稿数据库、单书序列租约锁、`lv0_1` 8500 字 / `lv2_plus` 17000 字北京时间日配额安全锁、T-1 指标与进化联动。
+  - `matrix_scheduler.py`：10 章安全垫水位巡检、`<6` 章置顶抢产与单书故障隔离舱（`ISOLATED_GATE_FAILURE`）。
+  - `app.py` + `server/static/`：零外部构建依赖响应式暗色中文 Web 控制台、`/api/cpa/*` 透传代理与 `/api/events/stream` SSE 实时直播。
+- **原生 HTTPS 长轮询 Telegram Bot (`telegram_bot.py`)**：
+  - 零入站端口直连 `api.telegram.org`（`timeout=30, read_timeout=45`），`owner_user_id` 首行鉴权、1 秒内 `answerCallbackQuery`、纯 ASCII `<=64B` 短码、切书二级防误触 CAS 确认、HTML 长日报自动分页与验证码截图解冻恢复。
+- **本地多马甲 Chrome 发布伴侣与 WOFF2 解码器 (`companion/`)**：
+  - 纯出站长轮询 + SQLite WAL 本地 `outbox.db`；每个马甲独立根级 `user_data_dir` + `.companion.lock` 互斥锁。
+  - **三层零触碰哨兵**：检测登录失效或任何 `.secsdk-captcha` 弹窗 **0 毫秒急停挂起**并截图推云端/TG（**严禁任何验证码点击、求解或指纹篡改**）。
+  - **发稿三铁闸**：逐字核对 `author_name + book_id + book_title`、写前近 20 章远端对账幂等跳过、双框剥离 `第X章` 前缀填入 `.ProseMirror` 并核对字数误差 `<=5%` 存草稿定时发布。
+  - **12:30 CST 回采与 WOFF2 解码**：北京时间 `12:30` 后回采指标（未结算抛 `MetricsNotSettledError`），`Woff2FontDecoder` 解析 `.woff2` 轮廓哈希还原 PUA 字符并强扫残余私用区码位。
 
-3. **生产事故自动拦截与靶向重写闭环 (`engine.py`)**
-   - 任意章节草稿命中上述任一规则，立即生成结构化事故单 (`audit/incidents.jsonl`)，将精确行号、命中词与整改提示编译为重写指令自动打回模型重生成，直至 `0 违规` 通过。
-
-4. **跨章器物状态与伏笔账本演进 (`state.py`)**
-   - 每章定稿后自动应用器物位置/归属/损耗变更，提取伏笔埋设与回收的正文原句作为账本回执，并落盘章节快照 (`snapshots/chapter_XX_after.json`)。
+### 3. M3：韩国云服务器零兜底部署套件 (`deploy/`)
+- 提供 `cpa.config.example.yaml`（锁死 `127.0.0.1:8317`、`disable-image-generation: false`、`switch-preview-model: false`）、`cpa.service`、`xiaoshuo-bot.service`、`Caddyfile.example`、`env.example`、严格 `set -euo pipefail` 的 `deploy_remote.sh` 与 Windows SSH 隧道脚本 `ssh_cpa_tunnel.ps1`。
 
 ---
 
@@ -31,48 +56,93 @@
 
 ```text
 xiaoshuo-bot/
-├── bin/xiaoshuo-bot                 # 命令行直接执行入口
-├── docs/ARCHITECTURE.md             # 架构规范与门禁规则详述
-├── pyproject.toml                   # Python 包定义
+├── bin/xiaoshuo-bot                  # 命令行直接执行入口
+├── deploy/                           # 韩国云服务器零兜底部署套件
+├── docs/ARCHITECTURE.md              # 架构规范、M2 契约与门禁规则详述
+├── projects/baiwu_dukou/             # 存量 5 章回归基准项目：《白雾渡口》
+├── pyproject.toml                    # 包配置（含 [companion] 可选依赖与静态资源）
 ├── src/xiaoshuo_bot/
-│   ├── models.py                    # 领域数据模型
-│   ├── loader.py                    # 项目 YAML 加载与引用完整性校验
-│   ├── compiler.py                  # 动态提示词与事故重写提示词编译器
-│   ├── checker.py                   # AI-TIC-CHECK 静态扫描引擎
-│   ├── state.py                     # 跨章器物物理状态机与伏笔账本
-│   ├── engine.py                    # 章节生成、事故拦截、重写与归档主引擎
-│   ├── reporter.py                  # Markdown 冒烟审计报告与 HTML 交互阅读台生成
-│   ├── cli.py                       # CLI 子命令实现
-│   └── llm/                         # OpenAI兼容 / Anthropic / 本地IPC Bridge / 故障注入后端
-├── projects/
-│   └── baiwu_dukou/                 # 实测五章完整悬疑中篇项目：《白雾渡口》
-└── tests/                           # 单元测试与故障注入自动重写集成测试
+│   ├── contracts.py                  # M2 冻结 REST/SSE/HMAC/MatrixControlPort 契约
+│   ├── cli.py                        # 全量 CLI 入口（M1 命令 + serve + companion）
+│   ├── engine.py                     # 主生成引擎 2.0（:04d 原子落盘 / _archive/ 归档）
+│   ├── models.py / loader.py         # SHANGHAI_TZ、WorldStateSnapshot、分卷加载器
+│   ├── genres.py / namer.py / sanitizers.py
+│   ├── state.py / memory.py / checker.py / compiler.py / critic_polisher.py
+│   ├── plagiarism_guard.py / deconstructor.py / planner.py / evolution.py
+│   ├── cover.py / exporter.py / transcreator.py / reporter.py / backup.py
+│   ├── fonts/                        # SIL OFL 1.1 免费商用中文字体与 OFL.txt
+│   ├── llm/                          # CPA 流式网关、RoleModelRouter、CPAManagementClient
+│   ├── server/                       # auth / stockpile_db / matrix_scheduler / app / static/
+│   ├── telegram_bot.py               # 原生 HTTPS 长轮询 Telegram Bot
+│   └── companion/                    # client / browser_worker / font_decoder
+└── tests/                            # 单元、静态契约、部署与云边 E2E 测试套件
 ```
 
 ---
 
 ## 快速开始
 
-### 1. 运行单元测试与故障注入重写验证
+### 1. 安装（核心引擎 + 可选本地伴侣）
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-./bin/xiaoshuo-bot validate --project projects/baiwu_dukou
-./bin/xiaoshuo-bot smoke-fault --project projects/baiwu_dukou
+pip install -e .
+# 如需在本机运行 Chrome 发布与 WOFF2 解码伴侣端：
+pip install -e ".[companion]"
+playwright install chromium
 ```
 
-### 2. 使用 OpenAI 兼容接口（DeepSeek / OpenAI / OpenRouter / vLLM）生成整部小说
+### 2. M1 核心命令
 ```bash
-export XIAOSHUO_API_KEY="sk-..."
-export XIAOSHUO_API_BASE="https://api.deepseek.com/v1"
-export XIAOSHUO_MODEL="deepseek-chat"
+# 查看注册的 10+1 类目配方
+xiaoshuo-bot genres
+xiaoshuo-bot genres --id urban_brainhole
 
-./bin/xiaoshuo-bot run --project projects/baiwu_dukou --provider openai
+# 校验存量项目与故障注入重写冒烟
+xiaoshuo-bot validate --project projects/baiwu_dukou
+xiaoshuo-bot smoke-fault --project projects/baiwu_dukou
+
+# 拆书、三源自动立项、滚动续纲与完结收官
+xiaoshuo-bot auto-create --project-id demo_book --genre urban_brainhole --output-dir projects/demo_book --provider openai
+xiaoshuo-bot extend --project projects/demo_book --provider openai
+
+# 生成章节正文、600x800 封面（存量无笔名项目可加 --pen-name）与多平台导出、整站备份
+xiaoshuo-bot run --project projects/demo_book --provider openai
+xiaoshuo-bot cover --project projects/demo_book --output output/demo_cover.png --base-mode procedural
+xiaoshuo-bot export --project projects/demo_book --platform tomato --output-dir output/tomato_bundle
+xiaoshuo-bot backup export --output backups/site.zip --projects-dir projects
 ```
 
-### 3. 对任意外部文稿执行独立 `AI-TIC-CHECK` 扫描
+### 3. M2 云端中枢 (`serve`) 与本地发布伴侣 (`companion`)
 ```bash
-./bin/xiaoshuo-bot check-text \
-  --file projects/baiwu_dukou/output/chapters/chapter_01.txt \
-  --project projects/baiwu_dukou \
-  --chapter 1
+# 启动云端矩阵服务 + Web 控制台（监听 0.0.0.0 时必须配置 >=24 位 XIAOSHUO_ADMIN_TOKEN）
+export XIAOSHUO_ADMIN_TOKEN="replace-with-strong-token-at-least-24-chars"
+export XIAOSHUO_COMPANION_HMAC_SECRET="replace-with-strong-hmac-secret"
+export CPA_MANAGEMENT_URL="http://127.0.0.1:8317"
+export CPA_MANAGEMENT_KEY="replace-with-cpa-management-key"
+export TELEGRAM_BOT_TOKEN="123456:your-bot-token"
+export TELEGRAM_OWNER_USER_ID="123456789"
+
+xiaoshuo-bot serve \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --projects-root ./projects \
+  --db-path ./data/matrix.db \
+  --with-tg-bot
+
+# 在本地日常电脑运行伴侣端（纯出站长轮询，默认拉起正式版 Chrome 非无头窗口）
+xiaoshuo-bot companion \
+  --server-url http://127.0.0.1:8765 \
+  --hmac-secret "$XIAOSHUO_COMPANION_HMAC_SECRET" \
+  --account-id acct_01 \
+  --author-name "砚山行" \
+  --profile-root ./chrome_profiles \
+  --target-url "https://fanqienovel.com/main/writer/book-manage"
+```
+
+### 4. 运行测试（Windows PowerShell，先清空继承密钥环境变量）
+```powershell
+$env:XIAOSHUO_API_KEY = ''
+if ($?) { $env:OPENAI_API_KEY = '' }
+if ($?) { $env:ANTHROPIC_API_KEY = '' }
+if ($?) { $env:PYTHONPATH = 'src' }
+if ($?) { python -m unittest discover -s tests -p "test_*.py" -v }
 ```

@@ -339,6 +339,130 @@ class TestWebStaticContract(unittest.TestCase):
         for role in ("planner", "writer", "critic", "polisher", "image"):
             self.assertIn(f'role: "{role}"', self.app_text, f"Missing CPA role {role!r} in app.js")
 
+    def test_toggle_chapter_lock_async_race_guard(self) -> None:
+        m_toggle = re.search(
+            r"async\s+function\s+toggleChapterLock\s*\(\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_toggle, "toggleChapterLock() missing in app.js")
+        body = m_toggle.group(1)
+
+        # Captures targetBookId and targetChapter before any await
+        self.assertIn("const targetBookId = state.readerBookId;", body)
+        self.assertIn("const targetChapter = state.readerSelectedChapter;", body)
+        self.assertLess(body.index("targetBookId"), body.index("await "))
+        self.assertLess(body.index("targetChapter"), body.index("await "))
+
+        # Disables #btn-toggle-lock while in flight
+        self.assertIn("lockBtn.disabled = true;", body)
+
+        # Guards before loadChapterDetail and restores disabled only if still on target
+        self.assertIn("state.readerBookId !== targetBookId || state.readerSelectedChapter !== targetChapter", body)
+        self.assertIn("loadChapterDetail(targetBookId, targetChapter)", body)
+        self.assertIn("state.readerBookId === targetBookId && state.readerSelectedChapter === targetChapter", body)
+
+        # loadBookChapters and loadChapterDetail must also discard stale responses after await
+        m_load_ch = re.search(
+            r"async\s+function\s+loadBookChapters\s*\(bookId\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_load_ch)
+        self.assertIn("state.readerBookId !== bookId", m_load_ch.group(1))
+
+        m_detail = re.search(
+            r"async\s+function\s+loadChapterDetail\s*\(bookId,\s*chapterNo\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_detail)
+        self.assertIn("state.readerBookId !== bookId || state.readerSelectedChapter !== targetChapter", m_detail.group(1))
+
+    def test_cover_preview_avoids_doomed_404_and_uses_ai_image_without_fallback(self) -> None:
+        # Zero silent fallback to procedural in frontend
+        self.assertNotIn("procedural", self.app_text, "Frontend must not silently fallback ai_image to procedural")
+
+        m_preview = re.search(
+            r"async\s+function\s+renderBookPreviewInto\s*\(book,\s*coverContainer,\s*titlesContainer\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_preview, "renderBookPreviewInto() missing in app.js")
+        preview_body = m_preview.group(1)
+        self.assertIn("if (!book.cover_path)", preview_body)
+        self.assertIn("尚未生成封面", preview_body)
+        self.assertIn("🎨 生成 AI 封面", preview_body)
+        # Must bail before fetchAuthenticatedImageUrl when cover_path is absent
+        self.assertLess(preview_body.index("if (!book.cover_path)"), preview_body.index("fetchAuthenticatedImageUrl("))
+
+        m_gen = re.search(
+            r"async\s+function\s+generateAiCoverForBook\s*\(book,\s*coverContainer,\s*titlesContainer\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_gen, "generateAiCoverForBook() missing in app.js")
+        gen_body = m_gen.group(1)
+        self.assertIn("API_ROUTES.BOOK_COVER", gen_body)
+        self.assertIn('method: "POST"', gen_body)
+        self.assertIn('base_mode: "ai_image"', gen_body)
+        self.assertIn("book.cover_path =", gen_body)
+        self.assertIn("请先在 CPA 面板配置 image 生图模型后再生成封面", gen_body)
+        self.assertIn("🎨 重试生成 AI 封面", gen_body)
+
+        m_create = re.search(
+            r"async\s+function\s+handleAutoCreateSubmit\s*\(evt\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_create, "handleAutoCreateSubmit() missing in app.js")
+        create_body = m_create.group(1)
+        self.assertIn("!createdBook.cover_path", create_body)
+        self.assertIn("generateAiCoverForBook(", create_body)
+
+    def test_pre_login_auth_deferral_and_toast_cleanup(self) -> None:
+        m_init = re.search(
+            r"async\s+function\s+init\s*\(\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_init, "init() missing in app.js")
+        init_body = m_init.group(1)
+        self.assertIn("await loadHealth()", init_body)
+        self.assertIn("admin_auth_required !== false", init_body)
+        self.assertIn("!state.authToken", init_body)
+        self.assertIn("state.authRequired = true", init_body)
+        # loadHealth and auth guard must run before refreshAll and connectSse
+        self.assertLess(init_body.index("await loadHealth()"), init_body.index("refreshAll("))
+        self.assertLess(init_body.index("if (!state.authToken"), init_body.index("connectSse()"))
+
+        m_refresh = re.search(
+            r"async\s+function\s+refreshAll\s*\(opts\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_refresh, "refreshAll() missing in app.js")
+        self.assertIn("admin_auth_required !== false", m_refresh.group(1))
+
+        # #btn-save-token clears stale error toasts
+        self.assertIn("clearErrorToasts()", self.app_text)
+        m_clear = re.search(
+            r"function\s+clearErrorToasts\s*\(\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_clear, "clearErrorToasts() missing in app.js")
+        self.assertIn(".toast.is-err", m_clear.group(1))
+
+    def test_cpa_bind_provider_select_css_prevents_clipping(self) -> None:
+        m_sel = re.search(r"\.bind-provider-select\s*\{([^}]*)\}", self.css_text, re.DOTALL)
+        self.assertIsNotNone(m_sel, ".bind-provider-select rule missing in styles.css")
+        m_minw = re.search(r"min-width\s*:\s*(\d+)px", m_sel.group(1))
+        self.assertIsNotNone(m_minw, ".bind-provider-select must define min-width in px")
+        self.assertGreaterEqual(int(m_minw.group(1)), 138)
+        self.assertIn("#cpa-bindings-form .binding-fields", self.css_text)
+        self.assertIn("#cpa-bindings-form .input-group", self.css_text)
+
 
 if __name__ == "__main__":
     unittest.main()

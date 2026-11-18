@@ -38,6 +38,7 @@ from ..contracts import (
     API_GENRES,
     API_HEALTH,
     AutoCreateBookRequest,
+    BookRunStatus,
     ChapterLockRequest,
     CompanionCaptchaReport,
     CompanionLeaseRequest,
@@ -45,6 +46,7 @@ from ..contracts import (
     CompanionPollRequest,
     CompanionReceiptRequest,
     CompanionResumeRequest,
+    CompanionTaskType,
     CutBookRequest,
     ErrorPayload,
     HealthResponse,
@@ -52,6 +54,7 @@ from ..contracts import (
     SSE_HEARTBEAT,
     SSE_METRICS_COLLECTED,
     SSE_RACING_DECISION,
+    StockpileStatus,
     format_sse_frame,
 )
 from ..cover import CoverError, ImageProviderNotConfiguredError
@@ -128,7 +131,7 @@ def _static_mime_type(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".html":
         return "text/html; charset=utf-8"
-    if suffix == ".js":
+    if suffix in (".js", ".mjs"):
         return "application/javascript; charset=utf-8"
     if suffix == ".css":
         return "text/css; charset=utf-8"
@@ -136,6 +139,16 @@ def _static_mime_type(path: Path) -> str:
         return "application/json; charset=utf-8"
     if suffix == ".svg":
         return "image/svg+xml"
+    if suffix == ".png":
+        return "image/png"
+    if suffix in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if suffix == ".woff2":
+        return "font/woff2"
+    if suffix == ".ico":
+        return "image/x-icon"
+    if suffix == ".txt":
+        return "text/plain; charset=utf-8"
     guessed, _ = mimetypes.guess_type(str(path))
     return guessed or "application/octet-stream"
 
@@ -157,6 +170,7 @@ class MatrixHTTPServer(ThreadingHTTPServer):
         static_dir: Optional[Path | str] = None,
         sse_heartbeat_sec: float = 15.0,
         now_fn: Optional[Callable[[], datetime]] = None,
+        telegram_bot: Optional[Any] = None,
     ) -> None:
         self.scheduler = scheduler
         self.db: StockpileDB = scheduler.db
@@ -166,12 +180,30 @@ class MatrixHTTPServer(ThreadingHTTPServer):
         self.static_dir = Path(static_dir).resolve() if static_dir is not None else DEFAULT_STATIC_DIR
         self.sse_heartbeat_sec = float(sse_heartbeat_sec)
         self.now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
+        self.telegram_bot = telegram_bot
         self.stop_event = threading.Event()
         super().__init__(server_address, MatrixRequestHandler)
+
+    def start_telegram_bot(self) -> Optional[threading.Thread]:
+        if self.telegram_bot is None:
+            return None
+        return self.telegram_bot.start_background()
+
+    def stop_telegram_bot(self, timeout: float = 5.0) -> None:
+        if self.telegram_bot is not None:
+            self.telegram_bot.stop(timeout=timeout)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self.start_telegram_bot()
+        try:
+            super().serve_forever(poll_interval=poll_interval)
+        finally:
+            self.stop_telegram_bot()
 
     def shutdown_and_close(self) -> None:
         self.stop_event.set()
         self.scheduler.event_broker.notify_poll_waiters()
+        self.stop_telegram_bot()
         self.scheduler.stop_background_loop()
         self.shutdown()
         self.server_close()
@@ -193,20 +225,69 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         return peer_ip
 
     def _read_body_bytes(self) -> bytes:
+        if getattr(self, "_body_consumed", False):
+            return getattr(self, "_cached_body_bytes", b"")
         raw_len = self.headers.get("Content-Length")
         if not raw_len:
+            self._body_consumed = True
+            self._cached_body_bytes = b""
             return b""
         try:
             length = int(raw_len)
         except ValueError as exc:
+            self.close_connection = True
             raise ValueError(f"Invalid Content-Length header: {raw_len!r}") from exc
         if length < 0:
+            self.close_connection = True
             raise ValueError(f"Negative Content-Length: {length}")
         if length > MAX_REQUEST_BODY_BYTES:
+            self.close_connection = True
             raise ValueError(f"Request body exceeds max limit ({MAX_REQUEST_BODY_BYTES} bytes)")
         if length == 0:
+            self._body_consumed = True
+            self._cached_body_bytes = b""
             return b""
-        return self.rfile.read(length)
+        data = self.rfile.read(length)
+        self._body_consumed = True
+        self._cached_body_bytes = data
+        if len(data) < length:
+            self.close_connection = True
+        return data
+
+    def _drain_unread_body(self) -> None:
+        if self.close_connection or getattr(self, "_body_consumed", False):
+            return
+        transfer_enc = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in transfer_enc:
+            self.close_connection = True
+            return
+        raw_len = self.headers.get("Content-Length")
+        if not raw_len:
+            self._body_consumed = True
+            return
+        try:
+            length = int(raw_len)
+        except ValueError:
+            self.close_connection = True
+            return
+        if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+            self.close_connection = True
+            return
+        if length == 0:
+            self._body_consumed = True
+            return
+        try:
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    self.close_connection = True
+                    return
+                remaining -= len(chunk)
+            self._body_consumed = True
+        except OSError as exc:
+            logger.debug("Failed to drain unread request body (%d bytes): %s", length, exc)
+            self.close_connection = True
 
     def _parse_json_body(self, raw: bytes) -> Dict[str, Any]:
         if not raw.strip():
@@ -332,10 +413,15 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         self._dispatch("PUT")
 
+    def do_PATCH(self) -> None:
+        self._dispatch("PATCH")
+
     def do_DELETE(self) -> None:
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        self._body_consumed = False
+        self._cached_body_bytes = b""
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path or "/"
         query = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
@@ -560,27 +646,43 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unhandled error serving %s %s", method, path)
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", str(exc))
+        finally:
+            self._drain_unread_body()
 
     def _dispatch_book_route(
         self, method: str, path: str, query: Dict[str, List[str]]
     ) -> bool:
         m = _RE_BOOK_STATUS.match(path)
-        if m and method == "GET":
+        if m:
             bid = urllib.parse.unquote(m.group("book_id"))
-            summary = self.server.scheduler.get_book_status(bid)
-            book_row = self.server.db.get_book(bid)
-            metrics = self.server.db.get_latest_metrics(bid)
-            directives = self.server.db.get_outline_directives(bid)
-            self._send_json(
-                HTTPStatus.OK,
-                {
-                    **summary.to_dict(),
-                    "isolation_detail": book_row.get("isolation_detail", {}),
-                    "latest_metrics": metrics,
-                    "outline_directives": directives,
-                },
-            )
-            return True
+            if method == "GET":
+                summary = self.server.scheduler.get_book_status(bid)
+                book_row = self.server.db.get_book(bid)
+                metrics = self.server.db.get_latest_metrics(bid)
+                directives = self.server.db.get_outline_directives(bid)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        **summary.to_dict(),
+                        "isolation_detail": book_row.get("isolation_detail", {}),
+                        "latest_metrics": metrics,
+                        "outline_directives": directives,
+                    },
+                )
+                return True
+            if method == "POST":
+                data = self._parse_json_body(self._read_body_bytes())
+                action = str(data.get("action") or "").strip().lower()
+                paused = data.get("paused")
+                reason = str(data.get("reason") or "")
+                if action and action not in ("pause", "resume"):
+                    raise ValueError(f"Unsupported book status action: {action!r}")
+                if action == "resume" or (paused is False and action != "pause"):
+                    res = self.server.scheduler.resume_book(bid)
+                else:
+                    res = self.server.scheduler.pause_book(bid, reason=reason)
+                self._send_json(HTTPStatus.OK, res)
+                return True
 
         m = _RE_BOOK_CHAPTERS.match(path)
         if m and method == "GET":
@@ -611,7 +713,9 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         m = _RE_BOOK_EXPORT.match(path)
         if m and method in ("GET", "POST"):
             bid = urllib.parse.unquote(m.group("book_id"))
-            platform = (query.get("platform") or ["tomato"])[0].strip().lower()
+            body_data = self._parse_json_body(self._read_body_bytes()) if method == "POST" else {}
+            body_platform = str(body_data.get("platform") or "").strip() if body_data else ""
+            platform = ((query.get("platform") or [body_platform or "tomato"])[0]).strip().lower()
             with tempfile.TemporaryDirectory(prefix="xsb_srv_export_") as tmpdir:
                 res = self.server.scheduler.export_book_bundle(
                     bid, platform=platform, output_dir=tmpdir
@@ -686,6 +790,7 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         m = _RE_BOOK_PROMOTE.match(path)
         if m and method == "POST":
             bid = urllib.parse.unquote(m.group("book_id"))
+            self._parse_json_body(self._read_body_bytes())
             self._send_json(HTTPStatus.OK, self.server.scheduler.approve_promotion(bid))
             return True
 
@@ -705,6 +810,7 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         m = _RE_BOOK_RESUME.match(path)
         if m and method == "POST":
             bid = urllib.parse.unquote(m.group("book_id"))
+            self._parse_json_body(self._read_body_bytes())
             self._send_json(HTTPStatus.OK, self.server.scheduler.resume_book(bid))
             return True
 
@@ -723,10 +829,12 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             )
             return
         rel = path.lstrip("/")
-        if not rel:
-            rel = "index.html"
+        if not rel or rel.endswith("/"):
+            rel = f"{rel}index.html"
         elif rel.startswith("static/"):
             rel = rel[len("static/") :]
+            if not rel or rel.endswith("/"):
+                rel = f"{rel}index.html"
         candidate = (static_root / rel).resolve()
         try:
             candidate.relative_to(static_root)
@@ -736,7 +844,15 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         if not candidate.is_file():
             self._send_error(HTTPStatus.NOT_FOUND, "STATIC_NOT_FOUND", f"Asset '{rel}' not found")
             return
-        self._send_bytes(HTTPStatus.OK, candidate.read_bytes(), _static_mime_type(candidate))
+        self._send_bytes(
+            HTTPStatus.OK,
+            candidate.read_bytes(),
+            _static_mime_type(candidate),
+            extra_headers={
+                "Cache-Control": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     def _handle_health(self) -> None:
         cpa_ok = False
@@ -755,7 +871,9 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             cpa_reachable=cpa_ok,
             active_books=digest.active_books,
         )
-        self._send_json(HTTPStatus.OK, resp.to_dict())
+        payload = resp.to_dict()
+        payload["admin_auth_required"] = bool(self.server.admin_auth.auth_enabled)
+        self._send_json(HTTPStatus.OK, payload)
 
     def _handle_companion_poll(self, body: bytes) -> None:
         req = CompanionPollRequest.from_dict(self._parse_json_body(body))
@@ -792,8 +910,70 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         resp = self.server.db.lease_chapter(req)
         self._send_json(HTTPStatus.OK, resp.to_dict())
 
+    _NON_CHAPTER_TASK_TYPES = frozenset(
+        {
+            CompanionTaskType.CREATE_STAR_CARDS.value,
+            CompanionTaskType.SUBMIT_SIGNING_DRAFT.value,
+            CompanionTaskType.ROTATE_PACKAGING.value,
+        }
+    )
+
+    def _try_record_non_chapter_receipt(
+        self, req: CompanionReceiptRequest
+    ) -> Optional[Dict[str, Any]]:
+        db = self.server.db
+        now_iso = shanghai_now(self.server.now_fn).isoformat()
+        with db._lock:
+            db.get_book(req.book_id)
+            row = db._conn.execute(
+                "SELECT * FROM companion_tasks WHERE task_id = ? AND book_id = ?",
+                (req.task_id, req.book_id),
+            ).fetchone()
+            if row is None:
+                return None
+            task_type = str(row["task_type"])
+            if task_type not in self._NON_CHAPTER_TASK_TYPES:
+                return None
+            current_status = str(row["status"])
+            if current_status == req.status and req.status in (
+                StockpileStatus.DRAFT_SAVED.value,
+                StockpileStatus.PUBLISHED.value,
+                StockpileStatus.PAUSED_AUTH_CAPTCHA.value,
+            ):
+                return {
+                    "book_id": req.book_id,
+                    "task_id": req.task_id,
+                    "task_type": task_type,
+                    "chapter": int(req.chapter),
+                    "status": req.status,
+                    "idempotent_replay": True,
+                }
+            db._conn.execute(
+                "UPDATE companion_tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                (req.status, now_iso, req.task_id),
+            )
+            if req.status == StockpileStatus.PAUSED_AUTH_CAPTCHA.value:
+                db.update_book_status(
+                    req.book_id,
+                    BookRunStatus.PAUSED_AUTH_CAPTCHA,
+                    paused_reason=req.error_message or "PAUSED_AUTH_CAPTCHA",
+                )
+            return {
+                "book_id": req.book_id,
+                "task_id": req.task_id,
+                "task_type": task_type,
+                "chapter": int(req.chapter),
+                "status": req.status,
+                "idempotent_replay": False,
+            }
+
     def _handle_companion_receipt(self, body: bytes) -> None:
         req = CompanionReceiptRequest.from_dict(self._parse_json_body(body))
+        if req.chapter <= 0:
+            non_ch_res = self._try_record_non_chapter_receipt(req)
+            if non_ch_res is not None:
+                self._send_json(HTTPStatus.OK, non_ch_res)
+                return
         res = self.server.db.record_receipt(req)
         self._send_json(HTTPStatus.OK, res)
 
@@ -902,6 +1082,7 @@ def create_server(
     sse_heartbeat_sec: float = 15.0,
     now_fn: Optional[Callable[[], datetime]] = None,
     monotonic_fn: Optional[Callable[[], float]] = None,
+    telegram_bot: Optional[Any] = None,
 ) -> MatrixHTTPServer:
     """Create and validate a configured MatrixHTTPServer (enforces InsecureBindError)."""
     resolved_token = validate_bind_security(host, admin_token)
@@ -937,6 +1118,7 @@ def create_server(
         static_dir=static_dir,
         sse_heartbeat_sec=sse_heartbeat_sec,
         now_fn=now_fn,
+        telegram_bot=telegram_bot,
     )
 
 
