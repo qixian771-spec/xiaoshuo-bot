@@ -10,6 +10,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",
+    "Pillow>=10.0",
+    "pypinyin>=0.51.0",
+]
+
+[project.optional-dependencies]
+companion = [
+    "playwright>=1.48.0",
+    "fonttools[woff]>=4.50.0",
 ]
 
 [project.scripts]
@@ -17,3 +25,11 @@ xiaoshuo-bot = "xiaoshuo_bot.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+xiaoshuo_bot = [
+    "fonts/*.otf",
+    "fonts/*.ttf",
+    "fonts/OFL.txt",
+    "server/static/*",
+]

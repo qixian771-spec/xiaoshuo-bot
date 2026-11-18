@@ -8,3 +8,9 @@ build/
 .bridge/
 *.tmp
 .DS_Store
+*.db
+*.sqlite3*
+auth-files/
+chrome_profiles/
+_archive/
+*.env
