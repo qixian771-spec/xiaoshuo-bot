@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import time
 
-from .base import LLMProvider, LLMRequest, LLMResponse
+from .base import LLMProvider, LLMRequest, LLMResponse, SHANGHAI_TZ
+
+
+def _archive_file(src: Path, archive_root: Path) -> Path:
+    """Move stale bridge files into _archive/<timestamp>/ instead of permanent deletion."""
+    stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%d_%H%M%S_%f")
+    dest_dir = archive_root / stamp
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    if dest.exists():
+        dest = dest_dir / f"{src.stem}_{time.monotonic_ns()}{src.suffix}"
+    shutil.move(str(src), str(dest))
+    return dest
 
 
 class FileBridgeProvider(LLMProvider):
@@ -20,6 +34,7 @@ class FileBridgeProvider(LLMProvider):
         self.root = Path(bridge_dir).resolve()
         self.requests_dir = self.root / "requests"
         self.responses_dir = self.root / "responses"
+        self.archive_dir = self.root / "_archive"
         self.done_sentinel = self.root / "DONE"
         self.poll_interval = poll_interval
         self.timeout_sec = timeout_sec
@@ -28,7 +43,7 @@ class FileBridgeProvider(LLMProvider):
         self.requests_dir.mkdir(parents=True, exist_ok=True)
         self.responses_dir.mkdir(parents=True, exist_ok=True)
         if self.done_sentinel.exists():
-            self.done_sentinel.unlink()
+            _archive_file(self.done_sentinel, self.archive_dir)
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         req_json_path = self.requests_dir / f"{request.request_id}.json"
@@ -36,7 +51,7 @@ class FileBridgeProvider(LLMProvider):
         resp_txt_path = self.responses_dir / f"{request.request_id}.txt"
 
         if not self.reuse_existing and resp_txt_path.exists():
-            resp_txt_path.unlink()
+            _archive_file(resp_txt_path, self.archive_dir)
 
         if not (self.reuse_existing and req_md_path.exists()):
             envelope = {
