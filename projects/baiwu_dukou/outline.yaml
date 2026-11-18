@@ -1,0 +1,140 @@
+scenes:
+  - chapter: 1
+    scene_id: "ch01_clock_shop_dusk"
+    internal_title: "修表铺的红漆印"
+    pov_character: "lin_wan"
+    active_characters: ["lin_wan", "zhou_xu", "chen_jingshan"]
+    active_assets: ["pocket_watch", "tweezer_box", "chipped_cup"]
+    style_profile_ids: ["craft_realism", "tense_dialogue"]
+    location_time: "十一月中旬傍晚，江雾弥漫的旧港区老街‘敬山钟表铺’门外及铺内柜台前"
+    min_chars: 1900
+    max_chars: 3600
+    events:
+      - "江雾封渡前，林晚赴约来到即将拆迁的老街敬山钟表铺，在铺门棕垫边缘注意到半枚带桐油腥气的红铁丹防锈漆橡胶鞋印（新港三号码头船坞专用漆，埋设 FS-01）。"
+      - "港务局档案科员周叙在屋檐下等候，将装有林昼遗物‘铜壳怀表’的牛皮信封交给林晚；周叙摘眼镜擦拭时，林晚瞥见他左袖口内侧蹭有一道陈旧的蓝黑墨渍与发黄纸毛（埋设 FS-02）。"
+      - "进铺后，陈敬山用杯沿带米粒缺口的骨瓷茶杯给林晚倒了七分满热茶。林晚取出铜壳怀表观察：秒针卡在三点十七分，表冠缺半截齿纹，后盖接缝除了干涸江泥还有一道不超三天的新鲜硬物撬痕。"
+      - "林晚询问这只表在移交前经手过谁，周叙支吾推托局里清仓杂乱，匆匆告辞离开；林晚左手拇指摩挲食指刻刀旧疤，把怀表与柜台铜尺拨成严格平行，请陈敬山进里间开盖查验。"
+    stop_condition: "周叙离开钟表铺走入白雾，陈敬山拉下铺门木栓、伸手去取玻璃柜第三格的黄杨木修表镊盒时立即停笔。"
+    post_scene_asset_mutations:
+      - asset_id: "pocket_watch"
+        location: "敬山钟表铺木柜台绒布垫上"
+        holder: "林晚"
+        condition: "已从牛皮信封取出，秒针卡在三点十七分，后盖新撬痕被林晚确认"
+        note: "周叙当面移交林晚，放置于钟表铺柜台待开盖"
+      - asset_id: "chipped_cup"
+        location: "敬山钟表铺外间木柜台林晚手边"
+        holder: "陈敬山（盛茶递予林晚）"
+        condition: "盛有七分满温热粗茶，杯口米粒缺口朝向东侧"
+        note: "陈敬山倒茶待客移至外间柜台"
+
+  - chapter: 2
+    scene_id: "ch02_watch_interlayer"
+    internal_title: "夹层里的油纸"
+    pov_character: "lin_wan"
+    active_characters: ["lin_wan", "chen_jingshan", "lu_min"]
+    active_assets: ["pocket_watch", "tweezer_box", "chipped_cup", "locker_key"]
+    style_profile_ids: ["craft_realism", "tense_dialogue"]
+    location_time: "当晚六点半，敬山钟表铺里间修表台及外间铺面"
+    min_chars: 1900
+    max_chars: 3600
+    events:
+      - "里间台灯下，陈敬山打开黄杨木修表镊盒取出弯头铜镊，林晚注意到这只双层木盒底衬异常厚实。陈敬山拉开修表台最底层抽屉取洗油碟时，林晚瞥见抽屉深处有一枚挂着‘北站寄存 049’椭圆铝牌的扁平铜钥匙（埋设 FS-03），陈敬山不动声色推上抽屉。"
+      - "陈敬山旋开铜壳怀表内盖，发现摆轮轴下塞着一小卷防潮油纸；展开后是半张被撕断的蓝黑碳素墨水手写纸条，残存‘驳-302 实载超吃水线’与页码角标‘19’字样，断口呈细密锯齿状。"
+      - "此时铺门被叩响，宏远航运法务副总监陆敏撑黑伞来访，将黑色皮质公文夹平放桌沿，分毫不碰陈敬山桌上的茶杯，温和提出以‘遗属抚恤补充协议’名义高价回收林昼全部旧港务巡检遗物。"
+      - "林晚左手在风衣袋内摩挲食指旧疤，平静拒绝签署协议，要求调阅三年前十一月港务局原始调度档案；陆敏旋转半圈钢笔帽，礼貌提醒旧港务局地下室明日一早即由宏远工程队进场清运销毁。"
+    stop_condition: "陆敏撑开黑伞转身步入夜雨，林晚将怀表与夹层油纸收进风衣左侧内袋、决定当夜去找周叙进港务局地下档案室时停笔。"
+    post_scene_asset_mutations:
+      - asset_id: "pocket_watch"
+        location: "林晚风衣左侧贴身内袋"
+        holder: "林晚"
+        condition: "后盖已开验并重新扣合，内盖夹层取出的第19页蓝黑字迹油纸残片与怀表一同用棉纸包好收妥"
+        note: "陈敬山开盖取出油纸残片，林晚贴身收存以备比对"
+      - asset_id: "tweezer_box"
+        location: "敬山钟表铺里间修表台右手边"
+        holder: "陈敬山"
+        condition: "盒盖合拢，弯头铜镊已归位"
+        note: "从外间玻璃柜移至里间修表台"
+
+  - chapter: 3
+    scene_id: "ch03_basement_archive"
+    internal_title: "地下室的第十九页"
+    pov_character: "lin_wan"
+    active_characters: ["lin_wan", "zhou_xu"]
+    active_assets: ["pocket_watch", "dispatch_log"]
+    style_profile_ids: ["nocturnal_suspense", "tense_dialogue"]
+    location_time: "当晚十点一刻，暴雨夜的旧港务局西楼地下档案室"
+    min_chars: 1900
+    max_chars: 3600
+    events:
+      - "夜雨滂沱，林晚在旧港务局侧门截住准备下班的周叙，出示怀表里取出的半张‘19’号油纸残片；周叙摘下被雨水打湿的眼镜擦拭良久，最终摸出钥匙带她从侧楼梯进入积水的地下档案室。"
+      - "两人在铁皮柜 B-04 底层找到受潮起毛的《牛皮纸航运调度日志》，翻至十一月十七日夜班记录，发现第19页已被整页撕走，书脊装订线处只留下一溜细密的锯齿状纸茬。"
+      - "走廊尽头配电箱骤然跳闸断电，地下室陷入黑暗，高处透气窗外传来胶鞋踩水声与铁器碰撞声；两人屏息贴靠档案架躲避，潜入者发觉有人后从侧道撤离。"
+      - "【到期物理回收 FS-01】林晚用手电照向高处透气窗下方的水泥台面与积水边缘，发现半枚尚未干透、散发桐油腥气的红铁丹防锈漆橡胶鞋印——与傍晚敬山钟表铺门槛棕垫上的漆印完全一致，正是宏远航运所属新港三号码头船坞专用的防锈漆。林晚将《牛皮纸航运调度日志》装入透明防潮证物袋带离现场。"
+    stop_condition: "林晚与周叙从港务局后巷铁门撤出，林晚按紧怀里的透明防潮袋与左侧口袋的怀表，要求周叙随她回博物馆器物修复室做显微镜纸茬比对时停笔。"
+    post_scene_asset_mutations:
+      - asset_id: "dispatch_log"
+        location: "林晚随身携带的透明防潮密封袋内"
+        holder: "林晚"
+        condition: "已从铁皮柜 B-04 取出封存，书脊处第19页锯齿状撕口完整保留"
+        note: "林晚自地下档案室借出并做防潮封存"
+
+  - chapter: 4
+    scene_id: "ch04_microscope_match"
+    internal_title: "齿纹啮合"
+    pov_character: "lin_wan"
+    active_characters: ["lin_wan", "zhou_xu"]
+    active_assets: ["pocket_watch", "dispatch_log"]
+    style_profile_ids: ["craft_realism", "tense_dialogue"]
+    location_time: "次日凌晨一点，市博物馆西配楼金属与纸质器物修复室"
+    min_chars: 1900
+    max_chars: 3600
+    events:
+      - "修复室无影灯下，林晚将《牛皮纸航运调度日志》平摊在无酸垫板上，把怀表夹层取出的半张油纸残片置于体视显微镜载物台，与日志第19页残留的锯齿状纸茬逐一对齐——竹浆长纤维与装订针眼严丝合缝啮合。"
+      - "【到期物理回收 FS-02】林晚没有抬头，把镊子与标尺摆成两条严格平行的直线，直接点破第19页撕口斜角属于左手按压书脊、右手向怀里斜拉的撕法，并指出周叙夹克左袖口内侧残留的蓝黑碳素墨渍与纸毛，以及怀表后盖那道三天内的新撬痕正是周叙移交前试图确认夹层是否还在所留。"
+      - "面对铁证，周叙摘下眼镜平放在桌角，承认三年前事故当夜宏远航运逼迫值班室销毁超载联单，他为保住林昼留下的实测吃水记录，亲手撕下第19页把上半截塞进林昼巡检怀表内盖，下半截带过磅单号的部分则由林昼自己藏去了别处。"
+      - "林晚再度旋开铜壳怀表发条盒底座，在放大镜下看清内壁用修表划针刻着一行极浅的细字：‘敬山师父 049’。她立刻联想到陈敬山修表台抽屉里那枚铝牌钥匙。"
+    stop_condition: "窗外江雾渐白，林晚将比对吻合的日志与残片锁进修复室恒温铁柜，抓起风衣直奔老街敬山钟表铺时停笔。"
+    post_scene_asset_mutations:
+      - asset_id: "dispatch_log"
+        location: "市博物馆器物修复室双锁恒温证物铁柜内"
+        holder: "林晚（固定物理比对证据后锁存）"
+        condition: "第19页书脊锯齿纸茬已与怀表残片完成显微摄影比对归档"
+        note: "完成齿纹啮合拍照取证后锁入修复室铁柜"
+      - asset_id: "pocket_watch"
+        location: "林晚随身证物袋内"
+        holder: "林晚"
+        condition: "发条盒底座内壁‘敬山师父 049’刻痕已查明"
+        note: "查明表内暗刻线索"
+
+  - chapter: 5
+    scene_id: "ch05_locker_049"
+    internal_title: "零四九号寄存柜"
+    pov_character: "lin_wan"
+    active_characters: ["lin_wan", "chen_jingshan", "lu_min"]
+    active_assets: ["pocket_watch", "tweezer_box", "chipped_cup", "locker_key"]
+    style_profile_ids: ["craft_realism", "tense_dialogue"]
+    location_time: "次日清晨七点（霜降日），拆迁封锁线外的敬山钟表铺至老北站人工行李寄存处、白雾散开的江边渡口"
+    min_chars: 1900
+    max_chars: 3600
+    events:
+      - "清晨老街拉起拆迁警戒线，陈敬山已收拾好行囊站在铺门外，把那只洗净的骨瓷缺口茶杯倒扣在木托盘上，将黄杨木修表镊盒递给赶来的林晚，只说师徒一场物归原主。"
+      - "【到期物理回收 FS-03】林晚推开黄杨木镊盒底层厚衬板的指甲状暗槽，取出那枚挂着‘北站寄存 049’椭圆铝牌的扁平铜钥匙，随即赶往老北站即将停用的人工行李寄存房，打开零四九号铁皮柜。"
+      - "零四九号柜内放着一只密封防潮铁盒，里面完整保存着第19页下半截纸页、三号码头驳船超载过磅原始复写底单，以及一盘录有当夜调度室强令出航通话的微型磁带。"
+      - "八点整渡口栈桥外，陆敏带着法务随员等候拦截，试图做最后一次私下和解报价；林晚从她身旁径直走过，将封存完整的透明证物袋、铜壳怀表与过磅底单当面移交给等候在渡口检查站的海事与刑侦联合督察组签收。江面浓雾被晨风吹散，首班轮渡靠岸。"
+    stop_condition: "林晚在证物移交回执单上签下名字、合上笔帽，抬头看见首班渡船推开灰白江水靠上栈桥跳板时立即停笔（严禁任何抒情升华或告慰亡灵式总结）。"
+    post_scene_asset_mutations:
+      - asset_id: "locker_key"
+        location: "海事与刑侦联合督察组物证封存袋"
+        holder: "联合督察组（林晚签字移交）"
+        condition: "已开启北站 049 号寄存柜取出过磅原始底单与磁带，随同物证一并封存"
+        note: "成功物理回收 049 号寄存柜核心铁证后移交督察组"
+      - asset_id: "pocket_watch"
+        location: "海事与刑侦联合督察组物证封存袋"
+        holder: "联合督察组（林晚签字移交）"
+        condition: "随第19页残片、过磅底单共同编号封存"
+        note: "作为关键物证正式移交签收"
+      - asset_id: "chipped_cup"
+        location: "陈敬山随身捆扎的旧木托盘上"
+        holder: "陈敬山"
+        condition: "清水洗净后倒扣在木托盘内随迁带走"
+        note: "钟表铺腾退，陈敬山洗净收走"

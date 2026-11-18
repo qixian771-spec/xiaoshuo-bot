@@ -1,0 +1,130 @@
+{
+  "completed_chapters": [],
+  "previous_chapter_tail": "",
+  "assets": {
+    "pocket_watch": {
+      "id": "pocket_watch",
+      "name": "铜壳怀表",
+      "location": "周叙携带的牛皮纸公文信封内",
+      "holder": "周叙（待当面移交林晚）",
+      "condition": "秒针卡死在三点十七分，表冠右侧缺失半截齿纹，后盖接缝嵌有干涸江泥与一道新鲜硬物撬痕",
+      "physical_details": "老式上海牌改制港务巡检铜壳怀表，表盖内侧刻有编号‘港务98-07’",
+      "last_updated_chapter": 0,
+      "history": [
+        "初始建档"
+      ]
+    },
+    "tweezer_box": {
+      "id": "tweezer_box",
+      "name": "黄杨木修表镊盒",
+      "location": "敬山钟表铺木柜台玻璃下第三格",
+      "holder": "陈敬山",
+      "condition": "盒面油润发暗，铜锁扣生着一层薄绿锈，虚掩未锁，内衬深蓝绒布",
+      "physical_details": "长约二十厘米的旧式双层木盒，底层衬板比常规修表盒厚出半指，留有极细的指甲状推槽",
+      "last_updated_chapter": 0,
+      "history": [
+        "初始建档"
+      ]
+    },
+    "chipped_cup": {
+      "id": "chipped_cup",
+      "name": "骨瓷缺口茶杯",
+      "location": "敬山钟表铺里间圆桌东侧木托盘上",
+      "holder": "陈敬山",
+      "condition": "白底青边旧骨瓷杯，杯口东侧有一处米粒大小的陈年磕口，内壁积有深浅不一的茶垢",
+      "physical_details": "早年港务局劳模奖品瓷杯，杯底印红字已磨淡过半",
+      "last_updated_chapter": 0,
+      "history": [
+        "初始建档"
+      ]
+    },
+    "dispatch_log": {
+      "id": "dispatch_log",
+      "name": "牛皮纸航运调度日志",
+      "location": "旧港务局地下档案室铁皮柜 B-04 底层",
+      "holder": "旧港务局档案科封存",
+      "condition": "封皮受潮发软起毛，订书铁丝锈蚀成红褐色，内页第19页被整张撕去，书脊装订线处残留一溜细密的锯齿状纸茬",
+      "physical_details": "三年前十一月夜班驳船进出港手写联单合订本，蓝黑碳素墨水书写",
+      "last_updated_chapter": 0,
+      "history": [
+        "初始建档"
+      ]
+    },
+    "locker_key": {
+      "id": "locker_key",
+      "name": "零四九号寄存铝牌钥匙",
+      "location": "敬山钟表铺修表台最下层抽屉暗槽（随后收入黄杨木修表镊盒底层夹格）",
+      "holder": "陈敬山",
+      "condition": "扁平黄铜单齿旧钥匙，穿在一圈细铁丝上，挂着一枚冲压‘北站寄存 049’字样的椭圆铝牌，铝牌边角磨得发亮",
+      "physical_details": "老式火车站人工行李房机械挂锁专用钥匙",
+      "last_updated_chapter": 0,
+      "history": [
+        "初始建档"
+      ]
+    }
+  },
+  "foreshadows": {
+    "FS-01": {
+      "id": "FS-01",
+      "title": "三号码头红铁丹防锈漆鞋印",
+      "plant_chapter": 1,
+      "due_chapter": 3,
+      "plant_instruction": "林晚进出敬山钟表铺门槛时，注意到门垫边缘蹭着半枚暗红色油性漆印，气味带桐油腥气， 是新港三号码头船坞修补驳船吃水线专用的红铁丹防锈漆（暗示有人刚从三号码头过来提前翻找过钟表铺）。\n",
+      "payoff_instruction": "第3章旧港务局地下档案室断电后，林晚在高处透气窗下方的水泥台面与积水边再次发现未干透的红铁丹防锈漆橡胶鞋印， 与第1章钟表铺门口的漆印完全吻合，物理锁定潜入抢夺档案的人来自宏远航运控制的三号码头船坞。\n",
+      "plant_keywords": [
+        "红铁丹",
+        "防锈漆"
+      ],
+      "payoff_keywords": [
+        "红铁丹",
+        "防锈漆",
+        "三号码头"
+      ],
+      "status": "pending",
+      "planted_evidence": "",
+      "payoff_evidence": ""
+    },
+    "FS-02": {
+      "id": "FS-02",
+      "title": "周叙左袖口内侧的蓝黑碳素墨渍与锯齿纸毛",
+      "plant_chapter": 1,
+      "due_chapter": 4,
+      "plant_instruction": "第1章周叙在钟表铺递交怀表信封、抬手擦眼镜时，林晚看见他深灰夹克左袖口内侧沾着一小道陈旧未洗净的蓝黑墨渍， 呢料纤维间还挂着半根发黄的纸毛（当时林晚未点破，仅作器物修复师的视觉留痕）。\n",
+      "payoff_instruction": "第4章在修复室体视显微镜下，林晚将怀表夹层油纸包着的半张残页与调度日志第19页书脊锯齿状纸茬严丝合缝拼合， 并指出残页边缘蹭掉的蓝黑碳素墨水与周叙袖口及无名指旧痕的对应关系，迫使周叙承认三年前事故当夜是他亲手撕下第19页原件塞入林昼怀表以防被统一销毁。\n",
+      "plant_keywords": [
+        "蓝黑",
+        "袖口"
+      ],
+      "payoff_keywords": [
+        "第19页",
+        "十九页",
+        "锯齿",
+        "蓝黑"
+      ],
+      "status": "pending",
+      "planted_evidence": "",
+      "payoff_evidence": ""
+    },
+    "FS-03": {
+      "id": "FS-03",
+      "title": "北站寄存处零四九号铝牌铜钥匙",
+      "plant_chapter": 2,
+      "due_chapter": 5,
+      "plant_instruction": "第2章陈敬山拉开修表台最底层抽屉取煤油洗油碟时，林晚瞥见抽屉深处铁盒旁躺着一枚挂有‘049’字样椭圆铝牌的扁平铜钥匙， 陈敬山迅速推上抽屉未作解释。\n",
+      "payoff_instruction": "第5章拆迁封街清晨，陈敬山将装入黄杨木镊盒底格的‘北站寄存 049’铝牌铜钥匙交给林晚； 林晚前往北站老行李房打开零四九号铁皮柜，取出林昼生前寄存的过磅原始复写底单与微型录音磁带，完成证据链闭环。\n",
+      "plant_keywords": [
+        "049",
+        "铝牌"
+      ],
+      "payoff_keywords": [
+        "049",
+        "寄存",
+        "铝牌",
+        "过磅"
+      ],
+      "status": "pending",
+      "planted_evidence": "",
+      "payoff_evidence": ""
+    }
+  }
+}

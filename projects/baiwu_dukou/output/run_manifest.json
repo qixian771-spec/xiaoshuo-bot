@@ -1,0 +1,466 @@
+{
+  "project": {
+    "project_id": "baiwu_dukou",
+    "title": "白雾渡口",
+    "genre": "现代冷峻现实悬疑",
+    "synopsis": "霜降前后的江城旧港区，市博物馆器物修复师林晚收到亡兄林昼遗落的一只停在三点十七分的铜壳怀表。 随着钟表铺拆迁、港务局地下档案室断电潜入与第十九页调度日志残片的齿纹比对， 三年前三号码头驳船倾覆事故背后被抹平的超载底单，最终在北站零四九号旧寄存柜里重见天日。\n",
+    "default_pov_character": "lin_wan",
+    "max_rewrite_retries": 3
+  },
+  "started_at": "2026-11-18T01:13:28.338656+00:00",
+  "finished_at": "2026-11-18T01:17:38.349569+00:00",
+  "chapter_count": 5,
+  "total_chars": 16352,
+  "total_incidents_detected": 0,
+  "all_gates_passed": true,
+  "chapters": [
+    {
+      "chapter": 1,
+      "scene_id": "ch01_clock_shop_dusk",
+      "internal_title": "修表铺的红漆印",
+      "pov_character": "林晚",
+      "attempts_used": 1,
+      "rewrites_triggered": 0,
+      "char_count": 3372,
+      "paragraph_count": 38,
+      "first_char": "十",
+      "opening_preview": "十一月中旬的傍晚，江雾从旧轮渡口漫上来，不到半个小时便吞没了老街尽头的木电线杆。江心传来一声低沉绵长的汽笛，水汽震得两侧待拆旧楼的铁皮雨",
+      "ending_preview": "绕出柜台走到铺门前，抬手合拢厚重的杉木门扇，咔哒一声拉下木栓，随后转身走回木柜台后，拉开柜门，伸手去取玻璃柜第三格里那只黄杨木修表镊盒。",
+      "model": "agent-bridge-llm (checkpoint)",
+      "latency_sec": 0.0,
+      "chapter_file": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/chapters/chapter_01.txt",
+      "state_transitions": {
+        "chapter": 1,
+        "asset_updates": [
+          {
+            "asset_id": "pocket_watch",
+            "name": "铜壳怀表",
+            "before": {
+              "location": "周叙携带的牛皮纸公文信封内",
+              "holder": "周叙（待当面移交林晚）",
+              "condition": "秒针卡死在三点十七分，表冠右侧缺失半截齿纹，后盖接缝嵌有干涸江泥与一道新鲜硬物撬痕"
+            },
+            "after": {
+              "location": "敬山钟表铺木柜台绒布垫上",
+              "holder": "林晚",
+              "condition": "已从牛皮信封取出，秒针卡在三点十七分，后盖新撬痕被林晚确认"
+            },
+            "note": "周叙当面移交林晚，放置于钟表铺柜台待开盖"
+          },
+          {
+            "asset_id": "chipped_cup",
+            "name": "骨瓷缺口茶杯",
+            "before": {
+              "location": "敬山钟表铺里间圆桌东侧木托盘上",
+              "holder": "陈敬山",
+              "condition": "白底青边旧骨瓷杯，杯口东侧有一处米粒大小的陈年磕口，内壁积有深浅不一的茶垢"
+            },
+            "after": {
+              "location": "敬山钟表铺外间木柜台林晚手边",
+              "holder": "陈敬山（盛茶递予林晚）",
+              "condition": "盛有七分满温热粗茶，杯口米粒缺口朝向东侧"
+            },
+            "note": "陈敬山倒茶待客移至外间柜台"
+          }
+        ],
+        "foreshadow_updates": [
+          {
+            "id": "FS-01",
+            "transition": "pending -> planted",
+            "evidence": "林晚在市博物馆修复室做过旧港区出水铁器的涂层比对，认得这种颜料质地——新港三号码头船坞修补驳船吃水线专用的红铁丹防锈漆。"
+          },
+          {
+            "id": "FS-02",
+            "transition": "pending -> planted",
+            "evidence": "靠近锁边线的位置沾着一小道陈旧未洗净的蓝黑碳素墨渍，起球的呢料纤维间，还挂着半根边缘呈细碎锯齿状的发黄纸毛。"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": 2,
+      "scene_id": "ch02_watch_interlayer",
+      "internal_title": "夹层里的油纸",
+      "pov_character": "林晚",
+      "attempts_used": 1,
+      "rewrites_triggered": 0,
+      "char_count": 3596,
+      "paragraph_count": 47,
+      "first_char": "外",
+      "opening_preview": "外间木柜台的绒布垫上，那只铜壳怀表被陈敬山连垫子一并端进里间。柜台东侧，白底青边的旧骨瓷杯还停在林晚刚才站立的手边，七分满的粗茶余温尚存",
+      "ending_preview": "”林晚拉起风衣领口走到门槛前，望着巷口被雨水泡透的浓黑夜色，决定当夜过老桥去找周叙，赶在明早七点工程队清运之前，进入旧港务局地下档案室。",
+      "model": "agent-bridge-llm (checkpoint)",
+      "latency_sec": 0.0,
+      "chapter_file": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/chapters/chapter_02.txt",
+      "state_transitions": {
+        "chapter": 2,
+        "asset_updates": [
+          {
+            "asset_id": "pocket_watch",
+            "name": "铜壳怀表",
+            "before": {
+              "location": "敬山钟表铺木柜台绒布垫上",
+              "holder": "林晚",
+              "condition": "已从牛皮信封取出，秒针卡在三点十七分，后盖新撬痕被林晚确认"
+            },
+            "after": {
+              "location": "林晚风衣左侧贴身内袋",
+              "holder": "林晚",
+              "condition": "后盖已开验并重新扣合，内盖夹层取出的第19页蓝黑字迹油纸残片与怀表一同用棉纸包好收妥"
+            },
+            "note": "陈敬山开盖取出油纸残片，林晚贴身收存以备比对"
+          },
+          {
+            "asset_id": "tweezer_box",
+            "name": "黄杨木修表镊盒",
+            "before": {
+              "location": "敬山钟表铺木柜台玻璃下第三格",
+              "holder": "陈敬山",
+              "condition": "盒面油润发暗，铜锁扣生着一层薄绿锈，虚掩未锁，内衬深蓝绒布"
+            },
+            "after": {
+              "location": "敬山钟表铺里间修表台右手边",
+              "holder": "陈敬山",
+              "condition": "盒盖合拢，弯头铜镊已归位"
+            },
+            "note": "从外间玻璃柜移至里间修表台"
+          }
+        ],
+        "foreshadow_updates": [
+          {
+            "id": "FS-03",
+            "transition": "pending -> planted",
+            "evidence": "钥匙穿在一圈拧紧的细铁丝上，底下挂着一枚椭圆形铝牌，正面冲压着“北站寄存 049”字样，铝牌四周的边角已被常年摩挲得发亮。"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": 3,
+      "scene_id": "ch03_basement_archive",
+      "internal_title": "地下室的第十九页",
+      "pov_character": "林晚",
+      "attempts_used": 1,
+      "rewrites_triggered": 0,
+      "char_count": 3326,
+      "paragraph_count": 40,
+      "first_char": "暴",
+      "opening_preview": "暴雨在九点过后彻底浇透了旧港区，老桥引桥低洼处积水过踝，林晚徒步涉水绕过封航的轮渡口，赶到旧港务局西楼侧门时已近九点半。西楼整栋红砖建筑",
+      "ending_preview": "怀里的透明防潮证物袋，左手按住左侧贴身内袋里的铜壳怀表与油纸残片，目光平直地看着他，“跟我回市博物馆器物修复室，现在做显微镜纸茬比对。”",
+      "model": "agent-bridge-llm (checkpoint)",
+      "latency_sec": 0.0,
+      "chapter_file": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/chapters/chapter_03.txt",
+      "state_transitions": {
+        "chapter": 3,
+        "asset_updates": [
+          {
+            "asset_id": "dispatch_log",
+            "name": "牛皮纸航运调度日志",
+            "before": {
+              "location": "旧港务局地下档案室铁皮柜 B-04 底层",
+              "holder": "旧港务局档案科封存",
+              "condition": "封皮受潮发软起毛，订书铁丝锈蚀成红褐色，内页第19页被整张撕去，书脊装订线处残留一溜细密的锯齿状纸茬"
+            },
+            "after": {
+              "location": "林晚随身携带的透明防潮密封袋内",
+              "holder": "林晚",
+              "condition": "已从铁皮柜 B-04 取出封存，书脊处第19页锯齿状撕口完整保留"
+            },
+            "note": "林晚自地下档案室借出并做防潮封存"
+          }
+        ],
+        "foreshadow_updates": [
+          {
+            "id": "FS-01",
+            "transition": "planted -> resolved",
+            "evidence": "这半枚红铁丹防锈漆橡胶鞋印，与傍晚她在敬山钟表铺门槛棕垫边缘看见的那半枚漆印完全一致——正是宏远航运所属新港三号码头船坞修补驳船吃水线专用的红铁丹防锈漆。"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": 4,
+      "scene_id": "ch04_microscope_match",
+      "internal_title": "齿纹啮合",
+      "pov_character": "林晚",
+      "attempts_used": 1,
+      "rewrites_triggered": 0,
+      "char_count": 3135,
+      "paragraph_count": 30,
+      "first_char": "次",
+      "opening_preview": "次日凌晨一点，市博物馆西配楼一片寂静，金属与纸质器物修复室的恒温除湿机发出低沉平稳的嗡鸣，墙上温湿度计的液晶屏停在十九摄氏度、相对湿度百",
+      "ending_preview": "纸残片一并封入盒内，转身拉开修复室墙角的恒温铁柜，把档案盒锁进最内层隔板，拔出钥匙揣进内袋，一把抓起门后衣架上的风衣直奔老街敬山钟表铺。",
+      "model": "agent-bridge-llm",
+      "latency_sec": 60.225,
+      "chapter_file": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/chapters/chapter_04.txt",
+      "state_transitions": {
+        "chapter": 4,
+        "asset_updates": [
+          {
+            "asset_id": "dispatch_log",
+            "name": "牛皮纸航运调度日志",
+            "before": {
+              "location": "林晚随身携带的透明防潮密封袋内",
+              "holder": "林晚",
+              "condition": "已从铁皮柜 B-04 取出封存，书脊处第19页锯齿状撕口完整保留"
+            },
+            "after": {
+              "location": "市博物馆器物修复室双锁恒温证物铁柜内",
+              "holder": "林晚（固定物理比对证据后锁存）",
+              "condition": "第19页书脊锯齿纸茬已与怀表残片完成显微摄影比对归档"
+            },
+            "note": "完成齿纹啮合拍照取证后锁入修复室铁柜"
+          },
+          {
+            "asset_id": "pocket_watch",
+            "name": "铜壳怀表",
+            "before": {
+              "location": "林晚风衣左侧贴身内袋",
+              "holder": "林晚",
+              "condition": "后盖已开验并重新扣合，内盖夹层取出的第19页蓝黑字迹油纸残片与怀表一同用棉纸包好收妥"
+            },
+            "after": {
+              "location": "林晚随身证物袋内",
+              "holder": "林晚",
+              "condition": "发条盒底座内壁‘敬山师父 049’刻痕已查明"
+            },
+            "note": "查明表内暗刻线索"
+          }
+        ],
+        "foreshadow_updates": [
+          {
+            "id": "FS-02",
+            "transition": "planted -> resolved",
+            "evidence": "“四十倍体视镜下，竹浆长纤维与装订针眼完全啮合，这张‘驳-302 实载超吃水线’的残片，确系从这本调度日志第19页原位撕下。"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": 5,
+      "scene_id": "ch05_locker_049",
+      "internal_title": "零四九号寄存柜",
+      "pov_character": "林晚",
+      "attempts_used": 1,
+      "rewrites_triggered": 0,
+      "char_count": 2923,
+      "paragraph_count": 37,
+      "first_char": "清",
+      "opening_preview": "清晨六点五十，旧港区老街两头拉起了黄黑相间的拆迁警戒线。市政清障车的柴油机在巷口怠速低吼，两侧灰瓦屋檐上结着一层薄薄的早霜，空气里混着湿",
+      "ending_preview": "移交回执单上签下名字，随后合上笔帽，抬起头望向窗外，晨风已将江面残余的白雾彻底吹散，首班渡船宽阔的船头正推开灰白江水，稳稳靠上栈桥跳板。",
+      "model": "agent-bridge-llm",
+      "latency_sec": 189.772,
+      "chapter_file": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/chapters/chapter_05.txt",
+      "state_transitions": {
+        "chapter": 5,
+        "asset_updates": [
+          {
+            "asset_id": "locker_key",
+            "name": "零四九号寄存铝牌钥匙",
+            "before": {
+              "location": "敬山钟表铺修表台最下层抽屉暗槽（随后收入黄杨木修表镊盒底层夹格）",
+              "holder": "陈敬山",
+              "condition": "扁平黄铜单齿旧钥匙，穿在一圈细铁丝上，挂着一枚冲压‘北站寄存 049’字样的椭圆铝牌，铝牌边角磨得发亮"
+            },
+            "after": {
+              "location": "海事与刑侦联合督察组物证封存袋",
+              "holder": "联合督察组（林晚签字移交）",
+              "condition": "已开启北站 049 号寄存柜取出过磅原始底单与磁带，随同物证一并封存"
+            },
+            "note": "成功物理回收 049 号寄存柜核心铁证后移交督察组"
+          },
+          {
+            "asset_id": "pocket_watch",
+            "name": "铜壳怀表",
+            "before": {
+              "location": "林晚随身证物袋内",
+              "holder": "林晚",
+              "condition": "发条盒底座内壁‘敬山师父 049’刻痕已查明"
+            },
+            "after": {
+              "location": "海事与刑侦联合督察组物证封存袋",
+              "holder": "联合督察组（林晚签字移交）",
+              "condition": "随第19页残片、过磅底单共同编号封存"
+            },
+            "note": "作为关键物证正式移交签收"
+          },
+          {
+            "asset_id": "chipped_cup",
+            "name": "骨瓷缺口茶杯",
+            "before": {
+              "location": "敬山钟表铺外间木柜台林晚手边",
+              "holder": "陈敬山（盛茶递予林晚）",
+              "condition": "盛有七分满温热粗茶，杯口米粒缺口朝向东侧"
+            },
+            "after": {
+              "location": "陈敬山随身捆扎的旧木托盘上",
+              "holder": "陈敬山",
+              "condition": "清水洗净后倒扣在木托盘内随迁带走"
+            },
+            "note": "钟表铺腾退，陈敬山洗净收走"
+          }
+        ],
+        "foreshadow_updates": [
+          {
+            "id": "FS-03",
+            "transition": "planted -> resolved",
+            "evidence": "铁丝另一头挂着椭圆形铝牌，正面冲压着“北站寄存 049”字样，磨得发亮的铝牌底下还压着半张盖有蓝色日期戳的旧式人工寄存副联。"
+          }
+        ]
+      }
+    }
+  ],
+  "incidents": [],
+  "final_world_state": {
+    "completed_chapters": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "previous_chapter_tail": "窗外传来一声洪亮悠长的轮渡汽笛，震得检查站窗玻璃轻轻一颤。\n林晚拔下笔帽，在证物移交回执单上签下名字，随后合上笔帽，抬起头望向窗外，晨风已将江面残余的白雾彻底吹散，首班渡船宽阔的船头正推开灰白江水，稳稳靠上栈桥跳板。",
+    "assets": {
+      "pocket_watch": {
+        "id": "pocket_watch",
+        "name": "铜壳怀表",
+        "location": "海事与刑侦联合督察组物证封存袋",
+        "holder": "联合督察组（林晚签字移交）",
+        "condition": "随第19页残片、过磅底单共同编号封存",
+        "physical_details": "老式上海牌改制港务巡检铜壳怀表，表盖内侧刻有编号‘港务98-07’",
+        "last_updated_chapter": 5,
+        "history": [
+          "初始建档",
+          "[第1章] 周叙当面移交林晚，放置于钟表铺柜台待开盖",
+          "[第2章] 陈敬山开盖取出油纸残片，林晚贴身收存以备比对",
+          "[第4章] 查明表内暗刻线索",
+          "[第5章] 作为关键物证正式移交签收"
+        ]
+      },
+      "tweezer_box": {
+        "id": "tweezer_box",
+        "name": "黄杨木修表镊盒",
+        "location": "敬山钟表铺里间修表台右手边",
+        "holder": "陈敬山",
+        "condition": "盒盖合拢，弯头铜镊已归位",
+        "physical_details": "长约二十厘米的旧式双层木盒，底层衬板比常规修表盒厚出半指，留有极细的指甲状推槽",
+        "last_updated_chapter": 2,
+        "history": [
+          "初始建档",
+          "[第2章] 从外间玻璃柜移至里间修表台"
+        ]
+      },
+      "chipped_cup": {
+        "id": "chipped_cup",
+        "name": "骨瓷缺口茶杯",
+        "location": "陈敬山随身捆扎的旧木托盘上",
+        "holder": "陈敬山",
+        "condition": "清水洗净后倒扣在木托盘内随迁带走",
+        "physical_details": "早年港务局劳模奖品瓷杯，杯底印红字已磨淡过半",
+        "last_updated_chapter": 5,
+        "history": [
+          "初始建档",
+          "[第1章] 陈敬山倒茶待客移至外间柜台",
+          "[第5章] 钟表铺腾退，陈敬山洗净收走"
+        ]
+      },
+      "dispatch_log": {
+        "id": "dispatch_log",
+        "name": "牛皮纸航运调度日志",
+        "location": "市博物馆器物修复室双锁恒温证物铁柜内",
+        "holder": "林晚（固定物理比对证据后锁存）",
+        "condition": "第19页书脊锯齿纸茬已与怀表残片完成显微摄影比对归档",
+        "physical_details": "三年前十一月夜班驳船进出港手写联单合订本，蓝黑碳素墨水书写",
+        "last_updated_chapter": 4,
+        "history": [
+          "初始建档",
+          "[第3章] 林晚自地下档案室借出并做防潮封存",
+          "[第4章] 完成齿纹啮合拍照取证后锁入修复室铁柜"
+        ]
+      },
+      "locker_key": {
+        "id": "locker_key",
+        "name": "零四九号寄存铝牌钥匙",
+        "location": "海事与刑侦联合督察组物证封存袋",
+        "holder": "联合督察组（林晚签字移交）",
+        "condition": "已开启北站 049 号寄存柜取出过磅原始底单与磁带，随同物证一并封存",
+        "physical_details": "老式火车站人工行李房机械挂锁专用钥匙",
+        "last_updated_chapter": 5,
+        "history": [
+          "初始建档",
+          "[第5章] 成功物理回收 049 号寄存柜核心铁证后移交督察组"
+        ]
+      }
+    },
+    "foreshadows": {
+      "FS-01": {
+        "id": "FS-01",
+        "title": "三号码头红铁丹防锈漆鞋印",
+        "plant_chapter": 1,
+        "due_chapter": 3,
+        "plant_instruction": "林晚进出敬山钟表铺门槛时，注意到门垫边缘蹭着半枚暗红色油性漆印，气味带桐油腥气， 是新港三号码头船坞修补驳船吃水线专用的红铁丹防锈漆（暗示有人刚从三号码头过来提前翻找过钟表铺）。\n",
+        "payoff_instruction": "第3章旧港务局地下档案室断电后，林晚在高处透气窗下方的水泥台面与积水边再次发现未干透的红铁丹防锈漆橡胶鞋印， 与第1章钟表铺门口的漆印完全吻合，物理锁定潜入抢夺档案的人来自宏远航运控制的三号码头船坞。\n",
+        "plant_keywords": [
+          "红铁丹",
+          "防锈漆"
+        ],
+        "payoff_keywords": [
+          "红铁丹",
+          "防锈漆",
+          "三号码头"
+        ],
+        "status": "resolved",
+        "planted_evidence": "林晚在市博物馆修复室做过旧港区出水铁器的涂层比对，认得这种颜料质地——新港三号码头船坞修补驳船吃水线专用的红铁丹防锈漆。",
+        "payoff_evidence": "这半枚红铁丹防锈漆橡胶鞋印，与傍晚她在敬山钟表铺门槛棕垫边缘看见的那半枚漆印完全一致——正是宏远航运所属新港三号码头船坞修补驳船吃水线专用的红铁丹防锈漆。"
+      },
+      "FS-02": {
+        "id": "FS-02",
+        "title": "周叙左袖口内侧的蓝黑碳素墨渍与锯齿纸毛",
+        "plant_chapter": 1,
+        "due_chapter": 4,
+        "plant_instruction": "第1章周叙在钟表铺递交怀表信封、抬手擦眼镜时，林晚看见他深灰夹克左袖口内侧沾着一小道陈旧未洗净的蓝黑墨渍， 呢料纤维间还挂着半根发黄的纸毛（当时林晚未点破，仅作器物修复师的视觉留痕）。\n",
+        "payoff_instruction": "第4章在修复室体视显微镜下，林晚将怀表夹层油纸包着的半张残页与调度日志第19页书脊锯齿状纸茬严丝合缝拼合， 并指出残页边缘蹭掉的蓝黑碳素墨水与周叙袖口及无名指旧痕的对应关系，迫使周叙承认三年前事故当夜是他亲手撕下第19页原件塞入林昼怀表以防被统一销毁。\n",
+        "plant_keywords": [
+          "蓝黑",
+          "袖口"
+        ],
+        "payoff_keywords": [
+          "第19页",
+          "十九页",
+          "锯齿",
+          "蓝黑"
+        ],
+        "status": "resolved",
+        "planted_evidence": "靠近锁边线的位置沾着一小道陈旧未洗净的蓝黑碳素墨渍，起球的呢料纤维间，还挂着半根边缘呈细碎锯齿状的发黄纸毛。",
+        "payoff_evidence": "“四十倍体视镜下，竹浆长纤维与装订针眼完全啮合，这张‘驳-302 实载超吃水线’的残片，确系从这本调度日志第19页原位撕下。"
+      },
+      "FS-03": {
+        "id": "FS-03",
+        "title": "北站寄存处零四九号铝牌铜钥匙",
+        "plant_chapter": 2,
+        "due_chapter": 5,
+        "plant_instruction": "第2章陈敬山拉开修表台最底层抽屉取煤油洗油碟时，林晚瞥见抽屉深处铁盒旁躺着一枚挂有‘049’字样椭圆铝牌的扁平铜钥匙， 陈敬山迅速推上抽屉未作解释。\n",
+        "payoff_instruction": "第5章拆迁封街清晨，陈敬山将装入黄杨木镊盒底格的‘北站寄存 049’铝牌铜钥匙交给林晚； 林晚前往北站老行李房打开零四九号铁皮柜，取出林昼生前寄存的过磅原始复写底单与微型录音磁带，完成证据链闭环。\n",
+        "plant_keywords": [
+          "049",
+          "铝牌"
+        ],
+        "payoff_keywords": [
+          "049",
+          "寄存",
+          "铝牌",
+          "过磅"
+        ],
+        "status": "resolved",
+        "planted_evidence": "钥匙穿在一圈拧紧的细铁丝上，底下挂着一枚椭圆形铝牌，正面冲压着“北站寄存 049”字样，铝牌四周的边角已被常年摩挲得发亮。",
+        "payoff_evidence": "铁丝另一头挂着椭圆形铝牌，正面冲压着“北站寄存 049”字样，磨得发亮的铝牌底下还压着半张盖有蓝色日期戳的旧式人工寄存副联。"
+      }
+    }
+  },
+  "artifacts": {
+    "manuscript_pure": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/manuscript_pure.txt",
+    "manuscript_reader": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/manuscript_reader.md",
+    "smoke_test_report": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/SMOKE_TEST_REPORT.md",
+    "dashboard_html": "/home/antigravity/qixian771-spec/xiaoshuo-bot/projects/baiwu_dukou/output/smoke_test_dashboard.html"
+  }
+}

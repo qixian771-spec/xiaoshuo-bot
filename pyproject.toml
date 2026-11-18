@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiaoshuo-bot"
+version = "0.1.0"
+description = "Asset-driven Chinese long-form novel generation engine with deterministic AI-TIC-CHECK & automatic rewrite pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+xiaoshuo-bot = "xiaoshuo_bot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

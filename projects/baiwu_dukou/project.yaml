@@ -1,0 +1,9 @@
+project_id: "baiwu_dukou"
+title: "白雾渡口"
+genre: "现代冷峻现实悬疑"
+synopsis: >
+  霜降前后的江城旧港区，市博物馆器物修复师林晚收到亡兄林昼遗落的一只停在三点十七分的铜壳怀表。
+  随着钟表铺拆迁、港务局地下档案室断电潜入与第十九页调度日志残片的齿纹比对，
+  三年前三号码头驳船倾覆事故背后被抹平的超载底单，最终在北站零四九号旧寄存柜里重见天日。
+default_pov_character: "lin_wan"
+max_rewrite_retries: 3
