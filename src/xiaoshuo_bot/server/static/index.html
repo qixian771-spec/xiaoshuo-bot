@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>番茄爆款矩阵控制台 · xiaoshuo-bot</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Left / Top Navigation -->
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">墨</div>
+        <div class="brand-meta">
+          <div class="brand-title">番茄爆款矩阵</div>
+          <div class="brand-sub">xiaoshuo-bot v2 控制台</div>
+        </div>
+      </div>
+
+      <nav class="nav-list" role="tablist" aria-label="功能视图切换">
+        <button type="button" class="nav-btn is-active" data-view="overview" role="tab" aria-selected="true">
+          <span class="nav-icon" aria-hidden="true">◈</span>
+          <span class="nav-label">矩阵总览与安全垫</span>
+          <span class="nav-badge" id="nav-badge-alert" hidden>0</span>
+        </button>
+        <button type="button" class="nav-btn" data-view="create" role="tab" aria-selected="false">
+          <span class="nav-icon" aria-hidden="true">✦</span>
+          <span class="nav-label">三源爆款立项舱</span>
+        </button>
+        <button type="button" class="nav-btn" data-view="cpa" role="tab" aria-selected="false">
+          <span class="nav-icon" aria-hidden="true">⬡</span>
+          <span class="nav-label">CPA 账号池与路由</span>
+        </button>
+        <button type="button" class="nav-btn" data-view="live" role="tab" aria-selected="false">
+          <span class="nav-icon" aria-hidden="true">◉</span>
+          <span class="nav-label">SSE 码字门禁直播</span>
+          <span class="nav-dot" id="nav-sse-dot" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="nav-btn" data-view="reader" role="tab" aria-selected="false">
+          <span class="nav-icon" aria-hidden="true">▤</span>
+          <span class="nav-label">阅读锁章与导出中心</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-card">
+          <div class="status-row">
+            <span class="status-key">云端中枢</span>
+            <span class="status-val" id="health-status-text">检测中…</span>
+          </div>
+          <div class="status-row">
+            <span class="status-key">CPA 网关</span>
+            <span class="status-val" id="health-cpa-text">未知</span>
+          </div>
+          <div class="status-row">
+            <span class="status-key">北京时间</span>
+            <span class="status-val mono" id="health-shanghai-time">--:--:--</span>
+          </div>
+        </div>
+        <button type="button" class="btn btn-outline btn-block" id="btn-open-auth-modal">
+          <span id="auth-btn-label">🔐 设置管理令牌</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div class="main-area">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title" id="page-title">矩阵总览与安全垫监控台</h1>
+          <span class="page-subtitle" id="page-subtitle">10 章安全垫水位调度 · &lt;6 章置顶抢产 · 马甲隔离监控</span>
+        </div>
+        <div class="topbar-right">
+          <div class="pill" id="sse-pill">
+            <span class="pill-dot" id="sse-pill-dot"></span>
+            <span id="sse-pill-text">直播未连接</span>
+          </div>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-toggle-sse">连接直播</button>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-refresh-all">刷新全盘</button>
+        </div>
+      </header>
+
+      <!-- Global Auth Required Banner -->
+      <div class="alert-banner alert-warn" id="auth-warning-banner" hidden>
+        <div class="alert-banner-body">
+          <strong>需要管理员认证：</strong>
+          <span id="auth-warning-msg">当前服务端要求 Bearer Token（XIAOSHUO_ADMIN_TOKEN），请点击右侧按钮输入密钥。</span>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary" id="btn-banner-login">输入管理令牌</button>
+      </div>
+
+      <!-- Global Companion Captcha / Auth Pause Banner -->
+      <section class="alert-banner alert-danger" id="captcha-global-banner" hidden aria-live="polite">
+        <div class="captcha-banner-grid">
+          <div class="captcha-banner-info">
+            <div class="captcha-banner-title">🚨 本地发布伴侣触发验证码 / 登录过期急停挂起</div>
+            <div class="captcha-banner-desc" id="captcha-banner-details"></div>
+            <div class="captcha-banner-actions" id="captcha-banner-actions"></div>
+          </div>
+          <div class="captcha-banner-thumb" id="captcha-banner-thumb" hidden></div>
+        </div>
+      </section>
+
+      <!-- Global Toast Container -->
+      <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+      <!-- View 1: 矩阵总览与安全垫监控台 -->
+      <main class="view-container">
+        <section class="view-panel is-active" id="view-overview" data-view-panel="overview">
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-label">在跑连载书目</div>
+              <div class="kpi-value" id="kpi-active-books">0 / 0</div>
+              <div class="kpi-hint">活跃调度 / 矩阵总书数</div>
+            </div>
+            <div class="kpi-card kpi-danger" id="kpi-card-low-cushion">
+              <div class="kpi-label">安全垫告急 (&lt;6 章)</div>
+              <div class="kpi-value" id="kpi-low-cushion">0</div>
+              <div class="kpi-hint">低于 6 章自动置顶抢产</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">今日 CPA 请求 / Token</div>
+              <div class="kpi-value mono" id="kpi-today-tokens">0</div>
+              <div class="kpi-hint" id="kpi-today-cost">今日折算估算 $0.0000</div>
+            </div>
+            <div class="kpi-card">
+              <div class="kpi-label">验证码挂起 / 隔离</div>
+              <div class="kpi-value" id="kpi-paused-isolated">0 / 0</div>
+              <div class="kpi-hint">伴侣挂起账号 / 门禁隔离书目</div>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <div class="filter-tabs" role="group" aria-label="书籍状态筛选">
+              <button type="button" class="filter-chip is-active" data-filter="all">全部书籍</button>
+              <button type="button" class="filter-chip" data-filter="ACTIVE">连载生产中</button>
+              <button type="button" class="filter-chip" data-filter="LOW_CUSHION">安全垫 &lt;6 章</button>
+              <button type="button" class="filter-chip" data-filter="PAUSED_AUTH_CAPTCHA">验证码挂起</button>
+              <button type="button" class="filter-chip" data-filter="ISOLATED_GATE_FAILURE">门禁隔离</button>
+              <button type="button" class="filter-chip" data-filter="CUT_LOSS">已止损切书</button>
+            </div>
+            <div class="toolbar-right">
+              <button type="button" class="btn btn-sm btn-ghost" id="btn-overview-refresh">刷新列表</button>
+              <button type="button" class="btn btn-sm btn-primary" id="btn-goto-create">+ 三源自动立项</button>
+            </div>
+          </div>
+
+          <div class="books-grid" id="books-grid">
+            <div class="empty-state">正在加载矩阵书目…</div>
+          </div>
+        </section>
+
+        <!-- View 2: 三源爆款立项舱 -->
+        <section class="view-panel" id="view-create" data-view-panel="create" hidden>
+          <div class="split-two-col">
+            <div class="panel-card">
+              <div class="panel-header">
+                <h2>三源爆款自动立项配置</h2>
+                <span class="tag tag-gold">热榜风向 + 配方库 + 拆书换皮</span>
+              </div>
+              <form id="auto-create-form" class="form-stack">
+                <div class="form-row-2">
+                  <label class="field">
+                    <span class="field-label">项目唯一标识 (project_id) *</span>
+                    <div class="input-group">
+                      <input type="text" id="create-project-id" name="project_id" required placeholder="例如 tomato_urban_001" pattern="[A-Za-z0-9_\-]+">
+                      <button type="button" class="btn btn-sm btn-ghost" id="btn-gen-project-id">随机</button>
+                    </div>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">笔名 (pen_name)</span>
+                    <input type="text" id="create-pen-name" name="pen_name" placeholder="默认 砚山行" value="砚山行">
+                  </label>
+                </div>
+
+                <div class="field">
+                  <div class="field-head">
+                    <span class="field-label">1. 选择爆款赛道 (男频 5 / 女频 5 / 通用 1) *</span>
+                    <div class="mini-tabs" id="genre-channel-tabs">
+                      <button type="button" class="mini-tab is-active" data-channel="all">全部</button>
+                      <button type="button" class="mini-tab" data-channel="male">男频</button>
+                      <button type="button" class="mini-tab" data-channel="female">女频</button>
+                      <button type="button" class="mini-tab" data-channel="general">通用</button>
+                    </div>
+                  </div>
+                  <input type="hidden" id="create-genre-id" name="genre_id" required>
+                  <div class="genre-selector-grid" id="genre-selector-grid">
+                    <div class="empty-state">加载 10+1 爆款类目中…</div>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <span class="field-label">2. 绑定番茄马甲等级与签约轨道 *</span>
+                  <div class="radio-cards">
+                    <label class="radio-card">
+                      <input type="radio" name="author_level" value="lv0_1" checked>
+                      <div class="radio-card-body">
+                        <div class="radio-card-title">Lv.0 / Lv.1 新号养号轨 (complete_150k)</div>
+                        <div class="radio-card-desc">15～20 万字紧凑完本签（70~95 章），单日发稿安全红线 ≤ 8,500 字</div>
+                      </div>
+                    </label>
+                    <label class="radio-card">
+                      <input type="radio" name="author_level" value="lv2_plus">
+                      <div class="radio-card-body">
+                        <div class="radio-card-title">Lv.2+ 老号冲榜轨 (serial_20k)</div>
+                        <div class="radio-card-desc">2 万字责编直签表 + 10 万字首秀赛马 + 60 章换地图，日限 ≤ 17,000 字</div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-row-2">
+                  <label class="field">
+                    <span class="field-label">绑定伴侣马甲 ID (account_id)</span>
+                    <input type="text" id="create-account-id" name="account_id" placeholder="例如 acct_tomato_01">
+                  </label>
+                  <label class="field">
+                    <span class="field-label">目标章节数 (可选，Lv0/1 建议 70~95)</span>
+                    <input type="number" id="create-target-chapters" name="target_chapters" min="10" max="500" placeholder="留空按轨道自动规划">
+                  </label>
+                </div>
+
+                <label class="field">
+                  <span class="field-label">热榜风向关键词 (逗号分隔，可选)</span>
+                  <input type="text" id="create-hot-keywords" name="hot_keywords" placeholder="例如：十倍返现, 职场打脸, 规则怪谈">
+                </label>
+
+                <div class="field">
+                  <div class="field-head">
+                    <span class="field-label">3. 对标爆款样章拆书换皮 (可选，多章用 === 分隔)</span>
+                    <label class="btn btn-xs btn-ghost file-btn">
+                      导入 .txt 样章
+                      <input type="file" id="create-benchmark-file" accept=".txt,text/plain" multiple hidden>
+                    </label>
+                  </div>
+                  <textarea id="create-benchmark-text" rows="5" placeholder="粘贴对标爆款书前 1~3 章正文（仅提取五维爽点骨架与情绪波形，硬卡连续 ≤7 字防洗稿）。留空则直接按配方库与母题权重开书。"></textarea>
+                </div>
+
+                <div class="form-actions">
+                  <button type="submit" class="btn btn-primary btn-lg" id="btn-submit-create">
+                    🚀 一键三源自动立项
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div class="stack-col">
+              <div class="panel-card" id="genre-recipe-preview">
+                <div class="panel-header">
+                  <h3>题材配方与硬常识防穿帮卡</h3>
+                  <span class="tag" id="preview-genre-tag">未选择类目</span>
+                </div>
+                <div id="genre-detail-body" class="recipe-detail">
+                  <p class="muted">在左侧点击任意赛道卡片，即可查看黄金三章节拍、推荐人称/系统面板策略及硬常识参照表。</p>
+                </div>
+              </div>
+
+              <div class="panel-card" id="created-book-preview">
+                <div class="panel-header">
+                  <h3>600×800 封面与 5 组备选书名预览</h3>
+                  <select id="preview-book-select" class="select-sm" aria-label="选择已立项书籍预览">
+                    <option value="">选择已有书籍查看封面…</option>
+                  </select>
+                </div>
+                <div id="created-preview-body" class="created-preview-body">
+                  <div class="cover-box" id="cover-preview-box">
+                    <div class="cover-placeholder">暂无封面预览</div>
+                  </div>
+                  <div class="alt-titles-box" id="alt-titles-box">
+                    <div class="muted">立项完成后或选择上方书籍，将在此加载 600×800 合规封面与备选书名池。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View 3: CPA 订阅账号池管理中心 -->
+        <section class="view-panel" id="view-cpa" data-view-panel="cpa" hidden>
+          <div class="split-two-col">
+            <div class="stack-col">
+              <div class="panel-card">
+                <div class="panel-header">
+                  <h3>上传本地 CPA 订阅凭据 (.json)</h3>
+                  <span class="tag tag-cyan">claude-*.json / codex-*.json / gemini-*.json</span>
+                </div>
+                <div class="dropzone" id="cpa-dropzone" tabindex="0" role="button" aria-label="拖拽或点击上传 CPA JSON 凭据文件">
+                  <input type="file" id="cpa-file-input" accept=".json,application/json" multiple hidden>
+                  <div class="dropzone-icon" aria-hidden="true">⬆</div>
+                  <div class="dropzone-title">拖拽凭据 .json 文件到此处，或点击选择文件</div>
+                  <div class="dropzone-sub">仅限合法 UTF-8 JSON；上传后由 CPA /v0/management 热加载</div>
+                </div>
+                <div class="oauth-box">
+                  <div class="oauth-title">远程 OAuth 订阅授权链接获取</div>
+                  <div class="oauth-row">
+                    <select id="cpa-oauth-provider" class="select-sm" aria-label="选择 OAuth 提供方">
+                      <option value="claude">Claude (Anthropic)</option>
+                      <option value="codex">Codex (OpenAI)</option>
+                      <option value="gemini">Gemini CLI (Google)</option>
+                      <option value="antigravity">Antigravity</option>
+                      <option value="qwen">Qwen</option>
+                    </select>
+                    <input type="text" id="cpa-oauth-project" placeholder="可选 Gemini project_id">
+                    <button type="button" class="btn btn-sm btn-outline" id="btn-fetch-oauth">获取授权 URL</button>
+                  </div>
+                  <div id="cpa-oauth-result" class="oauth-result" hidden></div>
+                </div>
+              </div>
+
+              <div class="panel-card">
+                <div class="panel-header">
+                  <h3>已注册订阅凭据与 429 健康状态</h3>
+                  <button type="button" class="btn btn-xs btn-ghost" id="btn-refresh-cpa">刷新状态</button>
+                </div>
+                <div id="cpa-usage-summary" class="cpa-usage-strip">正在读取 CPA 额度统计…</div>
+                <div id="cpa-auth-list" class="auth-files-list">
+                  <div class="empty-state">加载凭据列表中…</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel-card">
+              <div class="panel-header">
+                <h3>五角色动态模型路由绑定</h3>
+                <button type="button" class="btn btn-xs btn-ghost" id="btn-refresh-models">拉取 /v1/models</button>
+              </div>
+              <p class="muted mb-sm">严禁跨档悄悄降级：同一角色池全部 429 时立即告警锁断点。图像角色默认走 Gemini 生图通道生成纯无字插画底图。</p>
+              <form id="cpa-bindings-form" class="bindings-list">
+                <div class="empty-state">正在加载模型绑定配置…</div>
+              </form>
+              <div class="form-actions">
+                <button type="button" class="btn btn-primary" id="btn-save-bindings">💾 保存角色模型绑定</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View 4: SSE 实时码字与门禁审计直播间 -->
+        <section class="view-panel" id="view-live" data-view-panel="live" hidden>
+          <div class="panel-card live-card">
+            <div class="toolbar">
+              <div class="toolbar-left">
+                <select id="live-book-filter" class="select-sm" aria-label="按书籍过滤直播事件">
+                  <option value="">全部书籍事件</option>
+                </select>
+                <label class="checkbox-inline">
+                  <input type="checkbox" id="live-show-heartbeat">
+                  <span>显示心跳 (heartbeat)</span>
+                </label>
+                <label class="checkbox-inline">
+                  <input type="checkbox" id="live-autoscroll" checked>
+                  <span>自动滚屏</span>
+                </label>
+              </div>
+              <div class="toolbar-right">
+                <span class="muted mono" id="live-event-counter">0 条事件</span>
+                <button type="button" class="btn btn-sm btn-ghost" id="btn-live-clear">清空屏幕</button>
+              </div>
+            </div>
+            <div class="live-stream" id="live-stream-feed" aria-live="polite">
+              <div class="empty-state">点击右上角「连接直播」或等待后台推送 /api/events/stream 事件…</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View 5: 分章阅读、锁章与一鱼多吃下载中心 -->
+        <section class="view-panel" id="view-reader" data-view-panel="reader" hidden>
+          <div class="panel-card mb-md">
+            <div class="reader-topbar">
+              <div class="reader-book-picker">
+                <label class="field-inline">
+                  <span class="field-label">当前阅读书目：</span>
+                  <select id="reader-book-select" class="select-md" aria-label="选择要阅读的书籍">
+                    <option value="">请选择书籍…</option>
+                  </select>
+                </label>
+                <button type="button" class="btn btn-sm btn-ghost" id="btn-reader-refresh">刷新章节</button>
+              </div>
+              <div class="export-bar" aria-label="多平台导出下载">
+                <span class="export-label">一鱼多吃下载：</span>
+                <button type="button" class="btn btn-sm btn-primary export-btn" data-platform="tomato">🍅 番茄标准+推文包</button>
+                <button type="button" class="btn btn-sm btn-outline export-btn" data-platform="qimao">📘 七猫连载包</button>
+                <button type="button" class="btn btn-sm btn-outline export-btn" data-platform="zhihu">🎭 知乎盐选包</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="reader-split">
+            <div class="panel-card chapter-sidebar">
+              <div class="panel-header">
+                <h3>章节目录与囤稿状态</h3>
+                <span class="mono muted" id="reader-chapter-count">0 章</span>
+              </div>
+              <div class="chapter-list" id="reader-chapter-list">
+                <div class="empty-state">请先选择书籍</div>
+              </div>
+            </div>
+
+            <div class="panel-card chapter-viewer">
+              <div class="chapter-viewer-head" id="reader-chapter-head">
+                <div>
+                  <h2 id="reader-chapter-title">请选择左侧章节</h2>
+                  <div class="chapter-meta-row" id="reader-chapter-meta"></div>
+                </div>
+                <div class="chapter-actions">
+                  <button type="button" class="btn btn-sm btn-outline" id="btn-toggle-lock" disabled>
+                    🔒 锁章保护
+                  </button>
+                </div>
+              </div>
+              <article class="chapter-body" id="reader-chapter-body">
+                <div class="empty-state">点击左侧任意章节，即可查看纯净正文与物理隔离的「作者有话说」。</div>
+              </article>
+              <aside class="author-note-box" id="reader-author-note-box" hidden>
+                <div class="author-note-label">作者有话说（物理隔离区 · 独立催更互动栏）</div>
+                <div class="author-note-text" id="reader-author-note-text"></div>
+              </aside>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Admin Bearer Token Modal -->
+  <div class="modal-backdrop" id="auth-modal" hidden role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="auth-modal-title">管理员 Bearer Token 认证</h3>
+        <button type="button" class="btn-icon" data-close-modal="auth-modal" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted">令牌仅保存在当前浏览器标签页内存与 sessionStorage 中，通过 <code>Authorization: Bearer</code> 请求头发送，绝不拼接在 URL 参数里。</p>
+        <label class="field mt-sm">
+          <span class="field-label">XIAOSHUO_ADMIN_TOKEN</span>
+          <input type="password" id="auth-token-input" autocomplete="off" placeholder="输入管理密钥">
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" id="btn-clear-token">清除本地令牌</button>
+        <button type="button" class="btn btn-primary" id="btn-save-token">保存并重连</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Two-Step Cut-Loss Confirmation Modal -->
+  <div class="modal-backdrop" id="cut-modal" hidden role="dialog" aria-modal="true" aria-labelledby="cut-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="cut-modal-title">止损切书 · 二级防误触确认</h3>
+        <button type="button" class="btn-icon" data-close-modal="cut-modal" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="cut-book-summary" id="cut-book-summary"></div>
+        <label class="field mt-sm">
+          <span class="field-label">切书原因说明</span>
+          <input type="text" id="cut-reason-input" placeholder="例如：首秀二章读完率低于 45%，确认止损" value="首秀期留存未达标，手动止损切书">
+        </label>
+        <div class="cut-step-box" id="cut-step-box">
+          <p class="muted">第一步：点击「申请切书确认码」向服务端锁定待确认版本号。</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" data-close-modal="cut-modal">取消</button>
+        <button type="button" class="btn btn-outline" id="btn-cut-step1">1. 申请切书确认码</button>
+        <button type="button" class="btn btn-danger" id="btn-cut-confirm" disabled>2. 🔥 确认止损切书</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cover & Alternate Titles Modal -->
+  <div class="modal-backdrop" id="book-detail-modal" hidden role="dialog" aria-modal="true" aria-labelledby="detail-modal-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3 id="detail-modal-title">书目包装详情（600×800 封面与备选书名）</h3>
+        <button type="button" class="btn-icon" data-close-modal="book-detail-modal" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body" id="detail-modal-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-close-modal="book-detail-modal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
