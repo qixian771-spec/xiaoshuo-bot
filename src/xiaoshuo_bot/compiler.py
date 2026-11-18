@@ -32,6 +32,17 @@ _EMOTION_LABELS: Dict[str, str] = {
 }
 
 
+
+def target_chapter_chars(scene: SceneOutline) -> int:
+    """Explicit length target: midpoint of the outline range, rounded down to 100 characters.
+
+    Telling the model only "min~max, stop when events are done" made Gemini 3.8 Flash land at or
+    below the floor (real A/B 2026-11-18: 1033-1926 chars against min 1900). A concrete target
+    pulls drafts into the middle of the allowed range; the hard gate itself is unchanged.
+    """
+    midpoint = (int(scene.min_chars) + int(scene.max_chars)) // 2
+    return max(int(scene.min_chars), (midpoint // 100) * 100)
+
 class PromptCompiler:
     """Compiles dynamic 5D-state, memory-pyramid, and Tomato-track-aware prompts & rewrite instructions."""
 
@@ -362,10 +373,12 @@ class PromptCompiler:
             )
         tomato_scene_block = ("\n" + "\n".join(tomato_scene_lines)) if tomato_scene_lines else ""
 
+        target_chars = target_chapter_chars(scene)
         scene_outline = (
             f"- **时空坐标**：{scene.location_time}\n"
             f"{pov_scene_line}\n"
-            f"- **目标篇幅区间**：{scene.min_chars}～{scene.max_chars} 汉字（事件写尽即止，严禁注水）"
+            f"- **目标篇幅**：约 {target_chars} 汉字（硬性下限 {scene.min_chars}、上限 {scene.max_chars}；"
+            "每个事件都要写足动作、对话与环境细节，最后一个事件写完即停笔，严禁空泛议论注水）"
             f"{tomato_scene_block}"
             f"{continuity_block}\n"
             f"- **本章核心物理事件序列**：\n{events_formatted}\n"
@@ -441,7 +454,9 @@ class PromptCompiler:
             "## 1. 生产环境约束 (System Constraints)\n"
             f"{pov_constraint}\n"
             f"{format_constraint}\n"
-            f"- **篇幅**：按章纲执行（控制在 {scene.min_chars}～{scene.max_chars} 字），事件写尽即止，严禁注水。\n"
+            f"- **篇幅**：目标约 {target_chars} 字；低于 {scene.min_chars} 字会被系统直接打回重写，"
+            f"超过 {scene.max_chars} 字同样打回。字数要靠把章纲里每个物理事件写足"
+            "（动作、对话、器物与环境细节）来达成，严禁空泛议论、心理独白堆砌或总结升华注水。\n"
             "- **风格采样**：参考下方的 [Style_Samples] 进行句子呼吸感、器物颗粒度与动作推进模拟。"
             f"{tomato_sys_constraints}"
         )
@@ -514,6 +529,21 @@ class PromptCompiler:
             )
         violations_block = "\n".join(violation_lines)
 
+        length_gap_block = ""
+        if any(v.rule_id == "LEN_001" for v in report.violations):
+            target_chars = target_chapter_chars(scene)
+            shortfall = scene.min_chars - report.char_count
+            event_lines = "\n".join(f"   {i}. {e}" for i, e in enumerate(scene.events, start=1))
+            length_gap_block = (
+                "### 篇幅缺口（本次重写的首要任务）\n"
+                f"上一版只有 {report.char_count} 字，比硬性下限 {scene.min_chars} 字还少 {shortfall} 字。"
+                f"本次必须写到约 {target_chars} 字。\n"
+                "做法：保留上一版里已经合格的段落，不得删减；逐个把下面的章纲事件写足——"
+                "补人物的具体动作与对话往来、器物的物理细节、场景的声音光线与触感。"
+                "严禁用议论、总结、心理独白堆字。\n"
+                f"{event_lines}\n\n"
+            )
+
         if self.project.meta.panel_policy == "allow_system_tag":
             tail_instruction = (
                 "[请直接输出修正后的完整章节正文，第一个字符必须是正文的汉字、合法左引号（“「『）或受控系统标签【，"
@@ -532,6 +562,7 @@ class PromptCompiler:
             f"上一版草稿触发了 {len(report.violations)} 项生产门禁违规，已被拦截打回！\n"
             "请在不改变章纲事件推进、人物行为锚点、器物物理状态、五维世界状态与伏笔细节的前提下，"
             "彻底消除以下全部违规项，并通篇复查确保不引入新的禁用词、对称句式或节奏违规：\n\n"
+            f"{length_gap_block}"
             f"### 违规清单\n{violations_block}\n\n"
             f"### 被拦截的原草稿（共 {report.char_count} 字）\n"
             f"{draft_text}\n\n"
