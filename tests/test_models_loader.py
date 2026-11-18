@@ -318,6 +318,8 @@ class TestModelsAndLoader(unittest.TestCase):
                 "due_chapter": 65,
                 "plant_instruction": "第1章出现",
                 "payoff_instruction": "第65章新地图揭晓",
+                "plant_keywords": ["青铜令牌"],
+                "payoff_keywords": ["青铜令牌"],
                 "cross_volume": True,
             }
         ]

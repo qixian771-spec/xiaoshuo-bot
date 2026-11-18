@@ -35,6 +35,7 @@ from ..models import AUTHOR_LEVELS, SHANGHAI_TZ
 logger = logging.getLogger(__name__)
 
 DEFAULT_LEASE_SECONDS = 300
+MAX_LEASE_SECONDS = 1800
 LV0_1_DAILY_CHAR_CAP = 8500
 LV2_PLUS_DAILY_CHAR_CAP = 17000
 SAFETY_CUSHION_TARGET = 10
@@ -1039,6 +1040,10 @@ class StockpileDB:
     def lease_chapter(self, req: CompanionLeaseRequest) -> CompanionLeaseResponse:
         if req.lease_seconds <= 0:
             raise ValueError(f"lease_seconds must be positive, got {req.lease_seconds}")
+        if req.lease_seconds > MAX_LEASE_SECONDS:
+            raise ValueError(
+                f"lease_seconds must be <= {MAX_LEASE_SECONDS}, got {req.lease_seconds}"
+            )
         now_dt = self._now_dt()
         now_iso = now_dt.isoformat()
         today_cst = shanghai_date_str(now_dt)
@@ -1086,7 +1091,9 @@ class StockpileDB:
                     sha256=str(ch_row["sha256"]),
                     status=StockpileStatus.LEASED.value,
                     lease_expires_at=str(ch_row["lease_expires_at"]),
-                    scheduled_publish_at=now_iso,
+                    # No planned publish time is stored for leased chapters (only a CST date),
+                    # so send "" (publish immediately) rather than fabricating a past timestamp.
+                    scheduled_publish_at="",
                     metadata={"scheduled_cst_date": str(ch_row["scheduled_cst_date"])},
                 )
 
@@ -1161,7 +1168,8 @@ class StockpileDB:
                 sha256=str(ch_row["sha256"]),
                 status=StockpileStatus.LEASED.value,
                 lease_expires_at=expires_dt.isoformat(),
-                scheduled_publish_at=now_iso,
+                # See above: never send lease time as a schedule (companion would fill a past time).
+                scheduled_publish_at="",
                 metadata={"scheduled_cst_date": today_cst},
             )
 
@@ -1852,6 +1860,7 @@ __all__ = [
     "InvalidStatusTransitionError",
     "LV0_1_DAILY_CHAR_CAP",
     "LV2_PLUS_DAILY_CHAR_CAP",
+    "MAX_LEASE_SECONDS",
     "SAFETY_CUSHION_CRITICAL",
     "SAFETY_CUSHION_TARGET",
     "SequentialLeaseLockError",

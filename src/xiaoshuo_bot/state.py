@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .models import (
@@ -46,6 +47,10 @@ class ForeshadowEvidenceMissingError(WorldStateError):
 
 class LockedChapterTamperedError(WorldStateError):
     """Raised when a locked prior chapter's SHA256 hash mismatches or is tampered."""
+
+
+class ForeshadowConfigurationError(WorldStateError):
+    """Raised at preflight when a planted/due foreshadow declares no usable evidence keywords."""
 
 
 SEASONS: Tuple[str, ...] = ("春", "夏", "秋", "冬")
@@ -526,30 +531,39 @@ class WorldStateManager:
     # ------------------------------------------------------------------
     # Chapter Advancement (Transactional / Atomic Validation First)
     # ------------------------------------------------------------------
-    def advance_after_chapter(
-        self,
-        scene: SceneOutline,
-        chapter_text: str,
-        *,
-        is_flashback: bool = False,
-    ) -> Dict[str, Any]:
-        """Validate all 5D invariants and advance world state atomically after a chapter completes."""
+    def preflight_scene(self, scene: SceneOutline, *, is_flashback: bool = False) -> None:
+        """Outline-only (text-independent) checks run BEFORE spending LLM tokens on a chapter.
+
+        Validates calendar delta, deceased-on-stage, staged character mutations, staged ledger
+        mutations (underflow / volume cap), asset references, and that every foreshadow planted
+        or due in this chapter declares non-empty physical keywords (otherwise no chapter text
+        could ever satisfy the evidence gate).
+        """
         if scene.calendar_days_elapsed < 0:
             raise WorldStateError(
                 f"Chapter {scene.chapter}: calendar_days_elapsed cannot be negative ({scene.calendar_days_elapsed})"
             )
-
-        ch_hash = _compute_sha256(chapter_text)
-        if scene.chapter in self.locked_chapters and scene.chapter in self.chapter_hashes:
-            if self.chapter_hashes[scene.chapter] != ch_hash:
-                raise LockedChapterTamperedError(
-                    f"Locked chapter {scene.chapter} cannot be overwritten with different content "
-                    f"(expected {self.chapter_hashes[scene.chapter]}, got {ch_hash})"
+        self.validate_scene_characters(scene, is_flashback=is_flashback)
+        self._stage_outline_mutations(scene)
+        for fs in self.get_plant_foreshadows(scene.chapter):
+            if not [kw for kw in fs.plant_keywords if str(kw).strip()]:
+                raise ForeshadowConfigurationError(
+                    f"Chapter {scene.chapter}: foreshadow [{fs.id}] '{fs.title}' is scheduled to be planted "
+                    f"but declares no non-empty plant_keywords"
+                )
+        for fs in self.get_due_foreshadows(scene.chapter):
+            if not [kw for kw in fs.payoff_keywords if str(kw).strip()]:
+                raise ForeshadowConfigurationError(
+                    f"Chapter {scene.chapter}: foreshadow [{fs.id}] '{fs.title}' is due "
+                    f"(Ch.{fs.due_chapter}) but declares no non-empty payoff_keywords"
+                )
+        for mut in scene.post_scene_asset_mutations:
+            if mut.asset_id not in self.assets:
+                raise WorldStateError(
+                    f"Chapter {scene.chapter}: unknown asset_id '{mut.asset_id}' in post_scene_asset_mutations"
                 )
 
-        # 0. Pre-validate character lifecycle & deceased on-stage constraint
-        self.validate_scene_characters(scene, is_flashback=is_flashback)
-
+    def _stage_outline_mutations(self, scene: SceneOutline) -> None:
         # Pre-validate character mutations on a staged copy
         staged_chars = copy.deepcopy(self.character_states)
         for cm in scene.character_mutations:
@@ -567,6 +581,37 @@ class WorldStateManager:
             staged_balances[lm.ledger_key] = new_val
             if lock_key is not None and lm.breakthrough:
                 staged_locks[lock_key].unlocked = True
+
+    def validate_chapter(
+        self,
+        scene: SceneOutline,
+        chapter_text: str,
+        *,
+        is_flashback: bool = False,
+    ) -> Dict[str, Any]:
+        """Run every 5D invariant check for (scene, chapter_text) WITHOUT mutating state.
+
+        Returns the computed evidences/staged data consumed by advance_after_chapter.
+        Raises a WorldStateError subclass on the first violation.
+        """
+        if scene.calendar_days_elapsed < 0:
+            raise WorldStateError(
+                f"Chapter {scene.chapter}: calendar_days_elapsed cannot be negative ({scene.calendar_days_elapsed})"
+            )
+
+        ch_hash = _compute_sha256(chapter_text)
+        if scene.chapter in self.locked_chapters and scene.chapter in self.chapter_hashes:
+            if self.chapter_hashes[scene.chapter] != ch_hash:
+                raise LockedChapterTamperedError(
+                    f"Locked chapter {scene.chapter} cannot be overwritten with different content "
+                    f"(expected {self.chapter_hashes[scene.chapter]}, got {ch_hash})"
+                )
+
+        # 0. Pre-validate character lifecycle & deceased on-stage constraint
+        self.validate_scene_characters(scene, is_flashback=is_flashback)
+
+        # Pre-validate character & ledger mutations on staged copies
+        self._stage_outline_mutations(scene)
 
         # Pre-validate foreshadow plant & due/overdue evidence (ZERO fake fallback)
         plant_list = self.get_plant_foreshadows(scene.chapter)
@@ -610,6 +655,31 @@ class WorldStateManager:
                 raise WorldStateError(
                     f"Chapter {scene.chapter}: unknown asset_id '{mut.asset_id}' in post_scene_asset_mutations"
                 )
+
+        return {
+            "chapter_sha256": ch_hash,
+            "plant_list": plant_list,
+            "plant_evidences": plant_evidences,
+            "due_list": due_list,
+            "due_evidences": due_evidences,
+            "directive_evidences": directive_evidences,
+        }
+
+    def advance_after_chapter(
+        self,
+        scene: SceneOutline,
+        chapter_text: str,
+        *,
+        is_flashback: bool = False,
+    ) -> Dict[str, Any]:
+        """Validate all 5D invariants and advance world state atomically after a chapter completes."""
+        validated = self.validate_chapter(scene, chapter_text, is_flashback=is_flashback)
+        ch_hash: str = validated["chapter_sha256"]
+        plant_list: List[ForeshadowItem] = validated["plant_list"]
+        plant_evidences: Dict[str, str] = validated["plant_evidences"]
+        due_list: List[ForeshadowItem] = validated["due_list"]
+        due_evidences: Dict[str, str] = validated["due_evidences"]
+        directive_evidences: Dict[Tuple[int, str], str] = validated["directive_evidences"]
 
         # ---- All validations passed; commit state changes ----
         changes: Dict[str, Any] = {
@@ -815,9 +885,19 @@ class WorldStateManager:
     def save_snapshot(self, path: str | Path) -> None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = target.with_name(f"{target.name}.tmp")
         payload = json.dumps(self.snapshot_dict(), ensure_ascii=False, indent=2)
-        tmp_path.write_text(payload, encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(target.parent),
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+            tmp_path = fh.name
         os.replace(tmp_path, target)
 
     def verify_chapter_hashes(

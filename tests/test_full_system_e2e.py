@@ -550,6 +550,7 @@ class _TomatoSimState:
         self.book_title = book_title
         self.author_name = author_name
         self.published_submissions: List[Dict[str, Any]] = []
+        self.draft_submissions: List[Dict[str, Any]] = []
         self.rotate_submissions: List[Dict[str, Any]] = []
 
 
@@ -580,6 +581,8 @@ def _start_tomato_sim_server(sim: _TomatoSimState) -> Tuple[ThreadingHTTPServer,
             payload = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
             if self.path == "/api/publish":
                 sim.published_submissions.append(payload)
+            elif self.path == "/api/save-draft":
+                sim.draft_submissions.append(payload)
             elif self.path == "/api/rotate":
                 sim.rotate_submissions.append(payload)
                 if payload.get("new_title"):
@@ -617,6 +620,18 @@ def _start_tomato_sim_server(sim: _TomatoSimState) -> Tuple[ThreadingHTTPServer,
                   const wc = document.querySelector('[data-testid="editor-word-count"]');
                   pm.addEventListener('input', () => {{
                     wc.textContent = String(pm.innerText.replace(/\\s+/g, '').length);
+                  }});
+                  document.getElementById('save-draft-btn').addEventListener('click', () => {{
+                    fetch('/api/save-draft', {{
+                      method: 'POST',
+                      headers: {{'Content-Type': 'application/json'}},
+                      body: JSON.stringify({{
+                        chapter_no: document.getElementById('chapter-number-input').value,
+                        chapter_title: document.getElementById('chapter-title-input').value,
+                        body_text: pm.innerText,
+                        word_count: wc.textContent
+                      }})
+                    }});
                   }});
                   document.getElementById('publish-submit-btn').addEventListener('click', () => {{
                     fetch('/api/publish', {{
@@ -1060,9 +1075,21 @@ class TestServerRoutesAndStaticAssets(unittest.TestCase):
                 ]
             )
             old_adm = os.environ.pop("XIAOSHUO_ADMIN_TOKEN", None)
+            old_optout = os.environ.get("XIAOSHUO_ALLOW_INSECURE_NO_AUTH")
             try:
+                # Without the explicit opt-out, an empty token is refused even on loopback.
+                from xiaoshuo_bot.server.auth import InsecureBindError
+
+                os.environ.pop("XIAOSHUO_ALLOW_INSECURE_NO_AUTH", None)
+                with self.assertRaises(InsecureBindError):
+                    build_serve_server(no_auth_args)
+                os.environ["XIAOSHUO_ALLOW_INSECURE_NO_AUTH"] = "1"
                 no_auth_srv = build_serve_server(no_auth_args)
             finally:
+                if old_optout is None:
+                    os.environ.pop("XIAOSHUO_ALLOW_INSECURE_NO_AUTH", None)
+                else:
+                    os.environ["XIAOSHUO_ALLOW_INSECURE_NO_AUTH"] = old_optout
                 if old_adm is not None:
                     os.environ["XIAOSHUO_ADMIN_TOKEN"] = old_adm
             t_na = threading.Thread(target=no_auth_srv.serve_forever, daemon=True)
@@ -1440,12 +1467,18 @@ class TestFullSystemCloudEdgeE2E(unittest.TestCase):
                         ]
                     )
                     self.assertEqual(rc, 0)
-                    self.assertEqual(len(tomato_state.published_submissions), 1)
-                    pub_sub = tomato_state.published_submissions[0]
+                    # Lease carries no scheduled_publish_at -> companion must only save a draft,
+                    # never click the publish button.
+                    deadline = time.monotonic() + 3.0
+                    while not tomato_state.draft_submissions and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertEqual(len(tomato_state.published_submissions), 0)
+                    self.assertEqual(len(tomato_state.draft_submissions), 1)
+                    pub_sub = tomato_state.draft_submissions[0]
                     self.assertEqual(pub_sub["chapter_no"], "1")
                     self.assertEqual(pub_sub["chapter_title"], "被裁当天系统到账1百万")
                     ch1_row = server.db.get_chapter("e2e_matrix_book", 1)
-                    self.assertEqual(ch1_row["status"], StockpileStatus.SCHEDULED.value)
+                    self.assertEqual(ch1_row["status"], StockpileStatus.DRAFT_SAVED.value)
 
                     # 6. Collect 12:30 CST metrics & decode WOFF2 PUA hotlist -> triggers ROTATE_PACKAGING
                     decoder = Woff2FontDecoder(cache_dir=tmp / "woff_cache")

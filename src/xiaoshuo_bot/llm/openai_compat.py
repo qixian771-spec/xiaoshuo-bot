@@ -18,6 +18,7 @@ from .base import (
     LLMRequestError,
     LLMResponse,
     LLMStreamTruncatedError,
+    estimate_usage_from_text,
     parse_model_reasoning_suffix,
     redact_secrets,
 )
@@ -194,6 +195,15 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["reasoning_effort"] = effective_effort
         return payload
 
+    def _truncation_usage(
+        self, request: LLMRequest, partial: str, usage: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return estimate_usage_from_text(
+            partial,
+            prompt_text=f"{request.system_prompt}{request.user_prompt}",
+            usage=usage,
+        )
+
     def _consume_sse(
         self,
         resp: Any,
@@ -270,21 +280,37 @@ class OpenAICompatibleProvider(LLMProvider):
             socket.timeout,
             OSError,
         ) as exc:
+            partial = "".join(content_parts)
             raise LLMStreamTruncatedError(
-                f"SSE stream interrupted mid-generation for {request.request_id}: {self._redact(str(exc))}"
+                f"SSE stream interrupted mid-generation for {request.request_id}: {self._redact(str(exc))}",
+                usage=self._truncation_usage(request, partial, usage),
+                partial_content=partial,
+                model=actual_model,
             ) from None
 
         if finish_reason == "length":
+            partial = "".join(content_parts)
             raise LLMStreamTruncatedError(
-                f"SSE stream truncated (finish_reason='length') for {request.request_id}."
+                f"SSE stream truncated (finish_reason='length') for {request.request_id}.",
+                usage=self._truncation_usage(request, partial, usage),
+                partial_content=partial,
+                model=actual_model,
             )
         if finish_reason != "stop":
+            partial = "".join(content_parts)
             raise LLMStreamTruncatedError(
-                f"SSE stream ended without finish_reason='stop' (got {finish_reason!r}) for {request.request_id}."
+                f"SSE stream ended without finish_reason='stop' (got {finish_reason!r}) for {request.request_id}.",
+                usage=self._truncation_usage(request, partial, usage),
+                partial_content=partial,
+                model=actual_model,
             )
         if not saw_done:
+            partial = "".join(content_parts)
             raise LLMStreamTruncatedError(
-                f"SSE stream closed prematurely before [DONE] for {request.request_id}."
+                f"SSE stream closed prematurely before [DONE] for {request.request_id}.",
+                usage=self._truncation_usage(request, partial, usage),
+                partial_content=partial,
+                model=actual_model,
             )
 
         return LLMResponse(
@@ -313,15 +339,24 @@ class OpenAICompatibleProvider(LLMProvider):
             raise LLMRequestError("OpenAI-compatible response contained no choices.")
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
+        message = choice.get("message") or {}
+        partial_json = message.get("content") if isinstance(message.get("content"), str) else ""
+        json_usage = dict(resp_data.get("usage") or {})
+        json_model = str(resp_data.get("model", self.model))
         if finish_reason == "length":
             raise LLMStreamTruncatedError(
-                f"Completion truncated (finish_reason='length') for {request.request_id}."
+                f"Completion truncated (finish_reason='length') for {request.request_id}.",
+                usage=self._truncation_usage(request, partial_json, json_usage),
+                partial_content=partial_json,
+                model=json_model,
             )
         if finish_reason is not None and finish_reason != "stop":
             raise LLMStreamTruncatedError(
-                f"Completion ended abnormally (finish_reason={finish_reason!r}) for {request.request_id}."
+                f"Completion ended abnormally (finish_reason={finish_reason!r}) for {request.request_id}.",
+                usage=self._truncation_usage(request, partial_json, json_usage),
+                partial_content=partial_json,
+                model=json_model,
             )
-        message = choice.get("message") or {}
         content = message.get("content")
         if not isinstance(content, str):
             raise LLMRequestError("OpenAI-compatible response missing message.content.")

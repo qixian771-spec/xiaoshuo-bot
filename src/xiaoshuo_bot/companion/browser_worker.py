@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -14,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 from playwright.sync_api import BrowserContext, Page, Response, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from ..contracts import (
     CompanionCaptchaReport,
@@ -34,6 +37,8 @@ if os.name == "nt":
     import msvcrt
 else:
     import fcntl
+
+logger = logging.getLogger(__name__)
 
 
 _ACTIVE_PROFILE_LOCKS: set[Path] = set()
@@ -70,6 +75,25 @@ _CAPTCHA_TEXT_MARKERS: Tuple[str, ...] = (
     "扫码登录",
     "账号验证",
 )
+
+# User-authored / editable regions whose text must never trigger captcha text markers
+# (e.g. a chapter body that happens to contain "登录已过期").
+_CAPTCHA_TEXT_EXCLUDED_SELECTOR = (
+    ".ProseMirror, textarea, input, select, [contenteditable], script, style, noscript, template"
+)
+
+# Only first-party document / XHR / fetch auth failures count toward the HTTP sentinel.
+_AUTH_HTTP_RESOURCE_TYPES = frozenset({"document", "xhr", "fetch"})
+
+# Minimum lead time for scheduled publishing; anything sooner is rejected as "in the past".
+_MIN_SCHEDULE_LEAD_SEC = 5 * 60
+
+# Cover upload hardening (ROTATE_PACKAGING).
+_COVER_ALLOWED_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+_COVER_MAX_BYTES = 5 * 1024 * 1024
+
+# Hotlist WOFF2 download cap.
+_WOFF2_MAX_BYTES = 2 * 1024 * 1024
 
 
 class CompanionWorkerError(RuntimeError):
@@ -116,6 +140,7 @@ class BrowserLaunchConfig:
     timeout_ms: int = 15000
     review_pause_sec: float = 0.8
     screenshot_dir: Optional[Path] = None
+    cover_root: Optional[Path] = None
 
     def __post_init__(self) -> None:
         if not str(self.profile_root).strip():
@@ -323,8 +348,13 @@ class CaptchaLoginSentinel:
         self.auth_http_errors.clear()
 
         def _on_response(resp: Response) -> None:
-            if resp.status in (401, 403):
-                self.auth_http_errors.append((int(resp.status), str(resp.url)))
+            if resp.status not in (401, 403):
+                return
+            try:
+                if _is_first_party_auth_response(page, resp):
+                    self.auth_http_errors.append((int(resp.status), str(resp.url)))
+            except Exception as exc:  # never let the passive hook crash the page event loop
+                logger.debug("Sentinel response hook ignored error: %s", exc)
 
         page.on("response", _on_response)
 
@@ -342,7 +372,7 @@ class CaptchaLoginSentinel:
             return f"LOGIN_OR_CAPTCHA_REDIRECT:{raw_url}"
 
         dom_hit = page.evaluate(
-            """({selectors, markers}) => {
+            """({selectors, markers, excluded}) => {
                 const isVisible = (el) => {
                     if (!el) return false;
                     const st = window.getComputedStyle(el);
@@ -360,7 +390,29 @@ class CaptchaLoginSentinel:
                         }
                     }
                 }
-                const bodyText = (document.body && document.body.innerText) ? document.body.innerText : '';
+                // Walk visible text nodes only, skipping editor/form content authored by the user.
+                const chunks = [];
+                if (document.body) {
+                    const visCache = new Map();
+                    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+                        acceptNode: (node) => {
+                            const parent = node.parentElement;
+                            if (!parent) return NodeFilter.FILTER_REJECT;
+                            if (parent.closest(excluded)) return NodeFilter.FILTER_REJECT;
+                            let vis = visCache.get(parent);
+                            if (vis === undefined) {
+                                vis = isVisible(parent);
+                                visCache.set(parent, vis);
+                            }
+                            return vis ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                        },
+                    });
+                    let n;
+                    while ((n = walker.nextNode())) {
+                        chunks.push(n.nodeValue || '');
+                    }
+                }
+                const bodyText = chunks.join('');
                 for (const marker of markers) {
                     if (bodyText.includes(marker)) {
                         return `DOM_TEXT:${marker}`;
@@ -368,7 +420,11 @@ class CaptchaLoginSentinel:
                 }
                 return null;
             }""",
-            {"selectors": list(_CAPTCHA_DOM_SELECTORS), "markers": list(_CAPTCHA_TEXT_MARKERS)},
+            {
+                "selectors": list(_CAPTCHA_DOM_SELECTORS),
+                "markers": list(_CAPTCHA_TEXT_MARKERS),
+                "excluded": _CAPTCHA_TEXT_EXCLUDED_SELECTOR,
+            },
         )
         if dom_hit:
             return str(dom_hit)
@@ -410,13 +466,77 @@ class CaptchaLoginSentinel:
             detected_at=datetime.now(SHANGHAI_TZ).isoformat(),
         )
         if client is not None:
-            client.send_captcha_report(report)
+            try:
+                client.send_captcha_report(report)
+            except Exception as exc:  # reporting must never swallow the halt
+                logger.error(
+                    "Failed to send captcha report for account '%s' (%s): %s", account_id, reason, exc
+                )
 
         raise CaptchaAuthPauseError(
             f"0ms passive sentinel halt for account '{account_id}' ({reason})",
             report=report,
             screenshot_path=saved_path,
         )
+
+
+def _registrable_host(hostname: str) -> str:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return ""
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return host
+    except ValueError:
+        pass
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    return ".".join(labels[-2:])
+
+
+def _same_site(url_a: str, url_b: str) -> bool:
+    host_a = (urllib.parse.urlparse(url_a or "").hostname or "").lower()
+    host_b = (urllib.parse.urlparse(url_b or "").hostname or "").lower()
+    if not host_a or not host_b:
+        return False
+    site_b = _registrable_host(host_b)
+    return host_a == site_b or host_a.endswith("." + site_b) or host_a == host_b
+
+
+def _is_first_party_auth_response(page: Page, resp: Response) -> bool:
+    """Only first-party document/xhr/fetch 401/403s count (ignore third-party analytics/ads)."""
+    resource_type = str(resp.request.resource_type or "")
+    if resource_type not in _AUTH_HTTP_RESOURCE_TYPES:
+        return False
+    if resource_type == "document" and resp.frame == page.main_frame:
+        # Top-level navigation response: page.url may still point at the previous page.
+        return True
+    return _same_site(str(resp.url), page.url or "")
+
+
+def _parse_shanghai_schedule(raw_value: str) -> Optional[datetime]:
+    cleaned = (raw_value or "").strip()
+    if not cleaned:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?", cleaned):
+        return datetime.fromisoformat(cleaned.replace(" ", "T")).replace(tzinfo=SHANGHAI_TZ)
+    dt = datetime.fromisoformat(cleaned)
+    if dt.tzinfo is None:
+        raise ValueError(
+            f"scheduled_publish_at '{raw_value}' must carry explicit timezone or YYYY-MM-DD HH:MM CST"
+        )
+    return dt.astimezone(SHANGHAI_TZ)
+
+
+def _detect_image_kind(head: bytes) -> str:
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return ""
 
 
 def _format_shanghai_schedule(raw_value: str) -> str:
@@ -692,12 +812,68 @@ class TomatoBrowserWorker:
             )
         return None
 
-    def _insert_prosemirror_paragraphs(self, body: str) -> None:
+    def _halt_if_flagged(self, *, book_id: str = "", chapter: int = 0) -> None:
+        self._sentinel.inspect_or_halt(
+            self.page,
+            account_id=self.account_id,
+            book_id=book_id,
+            chapter=chapter,
+            screenshot_dir=self.screenshot_dir,
+            client=self.client,
+        )
+
+    def _guarded_action(
+        self,
+        selector: str,
+        action: Callable[[Any], None],
+        *,
+        book_id: str = "",
+        chapter: int = 0,
+    ) -> None:
+        """Run inspect_or_halt BEFORE a write action; convert captcha-induced timeouts into halts."""
+        self._halt_if_flagged(book_id=book_id, chapter=chapter)
+        loc = self.page.locator(selector).first
+        try:
+            action(loc)
+        except PlaywrightTimeoutError:
+            # A captcha/login overlay commonly intercepts pointer events -> timeout.
+            # inspect_or_halt raises CaptchaAuthPauseError if so; otherwise re-raise the timeout.
+            self._halt_if_flagged(book_id=book_id, chapter=chapter)
+            raise
+
+    def _guarded_fill(self, selector: str, value: str, *, book_id: str = "", chapter: int = 0) -> None:
+        self._guarded_action(selector, lambda loc: loc.fill(value), book_id=book_id, chapter=chapter)
+
+    def _guarded_click(self, selector: str, *, book_id: str = "", chapter: int = 0) -> None:
+        self._guarded_action(selector, lambda loc: loc.click(), book_id=book_id, chapter=chapter)
+
+    def _guarded_set_input_files(
+        self,
+        selector: str,
+        files: Any,
+        *,
+        book_id: str = "",
+        chapter: int = 0,
+    ) -> None:
+        self._guarded_action(
+            selector, lambda loc: loc.set_input_files(files), book_id=book_id, chapter=chapter
+        )
+
+    def _has_element(self, selector: str) -> bool:
+        return self.page.locator(selector).count() > 0
+
+    def _read_attr_only(self, selector: str, attr_name: str) -> str:
+        loc = self.page.locator(selector).first
+        if loc.count() == 0:
+            return ""
+        attr_val = loc.get_attribute(attr_name)
+        return attr_val.strip() if attr_val is not None else ""
+
+    def _insert_prosemirror_paragraphs(self, body: str, *, book_id: str = "", chapter: int = 0) -> None:
         paragraphs = [line.strip() for line in body.splitlines() if line.strip()]
         if not paragraphs:
             raise CompanionWorkerError("Chapter body cannot be empty")
-        editor = self.page.locator(self.selectors.editor_prosemirror).first
-        editor.click()
+        self._guarded_click(self.selectors.editor_prosemirror, book_id=book_id, chapter=chapter)
         self.page.evaluate(
             """({selector, paragraphs}) => {
                 const el = document.querySelector(selector);
@@ -721,6 +897,25 @@ class TomatoBrowserWorker:
             return int(digits.group(0))
         editor_text = self._read_text_first(self.selectors.editor_prosemirror)
         return len(re.sub(r"\s+", "", editor_text))
+
+    def _validated_schedule(self, raw_value: str) -> Optional[datetime]:
+        """Parse scheduled_publish_at and require it to be >= 5 minutes in the future."""
+        try:
+            sched = _parse_shanghai_schedule(raw_value)
+        except ValueError as exc:
+            raise CompanionWorkerError(f"Invalid scheduled_publish_at {raw_value!r}: {exc}") from exc
+        if sched is None:
+            return None
+        now_raw = self.now_provider()
+        if now_raw.tzinfo is None:
+            raise ValueError("now_provider() must return a timezone-aware datetime")
+        lead_sec = (sched - now_raw).total_seconds()
+        if lead_sec < _MIN_SCHEDULE_LEAD_SEC:
+            raise CompanionWorkerError(
+                f"schedule in the past: scheduled_publish_at={raw_value!r} is not at least "
+                f"{_MIN_SCHEDULE_LEAD_SEC // 60} minutes after now={now_raw.isoformat()}"
+            )
+        return sched
 
     def publish_chapter(
         self,
@@ -748,32 +943,35 @@ class TomatoBrowserWorker:
                 details={"reconciled": True},
             )
 
+        # Pre-flight (before any write): schedule must be valid and all required controls present.
+        schedule_dt = self._validated_schedule(task.scheduled_publish_at or "")
+        formatted_schedule = schedule_dt.strftime("%Y-%m-%d %H:%M") if schedule_dt is not None else ""
+        if not self._has_element(self.selectors.save_draft_btn):
+            raise CompanionWorkerError(
+                f"Save-draft button not found for ch.{task.chapter}; refusing to report a draft that was never saved"
+            )
+        if schedule_dt is not None:
+            if not self._has_element(self.selectors.schedule_time_input):
+                raise CompanionWorkerError(
+                    f"Schedule requested ({formatted_schedule}) but schedule input is missing on page"
+                )
+            if not self._has_element(self.selectors.publish_submit_btn):
+                raise CompanionWorkerError(
+                    f"Schedule requested ({formatted_schedule}) but publish button is missing on page"
+                )
+
         # Gate 3: Dual-box title stripping + ProseMirror paste + <=5% word count + draft + note + schedule
         clean_title = strip_chapter_title_prefix(task.public_title, chapter_no=task.chapter)
+        guard_kw: Dict[str, Any] = {"book_id": task.book_id, "chapter": task.chapter}
 
-        self._sentinel.inspect_or_halt(
-            self.page,
-            account_id=self.account_id,
-            book_id=task.book_id,
-            chapter=task.chapter,
-            screenshot_dir=self.screenshot_dir,
-            client=self.client,
-        )
-        self.page.locator(self.selectors.chapter_number_input).first.fill(str(task.chapter))
-        self.page.locator(self.selectors.chapter_title_input).first.fill(clean_title)
+        self._guarded_fill(self.selectors.chapter_number_input, str(task.chapter), **guard_kw)
+        self._guarded_fill(self.selectors.chapter_title_input, clean_title, **guard_kw)
 
-        self._insert_prosemirror_paragraphs(task.body)
+        self._insert_prosemirror_paragraphs(task.body, **guard_kw)
         if self.launch_config.review_pause_sec > 0:
             time.sleep(self.launch_config.review_pause_sec)
 
-        self._sentinel.inspect_or_halt(
-            self.page,
-            account_id=self.account_id,
-            book_id=task.book_id,
-            chapter=task.chapter,
-            screenshot_dir=self.screenshot_dir,
-            client=self.client,
-        )
+        self._halt_if_flagged(**guard_kw)
 
         expected_chars = len(re.sub(r"\s+", "", task.body))
         actual_chars = self._read_live_editor_word_count()
@@ -784,53 +982,60 @@ class TomatoBrowserWorker:
                 f"expected={expected_chars}, actual={actual_chars}, deviation={deviation:.2%} (> 5%)"
             )
 
-        if self.page.locator(self.selectors.save_draft_btn).count() > 0:
-            self.page.locator(self.selectors.save_draft_btn).first.click()
-            self._sentinel.inspect_or_halt(
-                self.page,
-                account_id=self.account_id,
-                book_id=task.book_id,
-                chapter=task.chapter,
-                screenshot_dir=self.screenshot_dir,
-                client=self.client,
+        if not self._has_element(self.selectors.save_draft_btn):
+            raise CompanionWorkerError(f"Save-draft button disappeared before saving ch.{task.chapter}")
+        self._guarded_click(self.selectors.save_draft_btn, **guard_kw)
+        self._halt_if_flagged(**guard_kw)
+        last_clicked_selector = self.selectors.save_draft_btn
+
+        if task.author_note and self._has_element(self.selectors.author_note_input):
+            self._guarded_fill(self.selectors.author_note_input, task.author_note.strip(), **guard_kw)
+
+        final_status = StockpileStatus.DRAFT_SAVED.value
+        if schedule_dt is not None:
+            if not self._has_element(self.selectors.schedule_time_input):
+                raise CompanionWorkerError(
+                    f"Schedule requested ({formatted_schedule}) but schedule input is missing on page"
+                )
+            self._guarded_fill(self.selectors.schedule_time_input, formatted_schedule, **guard_kw)
+            if not self._has_element(self.selectors.publish_submit_btn):
+                raise CompanionWorkerError(
+                    f"Schedule requested ({formatted_schedule}) but publish button is missing on page"
+                )
+            # _guarded_click runs inspect_or_halt immediately before the final submit click.
+            self._guarded_click(self.selectors.publish_submit_btn, **guard_kw)
+            self._halt_if_flagged(**guard_kw)
+            last_clicked_selector = self.selectors.publish_submit_btn
+            final_status = StockpileStatus.SCHEDULED.value
+
+        remote_id = self._read_attr_only(last_clicked_selector, self.selectors.remote_chapter_id_attr)
+        if not remote_id and last_clicked_selector != self.selectors.publish_submit_btn:
+            remote_id = self._read_attr_only(
+                self.selectors.publish_submit_btn, self.selectors.remote_chapter_id_attr
             )
+        remote_id = remote_id or f"tomato-ch-{task.chapter}"
+        scheduled_at = formatted_schedule
 
-        if task.author_note and self.page.locator(self.selectors.author_note_input).count() > 0:
-            self.page.locator(self.selectors.author_note_input).first.fill(task.author_note.strip())
+        # Post-check: best-effort re-read of the remote chapter list to confirm the write landed.
+        if self.launch_config.review_pause_sec > 0:
+            self.page.wait_for_timeout(int(self.launch_config.review_pause_sec * 1000))
+        post_receipt = self._reconcile_remote_chapters(task)
+        post_verify = post_receipt is not None
+        if post_receipt is not None:
+            remote_id = post_receipt.remote_chapter_id or remote_id
+            final_status = post_receipt.status or final_status
+            scheduled_at = post_receipt.scheduled_at or scheduled_at
 
-        formatted_schedule = ""
-        if task.scheduled_publish_at and self.page.locator(self.selectors.schedule_time_input).count() > 0:
-            formatted_schedule = _format_shanghai_schedule(task.scheduled_publish_at)
-            self.page.locator(self.selectors.schedule_time_input).first.fill(formatted_schedule)
-
-        final_status = (
-            StockpileStatus.SCHEDULED.value
-            if formatted_schedule
-            else StockpileStatus.DRAFT_SAVED.value
-        )
-        if self.page.locator(self.selectors.publish_submit_btn).count() > 0:
-            self.page.locator(self.selectors.publish_submit_btn).first.click()
-            self._sentinel.inspect_or_halt(
-                self.page,
-                account_id=self.account_id,
-                book_id=task.book_id,
-                chapter=task.chapter,
-                screenshot_dir=self.screenshot_dir,
-                client=self.client,
-            )
-
-        remote_id = self._read_attr_or_text(
-            self.selectors.publish_submit_btn, self.selectors.remote_chapter_id_attr
-        )
         receipt = CompanionReceiptRequest(
             task_id=task.task_id,
             book_id=task.book_id,
             chapter=task.chapter,
             account_id=self.account_id,
             status=final_status,
-            remote_chapter_id=remote_id or f"tomato-ch-{task.chapter}",
+            remote_chapter_id=remote_id,
             char_count=actual_chars,
-            scheduled_at=formatted_schedule,
+            scheduled_at=scheduled_at,
+            published_at=post_receipt.published_at if post_receipt is not None else "",
             sha256=task.sha256,
         )
         if self.client is not None:
@@ -847,7 +1052,8 @@ class TomatoBrowserWorker:
                 "clean_title": clean_title,
                 "actual_chars": actual_chars,
                 "expected_chars": expected_chars,
-                "scheduled_at": formatted_schedule,
+                "scheduled_at": scheduled_at,
+                "post_verify": post_verify,
             },
         )
 
@@ -865,29 +1071,24 @@ class TomatoBrowserWorker:
         if not cards:
             raise CompanionWorkerError("CREATE_STAR_CARDS task requires metadata['star_cards']")
 
+        guard_kw: Dict[str, Any] = {"book_id": task.book_id}
         created_names: List[str] = []
         for card in cards:
-            self._sentinel.inspect_or_halt(
-                self.page,
-                account_id=self.account_id,
-                book_id=task.book_id,
-                screenshot_dir=self.screenshot_dir,
-                client=self.client,
+            self._halt_if_flagged(**guard_kw)
+            if not self._has_element(self.selectors.star_card_submit_btn):
+                raise CompanionWorkerError("Star-card submit button not found on page")
+            self._guarded_fill(self.selectors.star_card_name_input, str(card["name"]), **guard_kw)
+            self._guarded_fill(self.selectors.star_card_role_input, str(card.get("role", "")), **guard_kw)
+            self._guarded_fill(
+                self.selectors.star_card_tagline_input, str(card.get("tagline", "")), **guard_kw
             )
-            self.page.locator(self.selectors.star_card_name_input).first.fill(str(card["name"]))
-            self.page.locator(self.selectors.star_card_role_input).first.fill(str(card.get("role", "")))
-            self.page.locator(self.selectors.star_card_tagline_input).first.fill(str(card.get("tagline", "")))
-            self.page.locator(self.selectors.star_card_personality_input).first.fill(
-                str(card.get("personality", ""))
+            self._guarded_fill(
+                self.selectors.star_card_personality_input,
+                str(card.get("personality", "")),
+                **guard_kw,
             )
-            self.page.locator(self.selectors.star_card_submit_btn).first.click()
-            self._sentinel.inspect_or_halt(
-                self.page,
-                account_id=self.account_id,
-                book_id=task.book_id,
-                screenshot_dir=self.screenshot_dir,
-                client=self.client,
-            )
+            self._guarded_click(self.selectors.star_card_submit_btn, **guard_kw)
+            self._halt_if_flagged(**guard_kw)
             created_names.append(str(card["name"]))
 
         receipt = CompanionReceiptRequest(
@@ -926,37 +1127,29 @@ class TomatoBrowserWorker:
             raise CompanionWorkerError(
                 "SUBMIT_SIGNING_DRAFT task requires metadata['signing_application']"
             )
+        if not self._has_element(self.selectors.signing_submit_btn):
+            raise CompanionWorkerError("Signing submit button not found on page")
 
-        self.page.locator(self.selectors.signing_core_hook_input).first.fill(
-            str(app_data.get("core_hook", ""))
+        guard_kw: Dict[str, Any] = {"book_id": task.book_id}
+        self._guarded_fill(
+            self.selectors.signing_core_hook_input, str(app_data.get("core_hook", "")), **guard_kw
         )
-        self.page.locator(self.selectors.signing_protagonist_input).first.fill(
-            str(app_data.get("protagonist", ""))
+        self._guarded_fill(
+            self.selectors.signing_protagonist_input, str(app_data.get("protagonist", "")), **guard_kw
         )
-        self.page.locator(self.selectors.signing_golden_finger_input).first.fill(
-            str(app_data.get("golden_finger", ""))
+        self._guarded_fill(
+            self.selectors.signing_golden_finger_input, str(app_data.get("golden_finger", "")), **guard_kw
         )
-        self.page.locator(self.selectors.signing_outline_input).first.fill(
-            str(app_data.get("outline", ""))
+        self._guarded_fill(
+            self.selectors.signing_outline_input, str(app_data.get("outline", "")), **guard_kw
         )
-        self.page.locator(self.selectors.signing_highlights_input).first.fill(
-            str(app_data.get("highlights", ""))
+        self._guarded_fill(
+            self.selectors.signing_highlights_input, str(app_data.get("highlights", "")), **guard_kw
         )
-        self._sentinel.inspect_or_halt(
-            self.page,
-            account_id=self.account_id,
-            book_id=task.book_id,
-            screenshot_dir=self.screenshot_dir,
-            client=self.client,
-        )
-        self.page.locator(self.selectors.signing_submit_btn).first.click()
-        self._sentinel.inspect_or_halt(
-            self.page,
-            account_id=self.account_id,
-            book_id=task.book_id,
-            screenshot_dir=self.screenshot_dir,
-            client=self.client,
-        )
+        self._halt_if_flagged(**guard_kw)
+        # _guarded_click runs inspect_or_halt immediately before the final submit click.
+        self._guarded_click(self.selectors.signing_submit_btn, **guard_kw)
+        self._halt_if_flagged(**guard_kw)
 
         receipt = CompanionReceiptRequest(
             task_id=task.task_id,
@@ -979,6 +1172,55 @@ class TomatoBrowserWorker:
             details={"signing_submitted": True},
         )
 
+    def _validate_cover_path(self, raw_path: str) -> Path:
+        """Confine cover uploads to launch_config.cover_root and verify a real PNG/JPEG/WEBP <= 5MB."""
+        cover_root_cfg = self.launch_config.cover_root
+        if cover_root_cfg is None or not str(cover_root_cfg).strip():
+            raise CompanionWorkerError("cover upload disabled: no cover_root configured")
+        try:
+            cover_root = Path(cover_root_cfg).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise CompanionWorkerError(f"cover_root '{cover_root_cfg}' is not accessible: {exc}") from exc
+        if not cover_root.is_dir():
+            raise CompanionWorkerError(f"cover_root '{cover_root}' is not a directory")
+
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = cover_root / candidate
+        if candidate.is_symlink():
+            raise CompanionWorkerError(f"Cover path '{raw_path}' must not be a symlink")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise CompanionWorkerError(f"Cover path '{raw_path}' does not exist: {exc}") from exc
+        if not resolved.is_relative_to(cover_root):
+            raise CompanionWorkerError(
+                f"Cover path '{raw_path}' resolves outside cover_root '{cover_root}'"
+            )
+        if resolved.is_symlink() or not resolved.is_file():
+            raise CompanionWorkerError(f"Cover path '{raw_path}' is not a regular file")
+        suffix = resolved.suffix.lower()
+        if suffix not in _COVER_ALLOWED_SUFFIXES:
+            raise CompanionWorkerError(
+                f"Cover path '{raw_path}' has disallowed extension {suffix!r} "
+                f"(allowed: {sorted(_COVER_ALLOWED_SUFFIXES)})"
+            )
+        size = resolved.stat().st_size
+        if size <= 0 or size > _COVER_MAX_BYTES:
+            raise CompanionWorkerError(
+                f"Cover path '{raw_path}' size {size} bytes outside (0, {_COVER_MAX_BYTES}]"
+            )
+        with resolved.open("rb") as fh:
+            head = fh.read(16)
+        kind = _detect_image_kind(head)
+        expected_kind = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp"}[suffix]
+        if kind != expected_kind:
+            raise CompanionWorkerError(
+                f"Cover path '{raw_path}' content does not match a {expected_kind.upper()} image "
+                f"(detected {kind or 'unknown'})"
+            )
+        return resolved
+
     def rotate_packaging(
         self,
         task: CompanionLeaseResponse,
@@ -986,9 +1228,6 @@ class TomatoBrowserWorker:
         target_url: str,
     ) -> WorkerTaskOutcome:
         """Submit cold-start alternate title / blurb / cover packaging rotation request."""
-        self._navigate_and_guard(target_url, book_id=task.book_id, chapter=task.chapter)
-        self._verify_identity_and_book(task)
-
         new_title = str(task.metadata.get("new_title") or task.public_title).strip()
         if not (1 <= len(new_title) <= 15) or "《" in new_title or "》" in new_title:
             raise CompanionWorkerError(
@@ -996,28 +1235,34 @@ class TomatoBrowserWorker:
             )
         new_blurb = str(task.metadata.get("new_blurb") or "").strip()
         cover_path = str(task.metadata.get("cover_path") or "").strip()
+        # Validate the local cover file before touching the browser (no arbitrary local file upload).
+        validated_cover: Optional[Path] = self._validate_cover_path(cover_path) if cover_path else None
 
-        self.page.locator(self.selectors.rotate_title_input).first.fill(new_title)
-        if new_blurb and self.page.locator(self.selectors.rotate_blurb_input).count() > 0:
-            self.page.locator(self.selectors.rotate_blurb_input).first.fill(new_blurb)
-        if cover_path and self.page.locator(self.selectors.rotate_cover_input).count() > 0:
-            self.page.locator(self.selectors.rotate_cover_input).first.set_input_files(cover_path)
+        self._navigate_and_guard(target_url, book_id=task.book_id, chapter=task.chapter)
+        self._verify_identity_and_book(task)
 
-        self._sentinel.inspect_or_halt(
-            self.page,
-            account_id=self.account_id,
-            book_id=task.book_id,
-            screenshot_dir=self.screenshot_dir,
-            client=self.client,
-        )
-        self.page.locator(self.selectors.rotate_submit_btn).first.click()
-        self._sentinel.inspect_or_halt(
-            self.page,
-            account_id=self.account_id,
-            book_id=task.book_id,
-            screenshot_dir=self.screenshot_dir,
-            client=self.client,
-        )
+        if not self._has_element(self.selectors.rotate_submit_btn):
+            raise CompanionWorkerError("Packaging rotation submit button not found on page")
+        if validated_cover is not None and not self._has_element(self.selectors.rotate_cover_input):
+            raise CompanionWorkerError("Cover upload requested but cover file input is missing on page")
+
+        guard_kw: Dict[str, Any] = {"book_id": task.book_id}
+        self._guarded_fill(self.selectors.rotate_title_input, new_title, **guard_kw)
+        blurb_filled = False
+        if new_blurb and self._has_element(self.selectors.rotate_blurb_input):
+            self._guarded_fill(self.selectors.rotate_blurb_input, new_blurb, **guard_kw)
+            blurb_filled = True
+        cover_uploaded = False
+        if validated_cover is not None:
+            self._guarded_set_input_files(
+                self.selectors.rotate_cover_input, str(validated_cover), **guard_kw
+            )
+            cover_uploaded = True
+
+        self._halt_if_flagged(**guard_kw)
+        # _guarded_click runs inspect_or_halt immediately before the final submit click.
+        self._guarded_click(self.selectors.rotate_submit_btn, **guard_kw)
+        self._halt_if_flagged(**guard_kw)
 
         receipt = CompanionReceiptRequest(
             task_id=task.task_id,
@@ -1037,13 +1282,34 @@ class TomatoBrowserWorker:
             account_id=self.account_id,
             status=StockpileStatus.PUBLISHED.value,
             receipt=receipt,
-            details={"new_title": new_title, "cover_uploaded": bool(cover_path)},
+            details={
+                "new_title": new_title,
+                "blurb_filled": blurb_filled,
+                "cover_uploaded": cover_uploaded,
+            },
         )
 
     def _fetch_woff2_bytes_from_url(self, woff2_url: str) -> bytes:
-        full_url = urllib.parse.urljoin(self.page.url, woff2_url)
+        page_url = self.page.url or ""
+        full_url = urllib.parse.urljoin(page_url, woff2_url)
+        parsed = urllib.parse.urlparse(full_url)
+        page_parsed = urllib.parse.urlparse(page_url)
+        same_origin = (
+            parsed.scheme in ("http", "https")
+            and parsed.scheme == page_parsed.scheme
+            and (parsed.netloc or "").lower() == (page_parsed.netloc or "").lower()
+        )
+        if parsed.scheme != "https" and not same_origin:
+            raise CompanionWorkerError(
+                f"Refusing to fetch hotlist WOFF2 from non-https, cross-origin URL {full_url!r}"
+            )
         with urllib.request.urlopen(full_url, timeout=15.0) as resp:
-            return bytes(resp.read())
+            data = bytes(resp.read(_WOFF2_MAX_BYTES + 1))
+        if len(data) > _WOFF2_MAX_BYTES:
+            raise CompanionWorkerError(
+                f"Hotlist WOFF2 at {full_url!r} exceeds {_WOFF2_MAX_BYTES} byte cap"
+            )
+        return data
 
     def collect_metrics(
         self,

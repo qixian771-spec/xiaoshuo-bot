@@ -4,6 +4,11 @@
 #   - ONLY proxies to xiaoshuo-bot on 127.0.0.1:8080.
 #   - NEVER expose CPA (127.0.0.1:8317) to public traffic.
 #   - Passes X-Real-IP so xiaoshuo-bot's per-IP 5-failure lockout tracks real client IPs.
+#   - Admin Bearer tokens must NEVER travel over plaintext HTTP: the console is only
+#     served on the HTTPS domain site; port 80 only redirects to HTTPS.
+#
+# {$XIAOSHUO_DOMAIN} is read from XIAOSHUO_DOMAIN in /etc/xiaoshuo-bot/xiaoshuo.env.
+# deploy/deploy_remote.sh substitutes it into the staged Caddyfile before `caddy validate`.
 
 (xiaoshuo_proxy) {
 	# Match server/app.py MAX_REQUEST_BODY_BYTES (16 MiB)
@@ -15,6 +20,9 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000"
+		# app.js renders progress bars via inline style="" attributes and cover previews via blob:/data: URLs.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 		-Server
 	}
 
@@ -31,13 +39,22 @@
 	}
 }
 
-# 1. Pre-domain fallback (initial IP/HTTP access before DNS is attached).
-#    Disable or remove once a domain is configured below.
-:80 {
+# 1. Production domain with Caddy automatic HTTPS (Let's Encrypt). DNS must point here.
+{$XIAOSHUO_DOMAIN} {
 	import xiaoshuo_proxy
 }
 
-# 2. Production domain auto-HTTPS (uncomment and replace with your real domain once DNS points here):
-# matrix.example.com {
+# 2. Plain HTTP: redirect ONLY. Never proxy the console (and its Bearer token) over :80.
+:80 {
+	redir https://{host}{uri} permanent
+}
+
+# ---------------------------------------------------------------------------
+# !!! WARNING: INSECURE IP-ONLY FALLBACK — DO NOT ENABLE IN PRODUCTION !!!
+# Serving the console over plaintext HTTP exposes XIAOSHUO_ADMIN_TOKEN to anyone
+# on the network path. Only for a short, firewalled bring-up before DNS exists;
+# remove the redirect block above and prefer an SSH tunnel to 127.0.0.1:8080 instead.
+# :80 {
 # 	import xiaoshuo_proxy
 # }
+# ---------------------------------------------------------------------------

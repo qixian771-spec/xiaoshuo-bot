@@ -162,9 +162,41 @@ class TestDeployConfigs(unittest.TestCase):
         self.assertIn("request_body", text)
         self.assertIn("max_size", text)
         self.assertIn("X-Real-IP", text)
-        self.assertIn(":80", text)
         self.assertNotIn("reverse_proxy 127.0.0.1:8317", text)
         self.assertNotIn("reverse_proxy localhost:8317", text)
+
+    def test_caddyfile_https_only_with_hsts_and_csp(self) -> None:
+        text = CADDYFILE.read_text(encoding="utf-8")
+        # Active (non-comment) lines only
+        active = "\n".join(
+            ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+        )
+        # Production site is the domain block (Caddy auto-HTTPS)
+        self.assertRegex(active, r"\{\$XIAOSHUO_DOMAIN\}\s*\{\s*import xiaoshuo_proxy\s*\}")
+        # :80 block must ONLY redirect to HTTPS, never proxy the console in plaintext
+        m = re.search(r"^:80\s*\{(.*?)^\}", active, re.S | re.M)
+        self.assertIsNotNone(m, "Caddyfile must define a :80 redirect block")
+        body = m.group(1).strip()
+        self.assertEqual(body, "redir https://{host}{uri} permanent")
+        self.assertNotIn("import", body)
+        self.assertNotIn("reverse_proxy", body)
+        self.assertIn('Strict-Transport-Security "max-age=31536000"', active)
+        self.assertIn("Content-Security-Policy", active)
+        self.assertIn("frame-ancestors 'none'", active)
+        # deploy script must substitute XIAOSHUO_DOMAIN before caddy validate
+        script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        subst_idx = script.find("XIAOSHUO_DOMAIN}/${xiaoshuo_domain}/g")
+        validate_idx = script.find('caddy validate --config "${stage_dir}/${caddy_name}"')
+        self.assertNotEqual(subst_idx, -1)
+        self.assertLess(subst_idx, validate_idx)
+        env_text = ENV_EXAMPLE.read_text(encoding="utf-8")
+        self.assertIn("XIAOSHUO_DOMAIN=__REPLACE_WITH_", env_text)
+
+    def test_deploy_remote_sh_requires_strong_admin_token(self) -> None:
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("XIAOSHUO_ADMIN_TOKEN=", text)
+        self.assertIn('"${#admin_token_val}" -lt 24', text)
+        self.assertIn("*REPLACE*", text)
 
     def test_env_example_documents_required_vars_with_placeholders_only(self) -> None:
         env_map: dict[str, str] = {}
@@ -272,6 +304,10 @@ class TestDeployConfigs(unittest.TestCase):
             listed_names.add(Path(rel).name)
 
         companion_only_tests = {"test_companion_and_font.py", "test_full_system_e2e.py"}
+        # Local-PC companion audit regression suites (test_audit_companion_*.py) run on the edge PC only.
+        companion_only_tests |= {
+            p.name for p in (REPO_ROOT / "tests").glob("test_audit_companion_*.py")
+        }
         self.assertEqual(
             listed_names & companion_only_tests,
             set(),

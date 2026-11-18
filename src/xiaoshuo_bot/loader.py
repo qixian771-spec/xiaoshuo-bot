@@ -415,6 +415,16 @@ def validate_project(project: NovelProject) -> None:
                 )
 
     for fs in project.foreshadows.values():
+        if fs.status == "pending" and not [k for k in fs.plant_keywords if str(k).strip()]:
+            raise ProjectValidationError(
+                f"Foreshadow '{fs.id}': plant_keywords must contain at least one non-empty keyword "
+                f"(required as physical planting evidence)"
+            )
+        if fs.status != "resolved" and not [k for k in fs.payoff_keywords if str(k).strip()]:
+            raise ProjectValidationError(
+                f"Foreshadow '{fs.id}': payoff_keywords must contain at least one non-empty keyword "
+                f"(required as physical payoff evidence)"
+            )
         if fs.due_chapter < fs.plant_chapter:
             raise ProjectValidationError(
                 f"Foreshadow '{fs.id}': due_chapter ({fs.due_chapter}) < plant_chapter ({fs.plant_chapter})"

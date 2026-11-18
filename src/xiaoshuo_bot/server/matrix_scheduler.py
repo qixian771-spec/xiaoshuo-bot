@@ -13,6 +13,7 @@ import re
 import threading
 import time
 from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 from ..contracts import (
     AutoCreateBookRequest,
@@ -178,6 +179,32 @@ class QueuedProductionItem:
 
 
 EngineFactory = Callable[[NovelProject, Path, ProgressCallback], Any]
+
+
+class CPABindingOriginChangeError(ValueError):
+    """Raised when a CPA binding update would send existing API keys to a different origin (HTTP 400)."""
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _normalized_origin(base_url: str) -> Tuple[str, str, int]:
+    """Return (scheme, host, port) for an http(s) base_url or raise CPABindingOriginChangeError."""
+    raw = str(base_url or "").strip()
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError as exc:
+        raise CPABindingOriginChangeError(f"Invalid base_url {raw!r}: {exc}") from exc
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    if scheme not in _DEFAULT_PORTS:
+        raise CPABindingOriginChangeError(
+            f"base_url {raw!r} must use http or https scheme."
+        )
+    if not host:
+        raise CPABindingOriginChangeError(f"base_url {raw!r} has no host.")
+    return scheme, host, int(port if port is not None else _DEFAULT_PORTS[scheme])
 
 
 class MatrixScheduler:
@@ -949,6 +976,15 @@ class MatrixScheduler:
             binding = raw if isinstance(raw, CPABindingConfig) else CPABindingConfig.from_dict(raw)
             if router.has_role(binding.role):
                 existing = router.get_role_config(binding.role)
+                # Existing API keys are bound to the original endpoint; never forward them
+                # to a different scheme/host/port (credential exfiltration / SSRF).
+                new_origin = _normalized_origin(binding.base_url)
+                if new_origin != _normalized_origin(existing.base_url):
+                    raise CPABindingOriginChangeError(
+                        f"Changing base_url host for role {binding.role!r} "
+                        f"({existing.base_url!r} -> {binding.base_url!r}) requires re-provisioning "
+                        "credentials; existing API keys are not reused across origins."
+                    )
                 new_cfg = RoleEndpointConfig(
                     role=binding.role,
                     base_url=binding.base_url,
@@ -973,6 +1009,7 @@ class MatrixScheduler:
 
 
 __all__ = [
+    "CPABindingOriginChangeError",
     "EngineFactory",
     "MatrixScheduler",
     "QueuedProductionItem",

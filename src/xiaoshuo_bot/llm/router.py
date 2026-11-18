@@ -4,7 +4,9 @@ import base64
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -23,6 +25,7 @@ from .base import (
     LLMRequest,
     LLMRequestError,
     LLMResponse,
+    LLMStreamTruncatedError,
     QuotaExhaustedError,
     SHANGHAI_TZ,
     parse_model_reasoning_suffix,
@@ -201,9 +204,18 @@ class UsageBudgetLedger:
             "daily_chapter_limit": self.daily_chapter_limit,
             "daily": self._daily,
         }
-        tmp = self.state_path.with_suffix(f"{self.state_path.suffix}.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.state_path)
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(self.state_path.parent),
+            prefix=f".{self.state_path.name}.",
+            suffix=".tmp",
+        )
+        # Unique temp name per write (no fixed '.tmp' collisions); project policy forbids unlink in llm/.
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(serialized)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, self.state_path)
 
     def check_can_proceed(self, chapter: Optional[int] = None) -> None:
         """Raise BudgetCircuitBreakerError if daily budget or chapter cap has been reached."""
@@ -288,13 +300,14 @@ class UsageBudgetLedger:
                 role_stats["estimated_cost_usd"] + computed_cost, 8
             )
 
-            self._save_unlocked()
-
+            # Usage for an already-paid upstream call must never be discarded by raising here:
+            # record it, mark the breaker as tripped, and let the NEXT check_can_proceed() block.
+            tripped_reasons: List[str] = []
             if (
                 self.daily_budget_limit is not None
                 and bucket["estimated_cost_usd"] > self.daily_budget_limit + 1e-12
             ):
-                raise BudgetCircuitBreakerError(
+                tripped_reasons.append(
                     f"Daily budget exceeded for {date_key}: "
                     f"spent=${bucket['estimated_cost_usd']:.6f} > limit=${self.daily_budget_limit:.6f}"
                 )
@@ -302,10 +315,15 @@ class UsageBudgetLedger:
                 self.daily_chapter_limit is not None
                 and len(bucket["chapters"]) > self.daily_chapter_limit
             ):
-                raise BudgetCircuitBreakerError(
+                tripped_reasons.append(
                     f"Daily chapter limit exceeded for {date_key}: "
                     f"{len(bucket['chapters'])} > {self.daily_chapter_limit}"
                 )
+            if tripped_reasons:
+                bucket["tripped"] = True
+                bucket["tripped_reason"] = "; ".join(tripped_reasons)
+
+            self._save_unlocked()
 
             return json.loads(json.dumps(bucket))
 
@@ -550,6 +568,20 @@ class RoleModelRouter:
                     output_cost_per_1m=cfg.output_cost_per_1m,
                 )
                 return resp
+            except LLMStreamTruncatedError as exc:
+                # Upstream already generated (and billed) tokens; record them before re-raising.
+                self._mark_key_success(role, key_idx, cfg)
+                in_tok, out_tok = _extract_tokens(getattr(exc, "usage", None) or {})
+                self.ledger.record_usage(
+                    role=role,
+                    model=getattr(exc, "model", "") or cfg.model,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    chapter=chapter_no,
+                    input_cost_per_1m=cfg.input_cost_per_1m,
+                    output_cost_per_1m=cfg.output_cost_per_1m,
+                )
+                raise
             except LLMRequestError as exc:
                 if exc.status_code == 429:
                     self._mark_key_429(role, key_idx, cfg)

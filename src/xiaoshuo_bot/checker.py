@@ -771,7 +771,9 @@ class AITicChecker:
 
         if due_foreshadows:
             for fs in due_foreshadows:
-                if fs.payoff_keywords and not any(kw in text for kw in fs.payoff_keywords):
+                # Blank keywords never count as evidence (aligned with WorldStateManager.validate_chapter)
+                payoff_kws = [kw for kw in fs.payoff_keywords if kw and str(kw).strip()]
+                if payoff_kws and not any(kw in text for kw in payoff_kws):
                     violations.append(
                         Violation(
                             rule_id=f"FS_DUE_{fs.id}",
@@ -786,7 +788,8 @@ class AITicChecker:
 
         if plant_foreshadows:
             for fs in plant_foreshadows:
-                if fs.plant_keywords and not any(kw in text for kw in fs.plant_keywords):
+                plant_kws = [kw for kw in fs.plant_keywords if kw and str(kw).strip()]
+                if plant_kws and not any(kw in text for kw in plant_kws):
                     violations.append(
                         Violation(
                             rule_id=f"FS_PLANT_{fs.id}",
@@ -1164,7 +1167,9 @@ class AITicChecker:
                 continue
             is_overdue = exp.status == "overdue" or exp.due_chapter < check_ch
             if not is_overdue and exp.due_chapter == check_ch and exp.id in scene_fulfill_directives:
-                keywords = scene_fulfill_directives[exp.id].evidence_keywords
+                keywords = [
+                    kw for kw in scene_fulfill_directives[exp.id].evidence_keywords if kw and str(kw).strip()
+                ]
                 if keywords and not any(kw in text for kw in keywords):
                     is_overdue = True
             if is_overdue:

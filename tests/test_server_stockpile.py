@@ -416,10 +416,14 @@ class TestServerStockpileAndScheduler(unittest.TestCase):
             # 24+ chars passes bind validation
             strong = "a" * 24
             self.assertEqual(validate_bind_security("0.0.0.0", strong), strong)
-            # Loopback hosts allow empty token
-            self.assertEqual(validate_bind_security("127.0.0.1", ""), "")
-            self.assertEqual(validate_bind_security("localhost", ""), "")
-            self.assertEqual(validate_bind_security("::1", ""), "")
+            # Loopback hosts NO LONGER allow an empty token (prod runs on 127.0.0.1 behind Caddy)
+            for loop_host in ("127.0.0.1", "localhost", "::1"):
+                with self.assertRaises(InsecureBindError):
+                    validate_bind_security(loop_host, "")
+                # ...unless explicitly opted out for local dev/tests
+                self.assertEqual(
+                    validate_bind_security(loop_host, "", allow_insecure_loopback_no_auth=True), ""
+                )
 
     def test_admin_bearer_auth_and_5_failure_429_ban(self) -> None:
         mono_clock = [1000.0]

@@ -474,6 +474,31 @@ class TestLLMRouterAndCPA(unittest.TestCase):
         with self.assertRaises(LLMStreamTruncatedError):
             provider.generate(req)
 
+    def test_router_records_usage_on_stream_truncation(self) -> None:
+        ledger = UsageBudgetLedger()
+        router = RoleModelRouter(
+            roles={
+                "writer": {
+                    "base_url": f"{self.server.base_url}/v1",
+                    "model": "claude-sonnet-4-5",
+                    "api_keys": ["sk-trunc-key-1"],
+                    "input_cost_per_1m": 100.0,
+                    "output_cost_per_1m": 400.0,
+                }
+            },
+            ledger=ledger,
+        )
+        self.server.sse_mode = "truncate_length"
+        with self.assertRaises(LLMStreamTruncatedError) as ctx:
+            router.generate("writer", LLMRequest("t1", 3, 1, "draft", "sys", "usr"))
+        self.assertEqual(ctx.exception.usage.get("completion_tokens"), 45)
+        self.assertTrue(ctx.exception.partial_content)
+        summary = ledger.get_summary()
+        self.assertEqual(summary["request_count"], 1)
+        self.assertEqual(summary["input_tokens"], 120)
+        self.assertEqual(summary["output_tokens"], 45)
+        self.assertAlmostEqual(summary["estimated_cost_usd"], 0.03, places=6)
+
     def test_five_roles_429_rotation_no_downgrade_and_zero_key_leak(self) -> None:
         clock = _FakeClock(1000.0)
         primary_key = "sk-primary-secret-alpha999"
@@ -647,9 +672,17 @@ class TestLLMRouterAndCPA(unittest.TestCase):
             self.assertEqual(summary["chapters"], [1])
             self.assertAlmostEqual(summary["estimated_cost_usd"], 0.03, places=6)
 
-            # Call 2 (chapter 2): $0.060 > $0.05 -> trips BudgetCircuitBreakerError
+            # Call 2 (chapter 2): $0.060 > $0.05 -> paid response is still returned & recorded,
+            # ledger is marked tripped, and the NEXT call trips BudgetCircuitBreakerError.
+            resp2 = router.generate("writer", LLMRequest("b2", 2, 1, "draft", "sys", "usr"))
+            self.assertIn("雾色压低了江面", resp2.content)
+            summary2 = ledger.get_summary()
+            self.assertAlmostEqual(summary2["estimated_cost_usd"], 0.06, places=6)
+            self.assertTrue(summary2.get("tripped"))
+            calls_before = len(self.server.requests)
             with self.assertRaises(BudgetCircuitBreakerError):
-                router.generate("writer", LLMRequest("b2", 2, 1, "draft", "sys", "usr"))
+                router.generate("writer", LLMRequest("b3", 2, 2, "rewrite", "sys", "usr"))
+            self.assertEqual(len(self.server.requests), calls_before)
 
             # Reload persisted ledger from disk and verify chapter limit enforcement
             chapter_ledger = UsageBudgetLedger(

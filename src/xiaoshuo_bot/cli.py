@@ -68,23 +68,23 @@ def _resolve_env_or_arg(arg_val: Optional[str], *env_names: str) -> Optional[str
 
 def _build_text_provider(args: argparse.Namespace) -> LLMProvider:
     provider_name = getattr(args, "provider", "openai")
+    # Provider-specific env fallback: never send an OPENAI_* credential/endpoint to Anthropic
+    # (or vice versa). XIAOSHUO_* stays the provider-agnostic override.
+    vendor_prefix = "ANTHROPIC" if provider_name == "anthropic" else "OPENAI"
     api_key = _resolve_env_or_arg(
         getattr(args, "api_key", None),
         "XIAOSHUO_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
+        f"{vendor_prefix}_API_KEY",
     )
     base_url = _resolve_env_or_arg(
         getattr(args, "base_url", None),
         "XIAOSHUO_BASE_URL",
-        "OPENAI_BASE_URL",
-        "ANTHROPIC_BASE_URL",
+        f"{vendor_prefix}_BASE_URL",
     )
     model = _resolve_env_or_arg(
         getattr(args, "model", None),
         "XIAOSHUO_MODEL",
-        "OPENAI_MODEL",
-        "ANTHROPIC_MODEL",
+        f"{vendor_prefix}_MODEL",
     )
 
     if provider_name == "openai":
@@ -902,13 +902,21 @@ def run_companion_daemon(
     *,
     stop_event: Optional[threading.Event] = None,
 ) -> int:
+    import logging
+    import random
+
     from .companion import (
+        AccountBookMismatchError,
         BrowserLaunchConfig,
+        CaptchaAuthPauseError,
         CompanionConfigError,
         CompanionHttpClient,
         TomatoBrowserWorker,
         Woff2FontDecoder,
     )
+    from .contracts import CompanionReceiptRequest
+
+    daemon_log = logging.getLogger("xiaoshuo_bot.companion.daemon")
 
     server_url = _resolve_env_or_arg(getattr(args, "server_url", None), "XIAOSHUO_SERVER_URL")
     if not server_url:
@@ -968,6 +976,10 @@ def run_companion_daemon(
     woff2_cache_dir = getattr(args, "woff2_cache_dir", None)
     screenshot_dir = getattr(args, "screenshot_dir", None)
     client_id = getattr(args, "client_id", None) or f"companion-{account_id}"
+    cover_root_raw = _resolve_env_or_arg(
+        getattr(args, "cover_root", None),
+        "XIAOSHUO_COMPANION_COVER_ROOT",
+    )
 
     metrics_url = getattr(args, "metrics_url", None)
     star_cards_url = getattr(args, "star_cards_url", None)
@@ -981,6 +993,7 @@ def run_companion_daemon(
         headless=headless,
         review_pause_sec=review_pause_sec,
         screenshot_dir=Path(screenshot_dir).resolve() if screenshot_dir else None,
+        cover_root=Path(cover_root_raw).resolve() if cover_root_raw else None,
     )
 
     client = CompanionHttpClient(
@@ -998,50 +1011,134 @@ def run_companion_daemon(
             client=client,
             font_decoder=decoder,
         ) as worker:
-            while not signal_stop.is_set():
-                client.flush_outbox()
-                tasks = client.poll_tasks(
-                    account_id,
-                    author_name=author_name,
-                    book_ids=book_ids or None,
-                    timeout_sec=0 if once else poll_timeout,
+            backoff_base_sec = 2.0
+            backoff_max_sec = 300.0
+            backoff_sec = 0.0
+
+            def _backoff_wait(stage: str, exc: Exception) -> None:
+                nonlocal backoff_sec
+                backoff_sec = backoff_base_sec if backoff_sec <= 0 else min(backoff_max_sec, backoff_sec * 2)
+                delay = backoff_sec * random.uniform(0.5, 1.0)
+                daemon_log.warning(
+                    "Companion %s failed (%s: %s); retrying in %.1fs", stage, type(exc).__name__, exc, delay
                 )
+                print(
+                    json.dumps(
+                        {"event": "companion_backoff", "stage": stage, "error": str(exc), "retry_in_sec": round(delay, 2)},
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                signal_stop.wait(timeout=delay)
+
+            while not signal_stop.is_set():
+                try:
+                    client.flush_outbox()
+                    tasks = client.poll_tasks(
+                        account_id,
+                        author_name=author_name,
+                        book_ids=book_ids or None,
+                        timeout_sec=0 if once else poll_timeout,
+                    )
+                except Exception as exc:
+                    if once:
+                        raise
+                    _backoff_wait("poll", exc)
+                    continue
+                backoff_sec = 0.0
+
                 for task_dict in tasks:
+                    if signal_stop.is_set():
+                        break
                     task_type = str(task_dict.get("task_type") or CompanionTaskType.PUBLISH_CHAPTER.value)
-                    task_id = str(task_dict["task_id"])
-                    book_id = str(task_dict["book_id"])
-                    chapter = int(task_dict.get("chapter") or 0)
+                    task_id = str(task_dict.get("task_id") or "")
+                    book_id = str(task_dict.get("book_id") or "")
+                    try:
+                        chapter = int(task_dict.get("chapter") or 0)
+                    except (TypeError, ValueError):
+                        chapter = 0
 
-                    if task_type == CompanionTaskType.PUBLISH_CHAPTER.value:
-                        lease = client.lease_task(
-                            CompanionLeaseRequest(
-                                task_id=task_id,
-                                book_id=book_id,
-                                chapter=chapter,
-                                account_id=account_id,
+                    try:
+                        if task_type == CompanionTaskType.PUBLISH_CHAPTER.value:
+                            lease = client.lease_task(
+                                CompanionLeaseRequest(
+                                    task_id=task_id,
+                                    book_id=book_id,
+                                    chapter=chapter,
+                                    account_id=account_id,
+                                )
                             )
-                        )
-                    else:
-                        lease = _build_non_chapter_lease(
-                            task_dict,
-                            account_id=account_id,
-                            default_author_name=author_name,
-                        )
+                        else:
+                            lease = _build_non_chapter_lease(
+                                task_dict,
+                                account_id=account_id,
+                                default_author_name=author_name,
+                            )
+                    except Exception as exc:
+                        if once:
+                            raise
+                        _backoff_wait(f"lease:{task_id}", exc)
+                        continue
+                    backoff_sec = 0.0
 
-                    eff_url = _select_companion_target_url(
-                        lease.task_type,
-                        lease.metadata,
-                        default_url=target_url,
-                        metrics_url=metrics_url,
-                        star_cards_url=star_cards_url,
-                        signing_url=signing_url,
-                        rotate_url=rotate_url,
-                    )
-                    outcome = worker.execute_task(lease, target_url=eff_url)
-                    print(
-                        json.dumps(outcome.to_dict(), ensure_ascii=False),
-                        flush=True,
-                    )
+                    try:
+                        eff_url = _select_companion_target_url(
+                            lease.task_type,
+                            lease.metadata,
+                            default_url=target_url,
+                            metrics_url=metrics_url,
+                            star_cards_url=star_cards_url,
+                            signing_url=signing_url,
+                            rotate_url=rotate_url,
+                        )
+                        outcome = worker.execute_task(lease, target_url=eff_url)
+                        print(
+                            json.dumps(outcome.to_dict(), ensure_ascii=False),
+                            flush=True,
+                        )
+                    except (KeyboardInterrupt, CaptchaAuthPauseError):
+                        raise
+                    except Exception as exc:
+                        daemon_log.exception(
+                            "Companion task %s (%s, book=%s, ch=%s) failed", lease.task_id, lease.task_type, lease.book_id, lease.chapter
+                        )
+                        receipt_sent = False
+                        # AccountBookMismatchError already emitted FAILED_HARD_MISMATCH inside execute_task.
+                        if not isinstance(exc, AccountBookMismatchError) and lease.task_id:
+                            try:
+                                client.send_receipt(
+                                    CompanionReceiptRequest(
+                                        task_id=lease.task_id,
+                                        book_id=lease.book_id,
+                                        chapter=lease.chapter,
+                                        account_id=account_id,
+                                        status=StockpileStatus.FAILED_HARD_MISMATCH.value,
+                                        error_code="COMPANION_TASK_ERROR",
+                                        error_message=f"{type(exc).__name__}: {exc}"[:2000],
+                                        sha256=lease.sha256,
+                                    )
+                                )
+                                receipt_sent = True
+                            except Exception as send_exc:
+                                daemon_log.error(
+                                    "Failed to send failure receipt for task %s: %s", lease.task_id, send_exc
+                                )
+                        print(
+                            json.dumps(
+                                {
+                                    "task_id": lease.task_id,
+                                    "task_type": lease.task_type,
+                                    "book_id": lease.book_id,
+                                    "account_id": account_id,
+                                    "status": "ERROR",
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                    "failure_receipt_sent": receipt_sent,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            flush=True,
+                        )
 
                 if once:
                     break
@@ -1306,6 +1403,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("--review-pause-sec", type=float, default=0.8, help="Pause after inserting prose (seconds)")
     p_cmp.add_argument("--screenshot-dir", help="Optional directory for captcha sentinel screenshots")
     p_cmp.add_argument("--client-id", help="Optional HMAC client_id override")
+    p_cmp.add_argument(
+        "--cover-root",
+        help="Directory that ROTATE_PACKAGING cover uploads are confined to (env XIAOSHUO_COMPANION_COVER_ROOT); "
+        "cover uploads are disabled when unset",
+    )
     p_cmp.set_defaults(func=_cmd_companion)
 
     return parser

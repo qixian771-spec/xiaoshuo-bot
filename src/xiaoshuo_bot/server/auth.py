@@ -84,30 +84,76 @@ def resolve_companion_secret(companion_secret: Optional[str] = None) -> str:
     return (os.environ.get("XIAOSHUO_COMPANION_SECRET") or "").strip()
 
 
+INSECURE_NO_AUTH_ENV = "XIAOSHUO_ALLOW_INSECURE_NO_AUTH"
+
+
+def is_placeholder_secret(value: str) -> bool:
+    """Return True for template placeholders such as ``__REPLACE_WITH_TOKEN__``."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return False
+    if "replace" in cleaned.lower():
+        return True
+    return len(cleaned) >= 4 and cleaned.startswith("__") and cleaned.endswith("__")
+
+
+def _env_insecure_opt_out() -> bool:
+    return (os.environ.get(INSECURE_NO_AUTH_ENV) or "").strip().lower() in ("1", "true", "yes")
+
+
 def validate_bind_security(
     host: str,
     admin_token: Optional[str] = None,
     *,
     min_token_length: int = MIN_ADMIN_TOKEN_LENGTH,
+    allow_insecure_loopback_no_auth: Optional[bool] = None,
 ) -> str:
-    """Validate that non-loopback binds enforce a strong >=24-char XIAOSHUO_ADMIN_TOKEN."""
+    """Validate that every bind enforces a strong >=24-char XIAOSHUO_ADMIN_TOKEN.
+
+    Loopback binds are NOT exempt (production runs on 127.0.0.1 behind a reverse
+    proxy, so an empty token would mean a public unauthenticated admin API). The
+    only escape hatch is an explicit opt-out for loopback dev/test use, either via
+    ``allow_insecure_loopback_no_auth=True`` or env ``XIAOSHUO_ALLOW_INSECURE_NO_AUTH=1``
+    (env is consulted only when the parameter is not given). The opt-out only
+    permits an *empty* token; a provided token is always validated.
+    """
     norm_host = normalize_bind_host(host)
     if not norm_host:
         raise InsecureBindError("Bind host cannot be empty.")
 
+    if allow_insecure_loopback_no_auth is None:
+        allow_insecure_loopback_no_auth = _env_insecure_opt_out()
+
     token = resolve_admin_token(admin_token)
-    if norm_host not in LOOPBACK_HOSTS:
-        if not token:
-            raise InsecureBindError(
-                f"Refusing to bind non-loopback host {host!r} without XIAOSHUO_ADMIN_TOKEN "
-                f"(minimum {min_token_length} characters)."
-            )
-        if len(token) < min_token_length:
-            raise InsecureBindError(
-                f"Refusing to bind non-loopback host {host!r}: XIAOSHUO_ADMIN_TOKEN length "
-                f"{len(token)} is below required minimum {min_token_length} characters."
-            )
+    if not token:
+        if allow_insecure_loopback_no_auth and norm_host in LOOPBACK_HOSTS:
+            return token
+        raise InsecureBindError(
+            f"Refusing to bind host {host!r} without XIAOSHUO_ADMIN_TOKEN "
+            f"(minimum {min_token_length} characters). For local development only, set "
+            f"{INSECURE_NO_AUTH_ENV}=1 with a loopback host."
+        )
+    if is_placeholder_secret(token):
+        raise InsecureBindError(
+            f"Refusing to bind host {host!r}: XIAOSHUO_ADMIN_TOKEN looks like an unreplaced "
+            f"template placeholder."
+        )
+    if len(token) < min_token_length:
+        raise InsecureBindError(
+            f"Refusing to bind host {host!r}: XIAOSHUO_ADMIN_TOKEN length "
+            f"{len(token)} is below required minimum {min_token_length} characters."
+        )
     return token
+
+
+def validate_companion_secret(companion_secret: str) -> str:
+    """Reject placeholder companion HMAC secrets (empty stays allowed: edge routes then refuse all requests)."""
+    secret = (companion_secret or "").strip()
+    if secret and is_placeholder_secret(secret):
+        raise InsecureBindError(
+            "XIAOSHUO_COMPANION_SECRET looks like an unreplaced template placeholder."
+        )
+    return secret
 
 
 def _lookup_header_ci(headers: Mapping[str, str], target: str) -> str:
@@ -320,12 +366,15 @@ __all__ = [
     "CompanionUnauthorizedError",
     "DEFAULT_LOCKOUT_SECONDS",
     "DEFAULT_MAX_AUTH_FAILURES",
+    "INSECURE_NO_AUTH_ENV",
     "InsecureBindError",
     "LOOPBACK_HOSTS",
     "MIN_ADMIN_TOKEN_LENGTH",
     "is_loopback_host",
+    "is_placeholder_secret",
     "normalize_bind_host",
     "resolve_admin_token",
     "resolve_companion_secret",
     "validate_bind_security",
+    "validate_companion_secret",
 ]

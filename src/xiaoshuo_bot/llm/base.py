@@ -36,6 +36,33 @@ class LLMConfigurationError(LLMError, ValueError):
 class LLMStreamTruncatedError(LLMError):
     """Raised when an SSE stream disconnects prematurely or ends with finish_reason != 'stop'."""
 
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        usage: Optional[Dict[str, Any]] = None,
+        partial_content: str = "",
+        model: str = "",
+    ) -> None:
+        super().__init__(message)
+        # Upstream-reported (or estimated) token usage for the paid-but-truncated completion.
+        self.usage: Dict[str, Any] = dict(usage or {})
+        self.partial_content: str = partial_content or ""
+        self.model: str = model or ""
+
+
+def estimate_usage_from_text(
+    content: str, *, prompt_text: str = "", usage: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Return upstream usage if present, else a coarse char-based token estimate (1 char ~ 1 token)."""
+    if usage:
+        return dict(usage)
+    return {
+        "prompt_tokens": len(prompt_text or ""),
+        "completion_tokens": len(content or ""),
+        "estimated": True,
+    }
+
 
 class LLMRequestError(LLMError):
     """Raised on upstream HTTP/network errors with secrets redacted."""

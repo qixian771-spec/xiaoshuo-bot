@@ -73,6 +73,7 @@ from .auth import (
     is_loopback_host,
     resolve_companion_secret,
     validate_bind_security,
+    validate_companion_secret,
 )
 from .matrix_scheduler import MatrixScheduler, SchedulerConfigurationError
 from .stockpile_db import (
@@ -644,8 +645,13 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             code = exc.status_code if exc.status_code and 400 <= exc.status_code < 600 else HTTPStatus.BAD_GATEWAY
             self._send_error(code, "LLM_UPSTREAM_ERROR", str(exc))
         except Exception as exc:
-            logger.exception("Unhandled error serving %s %s", method, path)
-            self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", str(exc))
+            # Log full details server-side only; never leak internal exception text to clients.
+            logger.exception("Unhandled error serving %s %s: %s", method, path, exc)
+            self._send_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Internal server error; see server logs for details.",
+            )
         finally:
             self._drain_unread_body()
 
@@ -1083,10 +1089,15 @@ def create_server(
     now_fn: Optional[Callable[[], datetime]] = None,
     monotonic_fn: Optional[Callable[[], float]] = None,
     telegram_bot: Optional[Any] = None,
+    allow_insecure_loopback_no_auth: Optional[bool] = None,
 ) -> MatrixHTTPServer:
     """Create and validate a configured MatrixHTTPServer (enforces InsecureBindError)."""
-    resolved_token = validate_bind_security(host, admin_token)
-    resolved_secret = resolve_companion_secret(companion_secret)
+    resolved_token = validate_bind_security(
+        host,
+        admin_token,
+        allow_insecure_loopback_no_auth=allow_insecure_loopback_no_auth,
+    )
+    resolved_secret = validate_companion_secret(resolve_companion_secret(companion_secret))
 
     if scheduler is None:
         db = StockpileDB(db_path, now_fn=now_fn)

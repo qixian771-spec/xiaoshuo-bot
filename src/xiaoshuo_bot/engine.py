@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .checker import AITicChecker
@@ -21,12 +22,14 @@ from .contracts import (
     SSE_SURGICAL_POLISHED,
 )
 from .critic_polisher import (
+    AuthorNoteViolationError,
     CriticEvaluation,
+    CriticResponseParseError,
     SurgicalPolishGateError,
     SurgicalPolishResult,
     TomatoCriticPolisher,
 )
-from .llm.base import LLMProvider, LLMRequest
+from .llm.base import LLMError, LLMProvider, LLMRequest, LLMStreamTruncatedError
 from .llm.router import RoleModelRouter
 from .memory import MemoryPyramid
 from .models import (
@@ -37,11 +40,17 @@ from .models import (
     SHANGHAI_TZ,
     ScanReport,
     SceneOutline,
+    Violation,
     format_chapter_filename,
     resolve_chapter_path,
 )
 from .reporter import generate_html_dashboard, generate_markdown_report
-from .state import LockedChapterTamperedError, WorldStateManager
+from .state import (
+    ForeshadowEvidenceMissingError,
+    LockedChapterTamperedError,
+    WorldStateError,
+    WorldStateManager,
+)
 
 ProgressCallback = Callable[[str, Dict[str, Any]], None]
 
@@ -98,8 +107,20 @@ def _write_text_atomic(
     path.parent.mkdir(parents=True, exist_ok=True)
     if archive_stamp and output_dir is not None and path.exists():
         _archive_file(path, output_dir, archive_stamp)
-    tmp_path = path.with_name(f"{path.name}.tmp")
-    tmp_path.write_text(content, encoding="utf-8")
+    # Unique temp file in the same directory + fsync so a crash never leaves a torn target
+    # and concurrent writers never collide on a shared '<name>.tmp'.
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as fh:
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
+        tmp_path = fh.name
     os.replace(tmp_path, path)
 
 
@@ -254,6 +275,80 @@ class NovelGenerationEngine:
         for aid, a in self.project.assets.items():
             names[aid] = a.name
         return names
+
+    @staticmethod
+    def _writer_max_tokens(scene: SceneOutline) -> int:
+        """Size the writer output budget from the scene char ceiling (CJK ~1+ token/char + headroom)."""
+        max_chars = int(getattr(scene, "max_chars", 0) or 0)
+        return max(6000, int(max_chars * 2.5) + 2000)
+
+    def _validate_state_gate(self, scene: SceneOutline, text: str) -> Optional[Violation]:
+        """Run WorldStateManager.validate_chapter without mutating state.
+
+        Text-dependent failures (missing foreshadow/expectation evidence, locked-chapter hash
+        mismatch) are returned as a CRITICAL Violation so the rewrite loop can fix them.
+        Outline-level WorldStateErrors propagate (they can't be fixed by rewriting).
+        """
+        try:
+            self.state.validate_chapter(scene, text)
+        except (ForeshadowEvidenceMissingError, LockedChapterTamperedError) as exc:
+            rule = (
+                "STATE_LOCKED_CHAPTER_TAMPERED"
+                if isinstance(exc, LockedChapterTamperedError)
+                else "STATE_EVIDENCE_MISSING"
+            )
+            return Violation(
+                rule_id=rule,
+                category="STATE_CONSISTENCY_VIOLATION",
+                severity="CRITICAL",
+                matched_text=str(exc)[:300],
+                line_number=1,
+                context_snippet=str(exc)[:300],
+                fix_hint=(
+                    "世界状态校验未通过：本章必须在正文中自然写出要求的物理关键词作为伏笔/期待证据"
+                    f"（{exc}）"
+                ),
+            )
+        return None
+
+    def _record_degradation(
+        self,
+        scene: SceneOutline,
+        attempt: int,
+        *,
+        stage: str,
+        exc: BaseException,
+        action_taken: str,
+        incidents_jsonl: Path,
+    ) -> ProductionIncident:
+        incident = ProductionIncident(
+            incident_id=f"INC-CH{scene.chapter:04d}-A{attempt}-{stage}",
+            chapter=scene.chapter,
+            scene_id=scene.scene_id,
+            attempt=attempt,
+            timestamp=_now_shanghai_iso(),
+            violations=[
+                Violation(
+                    rule_id=stage,
+                    category="PIPELINE_DEGRADED",
+                    severity="WARNING",
+                    matched_text=f"{type(exc).__name__}: {str(exc)[:300]}",
+                    line_number=0,
+                    context_snippet="",
+                    fix_hint=action_taken,
+                )
+            ],
+            action_taken=action_taken,
+        )
+        self.incidents.append(incident)
+        incidents_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with incidents_jsonl.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(incident.to_dict(), ensure_ascii=False) + "\n")
+        print(
+            f"[Engine] DEGRADED {incident.incident_id}: {type(exc).__name__}: {str(exc)[:200]} -> {action_taken}",
+            flush=True,
+        )
+        return incident
 
     def _load_chapter_meta(self, chapters_dir: Path, chapter: int) -> Dict[str, Any]:
         meta_path = _chapter_meta_path(chapters_dir, chapter)
@@ -432,6 +527,13 @@ class NovelGenerationEngine:
                         world_state=self.state.to_snapshot(),
                         chapter=scene.chapter,
                     )
+                    if chk.passed and self._validate_state_gate(scene, existing_text) is not None:
+                        print(
+                            f"[Engine] Chapter {scene.chapter:04d} checkpoint fails world-state evidence "
+                            f"gate; regenerating instead of resuming",
+                            flush=True,
+                        )
+                        chk.passed = False
                     if chk.passed:
                         state_diff = self._sync_existing_chapter_into_state(
                             scene, existing_text, chapters_dir, snapshots_dir
@@ -595,6 +697,18 @@ class NovelGenerationEngine:
         due_fs = self.state.get_due_foreshadows(scene.chapter)
         plant_fs = self.state.get_plant_foreshadows(scene.chapter)
 
+        # Outline-only preflight (deceased on stage, ledger underflow / volume cap, foreshadow
+        # keyword config, asset refs): fail with a clear configuration error BEFORE spending tokens.
+        try:
+            self.state.preflight_scene(scene)
+        except WorldStateError as exc:
+            print(
+                f"[Engine] Chapter {scene.chapter:04d} ({scene.scene_id}) outline preflight FAILED "
+                f"before any LLM call: {exc}",
+                flush=True,
+            )
+            raise
+
         self._emit(
             on_progress,
             SSE_CHAPTER_STARTED,
@@ -636,6 +750,7 @@ class NovelGenerationEngine:
                 system_prompt=sys_prompt,
                 user_prompt=user_prompt,
                 temperature=0.65 if attempt == 1 else 0.45,
+                max_tokens=self._writer_max_tokens(scene),
             )
 
             print(
@@ -653,7 +768,30 @@ class NovelGenerationEngine:
                     "purpose": purpose,
                 },
             )
-            llm_resp = self.writer_provider.generate(llm_req)
+            try:
+                llm_resp = self.writer_provider.generate(llm_req)
+            except LLMStreamTruncatedError as exc:
+                # One in-attempt retry with a larger output budget (usage already billed upstream).
+                self._record_degradation(
+                    scene,
+                    attempt,
+                    stage="WRITER_TRUNCATED",
+                    exc=exc,
+                    action_taken="Writer stream truncated -> single retry with larger max_tokens",
+                    incidents_jsonl=incidents_jsonl,
+                )
+                llm_req = LLMRequest(
+                    request_id=f"{req_id}_truncretry",
+                    chapter=llm_req.chapter,
+                    attempt=llm_req.attempt,
+                    purpose=llm_req.purpose,
+                    system_prompt=llm_req.system_prompt,
+                    user_prompt=llm_req.user_prompt,
+                    temperature=llm_req.temperature,
+                    max_tokens=int(llm_req.max_tokens * 1.5),
+                    metadata=dict(llm_req.metadata),
+                )
+                llm_resp = self.writer_provider.generate(llm_req)
             candidate_text = llm_resp.content.rstrip()
 
             report = self.checker.scan(
@@ -666,6 +804,13 @@ class NovelGenerationEngine:
                 world_state=self.state.to_snapshot(),
                 chapter=scene.chapter,
             )
+            if report.passed:
+                # World-state gate (stricter evidence rules than the checker) must pass BEFORE any
+                # chapter artifact is written, otherwise we'd leave an orphan chapter on disk.
+                state_violation = self._validate_state_gate(scene, candidate_text)
+                if state_violation is not None:
+                    report.violations.append(state_violation)
+                    report.passed = False
             _write_json_atomic(
                 audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_scan.json",
                 report.to_dict(),
@@ -687,15 +832,29 @@ class NovelGenerationEngine:
                 author_note = ""
 
                 if self.critic_polisher is not None:
-                    critic_eval = self.critic_polisher.evaluate_chapter(
-                        candidate_text,
-                        scene=scene,
-                        project_meta=self.project.meta,
-                        scan_report=report,
-                        characters=self.project.characters,
-                        world_state=self.state.to_snapshot(),
-                        chapter=scene.chapter,
-                    )
+                    # Critic / polish / author-note are post-gate enhancements: an upstream LLM error
+                    # or malformed critic output must degrade gracefully, never discard a gated chapter.
+                    try:
+                        critic_eval = self.critic_polisher.evaluate_chapter(
+                            candidate_text,
+                            scene=scene,
+                            project_meta=self.project.meta,
+                            scan_report=report,
+                            characters=self.project.characters,
+                            world_state=self.state.to_snapshot(),
+                            chapter=scene.chapter,
+                        )
+                    except (LLMError, CriticResponseParseError) as exc:
+                        critic_eval = None
+                        self._record_degradation(
+                            scene,
+                            attempt,
+                            stage="CRITIC_FAILED",
+                            exc=exc,
+                            action_taken="Critic evaluation failed -> keeping gated text without critic score/polish",
+                            incidents_jsonl=incidents_jsonl,
+                        )
+                if self.critic_polisher is not None and critic_eval is not None:
                     _write_json_atomic(
                         audit_dir / f"ch{scene.chapter:04d}_critic_eval.json",
                         critic_eval.to_dict(),
@@ -757,28 +916,66 @@ class NovelGenerationEngine:
                             last_report = polish_report
                             last_draft = exc.polished_text or candidate_text
                             continue
+                        except (LLMError, CriticResponseParseError) as exc:
+                            polish_res = None
+                            self._record_degradation(
+                                scene,
+                                attempt,
+                                stage="POLISH_FAILED",
+                                exc=exc,
+                                action_taken="Surgical polish failed -> keeping unpolished gated text",
+                                incidents_jsonl=incidents_jsonl,
+                            )
 
-                        candidate_text = polish_res.polished_text
-                        report = polish_res.scan_report
-                        _write_json_atomic(
-                            audit_dir / f"ch{scene.chapter:04d}_polish.json",
-                            polish_res.to_dict(),
-                        )
-                        self._emit(
-                            on_progress,
-                            SSE_SURGICAL_POLISHED,
-                            {
-                                "chapter": scene.chapter,
-                                "replaced_indices": list(polish_res.replaced_indices),
-                            },
-                        )
+                        if polish_res is not None:
+                            polish_state_violation = self._validate_state_gate(
+                                scene, polish_res.polished_text
+                            )
+                            if polish_state_violation is not None:
+                                self._record_degradation(
+                                    scene,
+                                    attempt,
+                                    stage="POLISH_STATE_GATE",
+                                    exc=RuntimeError(polish_state_violation.matched_text),
+                                    action_taken="Polished text failed world-state gate -> keeping unpolished gated text",
+                                    incidents_jsonl=incidents_jsonl,
+                                )
+                                polish_res = None
 
-                    author_note = self.critic_polisher.generate_author_note(
-                        candidate_text,
-                        scene=scene,
-                        project_meta=self.project.meta,
-                        chapter=scene.chapter,
-                    )
+                        if polish_res is not None:
+                            candidate_text = polish_res.polished_text
+                            report = polish_res.scan_report
+                            _write_json_atomic(
+                                audit_dir / f"ch{scene.chapter:04d}_polish.json",
+                                polish_res.to_dict(),
+                            )
+                            self._emit(
+                                on_progress,
+                                SSE_SURGICAL_POLISHED,
+                                {
+                                    "chapter": scene.chapter,
+                                    "replaced_indices": list(polish_res.replaced_indices),
+                                },
+                            )
+
+                if self.critic_polisher is not None:
+                    try:
+                        author_note = self.critic_polisher.generate_author_note(
+                            candidate_text,
+                            scene=scene,
+                            project_meta=self.project.meta,
+                            chapter=scene.chapter,
+                        )
+                    except (LLMError, CriticResponseParseError, AuthorNoteViolationError) as exc:
+                        author_note = ""
+                        self._record_degradation(
+                            scene,
+                            attempt,
+                            stage="AUTHOR_NOTE_FAILED",
+                            exc=exc,
+                            action_taken="Author note generation failed -> empty author_note",
+                            incidents_jsonl=incidents_jsonl,
+                        )
 
                 print(
                     f"[Engine] Chapter {scene.chapter:04d} PASSED AI-TIC-CHECK "

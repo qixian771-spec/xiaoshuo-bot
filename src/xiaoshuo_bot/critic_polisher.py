@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -18,6 +19,8 @@ from .models import (
 )
 
 MAX_AUTHOR_NOTE_CHARS = 180
+
+_LOGGER = logging.getLogger(__name__)
 
 AUTHOR_NOTE_DIVERSION_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"微信|微信号|v信|vx|wx", "禁止出现微信/VX/WX导流词"),
@@ -369,18 +372,25 @@ class TomatoCriticPolisher:
                 "evaluate_chapter: 'weak_paragraphs' must be a list of 0-based paragraph indices"
             )
         llm_weak: List[int] = []
+        dropped_out_of_range: List[int] = []
         for raw_idx in payload["weak_paragraphs"]:
             if isinstance(raw_idx, bool) or not isinstance(raw_idx, int):
                 raise CriticResponseParseError(
                     f"evaluate_chapter: invalid weak_paragraphs element {raw_idx!r}; expected int"
                 )
             if not (0 <= raw_idx < num_paras):
-                raise CriticResponseParseError(
-                    f"evaluate_chapter: weak paragraph index {raw_idx} out of range [0, {num_paras - 1}]"
-                )
+                # LLM hallucinated a paragraph index: ignore it rather than discarding a gated chapter.
+                dropped_out_of_range.append(raw_idx)
+                continue
             if raw_idx not in llm_weak:
                 llm_weak.append(raw_idx)
         llm_weak.sort()
+        if dropped_out_of_range:
+            _LOGGER.warning(
+                "evaluate_chapter: ignoring out-of-range weak paragraph indices %s (valid range [0, %d])",
+                dropped_out_of_range,
+                num_paras - 1,
+            )
 
         raw_reasons = payload.get("paragraph_reasons", {})
         if raw_reasons is None:

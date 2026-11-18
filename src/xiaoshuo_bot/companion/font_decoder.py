@@ -169,15 +169,26 @@ def extract_glyph_signatures(
     )
 
 
-def _read_font_bytes(font_source: bytes | bytearray | Path | str) -> bytes:
+MAX_OBFUSCATED_FONT_BYTES = 2 * 1024 * 1024
+
+
+def _read_font_bytes(
+    font_source: bytes | bytearray | Path | str,
+    *,
+    max_bytes: Optional[int] = None,
+) -> bytes:
     if isinstance(font_source, (bytes, bytearray)):
         data = bytes(font_source)
         if not data:
             raise FontDecodeError("Font bytes cannot be empty")
+        if max_bytes is not None and len(data) > max_bytes:
+            raise FontDecodeError(f"Font bytes exceed size cap ({len(data)} > {max_bytes})")
         return data
     path = Path(font_source)
     if not path.is_file():
         raise FontDecodeError(f"Font file does not exist: '{path}'")
+    if max_bytes is not None and path.stat().st_size > max_bytes:
+        raise FontDecodeError(f"Font file '{path}' exceeds size cap ({max_bytes} bytes)")
     data = path.read_bytes()
     if not data:
         raise FontDecodeError(f"Font file is empty: '{path}'")
@@ -229,7 +240,7 @@ class Woff2FontDecoder:
         font_bytes = _read_font_bytes(font_source)
         try:
             ttfont = TTFont(io.BytesIO(font_bytes))
-        except (TTLibError, OSError, ValueError) as exc:
+        except Exception as exc:
             raise FontDecodeError(f"Failed to parse reference font: {exc}") from exc
 
         try:
@@ -244,12 +255,23 @@ class Woff2FontDecoder:
                 ch = chr(cp)
                 if allowed_chars is not None and ch not in allowed_chars:
                     continue
-                sigs = extract_glyph_signatures(ttfont, glyph_name)
+                try:
+                    sigs = extract_glyph_signatures(ttfont, glyph_name)
+                except FontDecodeError:
+                    raise
+                except Exception as exc:
+                    raise FontDecodeError(
+                        f"Failed extracting reference glyph {glyph_name!r}: {exc}"
+                    ) from exc
                 if sigs.contour_ops == 0:
                     continue
                 self._register_signatures_for_char(ch, sigs)
                 registered += 1
             return registered
+        except FontDecodeError:
+            raise
+        except Exception as exc:
+            raise FontDecodeError(f"Failed to read reference font tables: {exc}") from exc
         finally:
             ttfont.close()
 
@@ -360,7 +382,7 @@ class Woff2FontDecoder:
         use_cache: bool = True,
     ) -> Tuple[str, Dict[int, str], bool]:
         """Parse a .woff2 font and build PUA codepoint -> Unicode char mapping keyed by SHA256."""
-        font_bytes = _read_font_bytes(font_source)
+        font_bytes = _read_font_bytes(font_source, max_bytes=MAX_OBFUSCATED_FONT_BYTES)
         font_sha256 = hashlib.sha256(font_bytes).hexdigest()
 
         if use_cache:
@@ -370,7 +392,7 @@ class Woff2FontDecoder:
 
         try:
             ttfont = TTFont(io.BytesIO(font_bytes))
-        except (TTLibError, OSError, ValueError) as exc:
+        except Exception as exc:
             raise FontDecodeError(f"Failed to parse WOFF2 font ({font_sha256[:12]}): {exc}") from exc
 
         try:
@@ -382,17 +404,30 @@ class Woff2FontDecoder:
             for cp, glyph_name in cmap.items():
                 if not is_pua_codepoint(cp):
                     continue
-                sigs = extract_glyph_signatures(ttfont, glyph_name)
+                try:
+                    sigs = extract_glyph_signatures(ttfont, glyph_name)
+                except FontDecodeError:
+                    raise
+                except Exception as exc:
+                    raise FontDecodeError(
+                        f"Failed extracting glyph {glyph_name!r} from WOFF2 font ({font_sha256[:12]}): {exc}"
+                    ) from exc
                 if sigs.contour_ops == 0:
                     continue
                 matched = self._match_signature(sigs)
                 if matched is not None:
                     mapping[int(cp)] = matched
-
-            self._save_cached_mapping(font_sha256, mapping)
-            return font_sha256, mapping, False
+        except FontDecodeError:
+            raise
+        except Exception as exc:
+            raise FontDecodeError(
+                f"Failed to read WOFF2 font tables ({font_sha256[:12]}): {exc}"
+            ) from exc
         finally:
             ttfont.close()
+
+        self._save_cached_mapping(font_sha256, mapping)
+        return font_sha256, mapping, False
 
     def decode_text(
         self,

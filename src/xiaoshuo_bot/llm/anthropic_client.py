@@ -15,6 +15,7 @@ from .base import (
     LLMRequestError,
     LLMResponse,
     LLMStreamTruncatedError,
+    estimate_usage_from_text,
     redact_secrets,
 )
 
@@ -109,8 +110,19 @@ class AnthropicProvider(LLMProvider):
 
         stop_reason = resp_data.get("stop_reason")
         if stop_reason == "max_tokens":
+            blocks_tr = resp_data.get("content", []) or []
+            partial_tr = "".join(
+                b.get("text", "") for b in blocks_tr if isinstance(b, dict) and b.get("type") == "text"
+            )
             raise LLMStreamTruncatedError(
-                f"Anthropic response truncated (stop_reason='max_tokens') for {request.request_id}."
+                f"Anthropic response truncated (stop_reason='max_tokens') for {request.request_id}.",
+                usage=estimate_usage_from_text(
+                    partial_tr,
+                    prompt_text=f"{request.system_prompt}{request.user_prompt}",
+                    usage=dict(resp_data.get("usage") or {}),
+                ),
+                partial_content=partial_tr,
+                model=str(resp_data.get("model", self.model)),
             )
 
         blocks = resp_data.get("content", [])

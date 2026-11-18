@@ -170,6 +170,19 @@ if grep -q '__REPLACE_WITH_' /etc/xiaoshuo-bot/xiaoshuo.env; then
   exit 1
 fi
 
+# The admin API is reachable through Caddy even though it binds 127.0.0.1, so a strong
+# XIAOSHUO_ADMIN_TOKEN is mandatory (server/auth.py refuses to start without one as well).
+admin_token_line="$(grep -E '^[[:space:]]*XIAOSHUO_ADMIN_TOKEN=' /etc/xiaoshuo-bot/xiaoshuo.env | tail -n 1 || echo '')"
+admin_token_val="$(printf '%s' "${admin_token_line#*=}" | tr -d "[:space:]\"'")"
+if [[ -z "${admin_token_line}" || "${#admin_token_val}" -lt 24 ]]; then
+  echo "ERROR: /etc/xiaoshuo-bot/xiaoshuo.env must set XIAOSHUO_ADMIN_TOKEN with >= 24 characters." >&2
+  exit 1
+fi
+if [[ "${admin_token_val^^}" == *REPLACE* ]]; then
+  echo "ERROR: XIAOSHUO_ADMIN_TOKEN in /etc/xiaoshuo-bot/xiaoshuo.env is still a REPLACE placeholder." >&2
+  exit 1
+fi
+
 if [[ ! -f /opt/cli-proxy-api/config.yaml ]]; then
   echo "ERROR: Missing /opt/cli-proxy-api/config.yaml; install CPA config before deploying." >&2
   exit 1
@@ -318,6 +331,8 @@ cloud_tests=(
   tests/test_e2e_matrix_engine.py
   tests/test_server_stockpile.py
   tests/test_telegram_bot.py
+  tests/test_audit_server_security.py
+  tests/test_audit_engine_e1e2.py
 )
 
 for tf in "${cloud_tests[@]}"; do
@@ -345,6 +360,17 @@ set -euo pipefail
 stage_dir="$1"
 caddy_name="$2"
 rel_id="$3"
+
+# Substitute the HTTPS site address from the env file (Caddy's systemd unit does not load it).
+domain_line="$(grep -E '^[[:space:]]*XIAOSHUO_DOMAIN=' /etc/xiaoshuo-bot/xiaoshuo.env | tail -n 1 || echo '')"
+xiaoshuo_domain="$(printf '%s' "${domain_line#*=}" | tr -d "[:space:]\"'")"
+if grep -q '{\$XIAOSHUO_DOMAIN}' "${stage_dir}/${caddy_name}"; then
+  if [[ ! "${xiaoshuo_domain}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    echo "ERROR: XIAOSHUO_DOMAIN in /etc/xiaoshuo-bot/xiaoshuo.env must be a valid DNS name for Caddy auto-HTTPS." >&2
+    exit 1
+  fi
+  sed -i "s/{\\\$XIAOSHUO_DOMAIN}/${xiaoshuo_domain}/g" "${stage_dir}/${caddy_name}"
+fi
 
 caddy validate --config "${stage_dir}/${caddy_name}" --adapter caddyfile
 

@@ -118,6 +118,15 @@ class AssetState:
         )
 
 
+def _clean_keywords(raw: Any) -> List[str]:
+    """Normalize a keyword list: drop None/blank entries so checker & state agree on evidence."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(k).strip() for k in raw if k is not None and str(k).strip()]
+
+
 @dataclass
 class ForeshadowItem:
     id: str
@@ -145,8 +154,8 @@ class ForeshadowItem:
             due_chapter=int(data["due_chapter"]),
             plant_instruction=str(data["plant_instruction"]),
             payoff_instruction=str(data["payoff_instruction"]),
-            plant_keywords=list(data.get("plant_keywords", [])),
-            payoff_keywords=list(data.get("payoff_keywords", [])),
+            plant_keywords=_clean_keywords(data.get("plant_keywords")),
+            payoff_keywords=_clean_keywords(data.get("payoff_keywords")),
             status=str(data.get("status", "pending")),
             planted_evidence=str(data.get("planted_evidence", "")),
             payoff_evidence=str(data.get("payoff_evidence", "")),
@@ -280,7 +289,7 @@ class ExpectationDirective:
             due_chapter=int(data["due_chapter"]),
             description=str(data.get("description", "")),
             action=str(data.get("action", "open")),
-            evidence_keywords=list(data.get("evidence_keywords", [])),
+            evidence_keywords=_clean_keywords(data.get("evidence_keywords")),
         )
 
 
