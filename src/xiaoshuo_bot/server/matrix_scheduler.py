@@ -42,6 +42,8 @@ from ..llm.base import (
     BudgetCircuitBreakerError,
     LLMConfigurationError,
     LLMProvider,
+    LLMRequestError,
+    LLMStreamTruncatedError,
     QuotaExhaustedError,
 )
 from ..llm.cpa_manager import CPAManagementClient
@@ -224,6 +226,7 @@ class MatrixScheduler:
         safety_cushion_target: int = SAFETY_CUSHION_TARGET,
         safety_cushion_critical: int = SAFETY_CUSHION_CRITICAL,
         now_fn: Optional[Callable[[], datetime]] = None,
+        export_only: bool = False,
     ) -> None:
         self.db = db
         self.projects_root = Path(projects_root).resolve()
@@ -237,6 +240,9 @@ class MatrixScheduler:
         self.safety_cushion_target = int(safety_cushion_target)
         self.safety_cushion_critical = int(safety_cushion_critical)
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
+        # Export-only mode (owner decision 23A): no publishing companion consumes the stockpile,
+        # so books are written straight through their outline instead of stopping at the cushion.
+        self.export_only = bool(export_only)
 
         self._prod_lock = threading.Lock()
         self._bg_stop = threading.Event()
@@ -524,6 +530,17 @@ class MatrixScheduler:
                 continue
             bid = book["book_id"]
             stockpiled = self.db.count_stockpiled(bid)
+            if self.export_only:
+                queue_items.append(
+                    QueuedProductionItem(
+                        book_id=bid,
+                        title=book["title"],
+                        stockpiled_count=stockpiled,
+                        priority_tier=1,
+                        urgent=False,
+                    )
+                )
+                continue
             if stockpiled < self.safety_cushion_target:
                 urgent = stockpiled < self.safety_cushion_critical
                 tier = 0 if urgent else 1
@@ -607,6 +624,24 @@ class MatrixScheduler:
             "isolated_at": shanghai_now(self._now_fn).isoformat(),
         }
 
+    def _isolate_on_error(self, book_id: str, chapter: int, what: str, exc: BaseException) -> Dict[str, Any]:
+        """Stop one book visibly (circuit breaker) instead of letting the loop retry forever."""
+        detail = {"error_type": type(exc).__name__, "error": f"{what}：{exc}", "chapter": int(chapter)}
+        self.db.update_book_status(
+            book_id,
+            BookRunStatus.ISOLATED_GATE_FAILURE,
+            paused_reason=f"Chapter {chapter} {what}: {exc}",
+            isolation_detail=detail,
+        )
+        self._emit(
+            SSE_BOOK_ISOLATED,
+            book_id=book_id,
+            chapter=chapter,
+            message=f"Book '{book_id}' isolated: {what}",
+            data=detail,
+        )
+        return {"book_id": book_id, "status": BookRunStatus.ISOLATED_GATE_FAILURE.value, "detail": detail}
+
     def produce_next_chapter(self, book_id: str) -> Dict[str, Any]:
         """Generate & stockpile the next unproduced chapter for one book with fault isolation."""
         book = self.db.get_book(book_id)
@@ -624,7 +659,17 @@ class MatrixScheduler:
             if project.meta.is_final_volume:
                 self.db.update_book_status(book_id, BookRunStatus.COMPLETED, paused_reason="All chapters completed")
                 return {"book_id": book_id, "status": "COMPLETED"}
-            return {"book_id": book_id, "status": "NO_OUTLINED_CHAPTERS"}
+            if not self.export_only:
+                return {"book_id": book_id, "status": "NO_OUTLINED_CHAPTERS"}
+            if project.meta.contract_track == "complete_150k":
+                # lv0_1 books are planned as one complete outline; finishing it finishes the book.
+                self.db.update_book_status(book_id, BookRunStatus.COMPLETED, paused_reason="Complete outline written")
+                return {"book_id": book_id, "status": "COMPLETED"}
+            try:
+                ext = self.extend_book_volume(book_id)
+            except Exception as exc:
+                return self._isolate_on_error(book_id, len(existing_chs) + 1, "续写下一卷大纲失败", exc)
+            return {"book_id": book_id, "status": "EXTENDED", "detail": ext}
 
         output_dir = project_dir / "output"
 
@@ -671,6 +716,8 @@ class MatrixScheduler:
                 data=iso_detail,
             )
             return {"book_id": book_id, "status": BookRunStatus.ISOLATED_GATE_FAILURE.value, "detail": iso_detail}
+        except (LLMRequestError, LLMStreamTruncatedError) as exc:
+            return self._isolate_on_error(book_id, next_scene.chapter, "上游模型请求失败", exc)
         except (QuotaExhaustedError, BudgetCircuitBreakerError) as exc:
             self.db.update_book_status(
                 book_id,

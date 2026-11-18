@@ -1181,6 +1181,7 @@ def create_server(
     monotonic_fn: Optional[Callable[[], float]] = None,
     telegram_bot: Optional[Any] = None,
     allow_insecure_loopback_no_auth: Optional[bool] = None,
+    export_only: bool = False,
 ) -> MatrixHTTPServer:
     """Create and validate a configured MatrixHTTPServer (enforces InsecureBindError)."""
     resolved_token = validate_bind_security(
@@ -1199,6 +1200,7 @@ def create_server(
             cpa_client=cpa_client,
             motif_store=motif_store,
             now_fn=now_fn,
+            export_only=export_only,
         )
 
     admin_auth = AdminAuthManager(

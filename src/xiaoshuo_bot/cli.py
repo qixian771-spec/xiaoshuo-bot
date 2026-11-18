@@ -686,6 +686,17 @@ def _build_serve_router(
     return RoleModelRouter(roles_cfg, ledger=ledger)
 
 
+def _resolve_export_only(args: argparse.Namespace) -> bool:
+    if bool(getattr(args, "export_only", False)):
+        return True
+    raw = os.environ.get("XIAOSHUO_EXPORT_ONLY", "").strip()
+    if raw in ("", "0"):
+        return False
+    if raw == "1":
+        return True
+    raise ValueError(f"XIAOSHUO_EXPORT_ONLY must be '0' or '1', got {raw!r}")
+
+
 def build_serve_server(args: argparse.Namespace) -> MatrixHTTPServer:
     host = _resolve_env_or_arg(getattr(args, "host", None), "XIAOSHUO_HOST") or "127.0.0.1"
     raw_port = getattr(args, "port", None)
@@ -754,6 +765,7 @@ def build_serve_server(args: argparse.Namespace) -> MatrixHTTPServer:
         motif_store=motif_store,
         static_dir=getattr(args, "static_dir", None),
         sse_heartbeat_sec=float(getattr(args, "sse_heartbeat_sec", 15.0)),
+        export_only=_resolve_export_only(args),
     )
     if tg_config is not None:
         try:
@@ -1369,6 +1381,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_srv.add_argument("--static-dir", help="Optional static Web console directory override")
     p_srv.add_argument("--sse-heartbeat-sec", type=float, default=15.0, help="SSE heartbeat interval in seconds")
     p_srv.add_argument("--scheduler-interval", type=float, default=10.0, help="Scheduler poll interval in seconds")
+    p_srv.add_argument(
+        "--export-only",
+        action="store_true",
+        help="Export-only mode (no publishing companion): write every active book straight through its outline",
+    )
     p_srv.add_argument("--no-scheduler-loop", action="store_true", help="Disable background scheduler loop")
     p_srv.add_argument("--with-tg-bot", action="store_true", help="Run embedded TelegramControlBot polling thread")
     p_srv.add_argument("--no-tg-bot", action="store_true", help="Disable embedded TelegramControlBot even if TG env vars are set")
