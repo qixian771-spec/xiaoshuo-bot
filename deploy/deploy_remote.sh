@@ -280,6 +280,9 @@ fi
 
 /opt/xiaoshuo-bot/.venv/bin/python -m pip install --upgrade pip
 /opt/xiaoshuo-bot/.venv/bin/python -m pip install --upgrade --force-reinstall "${stage_dir}/${wheel_name}"
+if [[ -f "${stage_dir}/requirements.txt" ]]; then
+    /opt/xiaoshuo-bot/.venv/bin/python -m pip install -r "${stage_dir}/requirements.txt"
+fi
 /opt/xiaoshuo-bot/.venv/bin/xiaoshuo-bot --help >/dev/null
 
 (

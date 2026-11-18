@@ -1,0 +1,35 @@
+[Unit]
+Description=Novel Robot Web UI & Orchestration Service
+After=network-online.target
+
+[Service]
+Type=simple
+User=novel-robot
+Group=novel-robot
+WorkingDirectory=/opt/novel-robot
+# Need to make sure dependencies are installed, likely in a venv
+ExecStart=/opt/novel-robot/.venv/bin/python3 -m xiaoshuo_bot.server.web_bridge
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/novel-robot/projects/baiwu_dukou/output /opt/novel-robot/projects/baiwu_dukou/.bridge
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=novel-ui
+
+[Install]
+WantedBy=multi-user.target
