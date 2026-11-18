@@ -1,42 +1,279 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from .models import NovelProject, ScanReport, SceneOutline
+from .genres import GenreRecipe, get_genre
+from .memory import MemoryPyramid
+from .models import NovelProject, ScanReport, SceneOutline, StyleProfile
+from .sanitizers import FICTIONALIZATION_MAP
 from .state import WorldStateManager
+
+_KEY_FICTIONALIZATION_PAIRS: Tuple[Tuple[str, str], ...] = (
+    ("中国", FICTIONALIZATION_MAP["中国"]),
+    ("北京", FICTIONALIZATION_MAP["北京"]),
+    ("上海", FICTIONALIZATION_MAP["上海"]),
+    ("杭州", FICTIONALIZATION_MAP["杭州"]),
+    ("广州", FICTIONALIZATION_MAP["广州"]),
+    ("深圳", FICTIONALIZATION_MAP["深圳"]),
+    ("清华大学", FICTIONALIZATION_MAP["清华大学"]),
+    ("北京大学", FICTIONALIZATION_MAP["北京大学"]),
+    ("公安局", FICTIONALIZATION_MAP["公安局"]),
+    ("派出所", FICTIONALIZATION_MAP["派出所"]),
+    ("检察院", FICTIONALIZATION_MAP["检察院"]),
+    ("法院", FICTIONALIZATION_MAP["法院"]),
+    ("国务院", FICTIONALIZATION_MAP["国务院"]),
+)
+
+_EMOTION_LABELS: Dict[str, str] = {
+    "suppress": "压抑蓄力（切忌提前泄气，反派压迫须步步紧逼）",
+    "burst": "爽点爆发（反手打脸/破局兑现须干脆狠辣，给足感官反馈）",
+    "neutral": "稳健推进（张弛有度，贴合事件因果）",
+    "mixed": "先抑后扬（前压后爆，先吃憋屈或危机，后段即时反杀翻盘）",
+}
 
 
 class PromptCompiler:
-    """Compiles dynamic asset-driven writer prompts and surgical incident rewrite prompts."""
+    """Compiles dynamic 5D-state, memory-pyramid, and Tomato-track-aware prompts & rewrite instructions."""
 
     def __init__(self, project: NovelProject) -> None:
         self.project = project
 
-    def compile_scene_prompt(
-        self, scene: SceneOutline, state: WorldStateManager
-    ) -> Tuple[str, str]:
-        """Return (system_prompt, user_prompt) adhering strictly to the 5-section production spec."""
-        pov_char = self.project.characters[scene.pov_character]
+    def _resolve_genre_recipe(self) -> Optional[GenreRecipe]:
+        genre_id = (self.project.meta.genre_id or "").strip()
+        if not genre_id:
+            return None
+        return get_genre(genre_id)
 
-        # Format [Character_Identity_Anchor]
+    def _format_character_section(
+        self,
+        scene: SceneOutline,
+        state: WorldStateManager,
+        pov_mode: str,
+    ) -> str:
+        pov_char = self.project.characters[scene.pov_character]
         char_blocks: List[str] = []
+        active_set = set(scene.active_characters)
+
         for cid in scene.active_characters:
             c = self.project.characters[cid]
-            pov_tag = (
-                "【当前唯一限知视点角色（POV）】"
-                if cid == scene.pov_character
-                else f"【外部观察角色（严禁直接进入其内心独白，仅能由{pov_char.name}的感官观察其言行）】"
-            )
-            anchors_str = "；".join(f"{k}时表现为「{v}」" for k, v in c.behavioral_anchors.items())
+            c_state = state.character_states.get(cid)
+            if cid == scene.pov_character:
+                if pov_mode == "first_person":
+                    pov_tag = "【当前唯一第一人称“我”视点角色（POV）】"
+                else:
+                    pov_tag = "【当前唯一限知视点角色（POV）】"
+            else:
+                observer = f"“我”（{pov_char.name}）" if pov_mode == "first_person" else pov_char.name
+                pov_tag = f"【外部观察角色（严禁直接进入其内心独白，仅能由{observer}的感官观察其言行）】"
+
+            anchors_str = "；".join(f"{k}时表现为「{v}」" for k, v in c.behavioral_anchors.items()) or "无"
             ooc_str = "；".join(c.forbidden_ooc) if c.forbidden_ooc else "无"
+
+            status_val = c_state.status if c_state else c.initial_status
+            faction_val = (c_state.faction if c_state else c.faction) or "无/未定"
+
+            relations_map = c_state.relations if c_state else c.relations
+            rel_parts: List[str] = []
+            for target_id, rel_label in relations_map.items():
+                target_char = self.project.characters.get(target_id)
+                target_name = target_char.name if target_char else target_id
+                rel_parts.append(f"与{target_name}({target_id})={rel_label}")
+            relations_str = "；".join(rel_parts) if rel_parts else "无特殊登记关系"
+
+            # Merge forbidden titles from character_states and state.forbidden_titles
+            forbidden_list: List[str] = []
+            for src in (
+                c_state.forbidden_titles if c_state else c.forbidden_titles,
+                state.forbidden_titles.get(cid, []),
+            ):
+                for title in src:
+                    if title and title not in forbidden_list:
+                        forbidden_list.append(title)
+            forbidden_str = (
+                f"{'、'.join(forbidden_list)}（关系已变更，正文严禁再称呼上述过期称谓！）"
+                if forbidden_list
+                else "无"
+            )
+
+            status_note = status_val
+            if status_val == "deceased":
+                deceased_ch = c_state.deceased_chapter if c_state else None
+                status_note = f"deceased（已于第 {deceased_ch} 章死亡！仅限明确标记的回忆/遗物提及，严禁现身施动或开口！）"
+
             char_blocks.append(
                 f"- **{c.name}**（{c.role}）{pov_tag}\n"
+                f"  - 当前生死/阵营状态：{status_note} ｜ 阵营：{faction_val}\n"
+                f"  - 当前人物关系：{relations_str}\n"
+                f"  - 过期禁用称谓：{forbidden_str}\n"
                 f"  - 性格底色：{c.personality}\n"
                 f"  - 语言特征：{c.speech_style}\n"
                 f"  - 行为锚点：{anchors_str}\n"
                 f"  - OOC 禁区：{ooc_str}"
             )
-        character_traits = "\n".join(char_blocks)
+
+        # Surface any off-stage forbidden titles or deceased characters so writer never triggers STATE_* gates
+        extra_warnings: List[str] = []
+        for cid, titles in state.forbidden_titles.items():
+            if cid not in active_set and titles:
+                cname = self.project.characters[cid].name if cid in self.project.characters else cid
+                extra_warnings.append(f"- 场外人物 **{cname}** 禁用过期称谓：{'、'.join(titles)}")
+        for cid, cs in state.character_states.items():
+            if cid not in active_set and cs.status == "deceased":
+                extra_warnings.append(
+                    f"- 已故角色 **{cs.name}**（第 {cs.deceased_chapter} 章死亡）：严禁实时出场施动或说话"
+                )
+        if extra_warnings:
+            char_blocks.append("- **全书状态红线提醒**：\n  " + "\n  ".join(extra_warnings))
+
+        return "\n".join(char_blocks)
+
+    def _format_world_state_5d(
+        self,
+        scene: SceneOutline,
+        state: WorldStateManager,
+    ) -> str:
+        lines: List[str] = []
+
+        # Dimension 1: Numeric balances & volume cap locks
+        if state.numeric_balances:
+            bal_items = [f"{k}={v:g}" for k, v in state.numeric_balances.items()]
+            lines.append(f"- **数值账本当前余额（严禁单笔支出超额透支）**：{', '.join(bal_items)}")
+        else:
+            lines.append("- **数值账本当前余额**：暂无受控数值条目")
+
+        vol_locks = [
+            lock for lock in state.volume_cap_locks.values() if lock.volume == scene.volume
+        ]
+        if vol_locks:
+            lock_strs: List[str] = []
+            for lock in vol_locks:
+                unit_sfx = f" {lock.unit}" if lock.unit else ""
+                status_tag = "已突破解锁" if lock.unlocked else f"硬上限锁死 <= {lock.max_value:g}{unit_sfx}"
+                lock_strs.append(f"{lock.ledger_key}（第{lock.volume}卷：{status_tag}）")
+            lines.append(f"- **本卷数值/战力上限锁**：{'；'.join(lock_strs)}")
+
+        if scene.ledger_mutations:
+            mut_strs = [
+                f"{m.ledger_key} {m.delta:+g}（{m.reason or '章纲变更'}"
+                f"{'，含突破解锁' if m.breakthrough else ''}）"
+                for m in scene.ledger_mutations
+            ]
+            lines.append(f"- **本章预定账本变动**：{'；'.join(mut_strs)}")
+
+        # Dimension 3: Expectation countdowns
+        active_exps = state.get_active_expectations()
+        if active_exps:
+            exp_strs: List[str] = []
+            for exp in active_exps:
+                rem = exp.due_chapter - scene.chapter
+                if rem < 0 or exp.status == "overdue":
+                    urgency = f"【已逾期 {-rem} 章，必须立即在本章兑现！】"
+                elif rem == 0:
+                    urgency = "【本章到期，必须兑现核销！】"
+                else:
+                    urgency = f"剩余 {rem} 章（第{exp.due_chapter}章到期）"
+                exp_strs.append(f"[{exp.id}] {exp.title}（{urgency}）")
+            lines.append(f"- **期待感承诺倒计时**：{'；'.join(exp_strs)}")
+        else:
+            lines.append("- **期待感承诺倒计时**：当前无挂起未兑现承诺")
+
+        if scene.expectation_directives:
+            dir_strs: List[str] = []
+            for ed in scene.expectation_directives:
+                kw = f"（必含证据词：{'/'.join(ed.evidence_keywords)}）" if ed.evidence_keywords else ""
+                dir_strs.append(f"[{ed.id}] action={ed.action}「{ed.title}」到期Ch.{ed.due_chapter}{kw}")
+            lines.append(f"- **本章期待感指令**：{'；'.join(dir_strs)}")
+
+        # Dimension 4: Virtual calendar, injuries, and consecutive location count
+        lines.append(
+            f"- **虚拟时间与季节**：{state.virtual_date_label}（第 {state.virtual_day} 天，"
+            f"季节：{state.virtual_season}，本章推进 {scene.calendar_days_elapsed} 天，严禁季节服装穿帮）"
+        )
+
+        if state.unhealed_injuries:
+            inj_parts: List[str] = []
+            for cid, inj_map in state.unhealed_injuries.items():
+                cname = self.project.characters[cid].name if cid in self.project.characters else cid
+                items = "、".join(f"{name}(还需恢复{rem}章)" for name, rem in inj_map.items())
+                inj_parts.append(f"{cname}：{items}")
+            lines.append(f"- **未愈伤势冷却锁（未满冷却期严禁无伤痊愈）**：{'；'.join(inj_parts)}")
+        else:
+            lines.append("- **未愈伤势冷却锁**：全员当前无未愈伤势限制")
+
+        loc_id = (scene.location_id or "").strip()
+        if loc_id:
+            consec = state.get_consecutive_location_count(loc_id)
+            warn = "（警告：已连续驻留>=2章，严禁原地水字，须准备换地图！）" if consec >= 2 else ""
+            lines.append(f"- **场景地图坐标**：`{loc_id}`（已连续驻留 {consec} 章）{warn}")
+
+        # Dimension 5: Locked chapters
+        if state.locked_chapters:
+            locked_preview = ", ".join(str(c) for c in state.locked_chapters[-10:])
+            lines.append(f"- **已发布/定稿锁章**：第 {locked_preview} 章已锁死 SHA256，严禁改写或推翻既定事实")
+
+        return "\n".join(lines)
+
+    def _format_compliance_and_genre_section(
+        self,
+        scene: SceneOutline,
+        recipe: Optional[GenreRecipe],
+        contract_track: str,
+    ) -> str:
+        blocks: List[str] = []
+
+        if recipe is not None:
+            blocks.append(recipe.common_sense_card.format_prompt_block())
+            if scene.chapter == 1 and recipe.opening_300w_directive:
+                blocks.append(
+                    f"### 第 1 章首屏黄金 300 字开局指令\n- {recipe.opening_300w_directive}"
+                )
+            if 1 <= scene.chapter <= 3:
+                for beat in recipe.golden_three_beats:
+                    if beat.chapter == scene.chapter:
+                        blocks.append(
+                            f"### 黄金三章节拍参照（第 {beat.chapter} 章：{beat.role}）\n"
+                            f"- 开篇钩子：{beat.opening_hook}\n"
+                            f"- 核心冲突：{beat.core_conflict}\n"
+                            f"- 爽点/反转：{beat.payoff_or_twist}\n"
+                            f"- 章末断章：{beat.chapter_end_hook}"
+                        )
+                        break
+
+        # Compliant modern fictionalization hints
+        is_ancient_only = recipe is not None and recipe.genre_id in {
+            "xuanhuan_brainhole",
+            "history_brainhole",
+            "ancient_rebirth",
+            "ancient_mystery",
+        }
+        if not is_ancient_only or contract_track != "legacy":
+            pair_lines = "；".join(f"「{k}」->「{v}」" for k, v in _KEY_FICTIONALIZATION_PAIRS)
+            blocks.append(
+                "### 合规架空命名与红线提示（Sanitizer）\n"
+                f"- 现代都市/悬疑场景必须使用合规架空地名与机构名，严禁出现真实省市、高校与政法机关全称。常用映射：{pair_lines}。\n"
+                "- 严禁使用星号、点号、下划线或空格插字绕审变体（如“警*察”、“肉.体”、“杀-人”），严禁任何涉黄、极端血腥与未成年人红线描写。"
+            )
+
+        return "\n\n".join(blocks)
+
+    def compile_scene_prompt(
+        self,
+        scene: SceneOutline,
+        state: WorldStateManager,
+        memory_pyramid: Optional[MemoryPyramid] = None,
+    ) -> Tuple[str, str]:
+        """Return (system_prompt, user_prompt) dynamically adapted to project POV, panel policy, 5D state & memory."""
+        meta = self.project.meta
+        pov_mode = meta.pov_mode
+        panel_policy = meta.panel_policy
+        contract_track = meta.contract_track
+        is_tomato_track = contract_track != "legacy"
+
+        pov_char = self.project.characters[scene.pov_character]
+        recipe = self._resolve_genre_recipe()
+
+        character_traits = self._format_character_section(scene, state, pov_mode)
+        world_state_5d = self._format_world_state_5d(scene, state)
 
         # Format [Current_Asset_State]
         asset_blocks: List[str] = []
@@ -50,6 +287,14 @@ class PromptCompiler:
                 f"  - 最近状态溯源：{recent_note}"
             )
         asset_data = "\n".join(asset_blocks) if asset_blocks else "- 当前场景无特殊受控器物"
+
+        # Format [Memory_Pyramid_L0_L3]
+        eff_pyramid = memory_pyramid if memory_pyramid is not None else getattr(state, "memory_pyramid", None)
+        memory_block = ""
+        if eff_pyramid is not None:
+            compiled_mem = eff_pyramid.compile_context(scene)
+            if compiled_mem:
+                memory_block = f"### [Memory_Pyramid_L0_L3]\n{compiled_mem}\n\n"
 
         # Format [Foreshadow_Plan]
         due_list = state.get_due_foreshadows(scene.chapter)
@@ -84,53 +329,159 @@ class PromptCompiler:
                 f"  > {state.previous_chapter_tail}\n"
             )
 
+        if pov_mode == "first_person":
+            pov_scene_line = (
+                f"- **唯一限知视点人物**：{pov_char.name}（全程以第一人称“我”的所见、所闻、触觉与判断推进）"
+            )
+        else:
+            pov_scene_line = (
+                f"- **唯一限知视点人物**：{pov_char.name}（全文仅限{pov_char.name}的所见、所闻、触觉与判断）"
+            )
+
+        tomato_scene_lines: List[str] = []
+        if scene.beat_type:
+            tomato_scene_lines.append(f"- **本章爽点节拍（beat_type）**：{scene.beat_type}")
+        if scene.emotion_polarity != "neutral" or is_tomato_track:
+            emo_desc = _EMOTION_LABELS.get(scene.emotion_polarity, scene.emotion_polarity)
+            tomato_scene_lines.append(f"- **情绪极性与波形**：{scene.emotion_polarity} — {emo_desc}")
+        if scene.segment_comment_cue:
+            tomato_scene_lines.append(
+                f"- **段评互动槽点埋设要求（1～2 处）**：{scene.segment_comment_cue}"
+            )
+        elif is_tomato_track:
+            tomato_scene_lines.append(
+                "- **段评互动槽点埋设要求（1～2 处）**：在关键反转、数字金额、荒诞细节或金句对话处预留 1～2 处读者可吐槽/站队/猜后续的段评引爆点。"
+            )
+        if scene.cliffhanger_hook:
+            tomato_scene_lines.append(
+                f"- **章末断章钩子（必须悬在最高张力点）**：{scene.cliffhanger_hook}"
+            )
+        elif is_tomato_track:
+            tomato_scene_lines.append(
+                "- **章末断章钩子**：末段必须停在危机逼近、底牌刚掀开一角或新强敌叩门的瞬间，严禁“一夜无话/沉沉睡去/圆满解决”泄气收尾。"
+            )
+        tomato_scene_block = ("\n" + "\n".join(tomato_scene_lines)) if tomato_scene_lines else ""
+
         scene_outline = (
             f"- **时空坐标**：{scene.location_time}\n"
-            f"- **唯一限知视点人物**：{pov_char.name}（全文仅限{pov_char.name}的所见、所闻、触觉与判断）\n"
-            f"- **目标篇幅区间**：{scene.min_chars}～{scene.max_chars} 汉字（事件写尽即止，严禁注水）\n"
-            f"{continuity_block}"
+            f"{pov_scene_line}\n"
+            f"- **目标篇幅区间**：{scene.min_chars}～{scene.max_chars} 汉字（事件写尽即止，严禁注水）"
+            f"{tomato_scene_block}"
+            f"{continuity_block}\n"
             f"- **本章核心物理事件序列**：\n{events_formatted}\n"
             f"- **收束截断条件（写到此处立即停笔，绝不升华总结）**：{scene.stop_condition}"
         )
 
         # Format [Style_Samples]
-        style_blocks: List[str] = []
+        resolved_profiles: List[StyleProfile] = []
         for sp_id in scene.style_profile_ids:
-            sp = self.project.style_profiles[sp_id]
+            if sp_id in self.project.style_profiles:
+                resolved_profiles.append(self.project.style_profiles[sp_id])
+            elif recipe is not None and sp_id == recipe.style_profile.id:
+                resolved_profiles.append(recipe.style_profile)
+            else:
+                resolved_profiles.append(self.project.style_profiles[sp_id])
+        if not resolved_profiles and recipe is not None:
+            resolved_profiles.append(recipe.style_profile)
+
+        style_blocks: List[str] = []
+        for sp in resolved_profiles:
             style_blocks.append(
                 f"#### 样本《{sp.name}》\n"
                 f"- 颗粒度特征：{sp.granularity_notes}\n"
                 f"- 原文切片：\n{sp.sample_text}"
             )
-        style_profiles = "\n\n".join(style_blocks)
+        style_profiles = "\n\n".join(style_blocks) if style_blocks else "- 按对应题材冷峻实体白描推进，禁止空泛形容词。"
 
+        # Build dynamic System Constraints
+        if pov_mode == "first_person":
+            pov_constraint = (
+                f"- **视角**：严格执行第一人称限知视角（唯一视点人物：{pov_char.name}，以“我”自称）。"
+                "叙述段自然使用第一人称“我”推进感官与判断；严禁上帝视角（如“殊不知”、“没有人知道”）、"
+                "严禁脱离“我”的感知直接切入其他角色内心（严禁出现“XX心想/暗想/心里明白”）。"
+            )
+        else:
+            pov_constraint = (
+                f"- **视角**：严格执行第三人称限知视角（唯一视点人物：{pov_char.name}）。"
+                "严禁上帝视角（如“殊不知”、“没有人知道”）、严禁切换其他角色内心（严禁出现“XX心想/暗想/心里明白”）、"
+                "严禁叙述段出现第一人称“我”。"
+            )
+
+        if panel_policy == "allow_system_tag":
+            format_constraint = (
+                "- **输出格式**：仅输出正文。严禁标题、小标题、章节号、分割线、代码围栏、元信息、创作手记。"
+                "允许在正文内穿插受控系统面板/规则提示【...】，但单次【...】严格不超过 65 字且严禁包含竖线“|”或数字进度条斜杠（如“380/500”），以保障有声听书纯净。"
+                "输出的第 1 个字符必须是正文的汉字、合法左引号（“「『）或受控系统标签【（不得有前置空格或空行）。"
+            )
+        else:
+            format_constraint = (
+                "- **输出格式**：仅输出正文。严禁标题、小标题、章节号、分割线、代码围栏、元信息、创作手记及任何【...】系统面板/提示框。"
+                "输出的第 1 个字符必须是正文第 1 句的第一个汉字或合法左引号（“「『），不得有前置空格或空行。"
+            )
+
+        tomato_sys_constraints = ""
+        if is_tomato_track:
+            ch1_hook_rule = (
+                "第 1 章黄金首屏 200 字（前 3 段）严禁天气景物起兴（如清晨/雨夜/月色/微风）与户口本式简历介绍，必须首句即落入具体冲突、危机或核心外挂事件；"
+                if scene.chapter == 1
+                else ""
+            )
+            tomato_sys_constraints = (
+                "\n- **手机竖屏短段呼吸排版**：每段控制在 1～3 句（严禁单段超过 120 字的实心砖头文）；"
+                "连续纯旁白不超过 320 字；禁止连续超过 4 轮无动作或神态描写的“裸对话”；"
+                "保持长短句错落拉高节奏爆发力（Burstiness σ >= 10），严禁全篇句长均等。\n"
+                f"- **爆款追读铁律**：{ch1_hook_rule}"
+                "严禁章末出现“一夜无话/沉沉睡去/圆满解决/期待明天”泄气收尾，必须在强悬念或新冲突露头时断章；"
+                "严禁对死敌或加害者无代价原谅、替加害者求情或大段道德说教（反圣母铁律）。"
+            )
+
+        genre_role_label = f"（题材：{recipe.display_name}）" if recipe is not None else ""
         system_prompt = (
-            "# Role: 资深中文长篇小说作家\n\n"
+            f"# Role: 资深中文长篇小说作家{genre_role_label}\n\n"
             "## 1. 生产环境约束 (System Constraints)\n"
-            f"- **视角**：严格执行第三人称限知视角（唯一视点人物：{pov_char.name}）。严禁上帝视角（如“殊不知”、“没有人知道”）、严禁切换其他角色内心（严禁出现“XX心想/暗想/心里明白”）、严禁叙述段出现第一人称“我”。\n"
-            "- **输出格式**：仅输出正文。严禁标题、小标题、章节号、分割线、代码围栏、元信息、创作手记。输出的第 1 个字符必须是正文第 1 句的第 1 个汉字（不得有前置空格或空行）。\n"
+            f"{pov_constraint}\n"
+            f"{format_constraint}\n"
             f"- **篇幅**：按章纲执行（控制在 {scene.min_chars}～{scene.max_chars} 字），事件写尽即止，严禁注水。\n"
-            "- **风格采样**：参考下方的 [Style_Samples] 进行句子呼吸感、器物颗粒度与冷峻白描模拟。"
+            "- **风格采样**：参考下方的 [Style_Samples] 进行句子呼吸感、器物颗粒度与动作推进模拟。"
+            f"{tomato_sys_constraints}"
         )
 
+        compliance_and_genre_block = self._format_compliance_and_genre_section(
+            scene=scene,
+            recipe=recipe,
+            contract_track=contract_track,
+        )
+        genre_section_str = f"{compliance_and_genre_block}\n\n" if compliance_and_genre_block else ""
+
+        tomato_task_flow = ""
+        if is_tomato_track or scene.beat_type or scene.segment_comment_cue or scene.cliffhanger_hook:
+            tomato_task_flow = (
+                "- 爽点与互动埋设：严格落实本章 [Scene_Context] 中的节拍（beat_type）、1～2 处段评互动槽点及章末断章钩子，并保证手机竖屏短段呼吸感。\n"
+            )
+
         user_prompt = (
-            "## 2. 资产状态 (Asset Driven) - 由系统动态注入\n"
+            "## 2. 资产与五维世界状态 (Asset & 5D World State) - 由系统动态注入\n"
             "### [Character_Identity_Anchor]\n"
             f"{character_traits}\n\n"
             "### [Current_Asset_State]\n"
             f"{asset_data}\n\n"
+            "### [World_State_5D]\n"
+            f"{world_state_5d}\n\n"
+            f"{memory_block}"
             "### [Foreshadow_Plan]\n"
             f"{foreshadow_plan}\n\n"
-            "## 3. 叙事禁令 (Negative Constraints - AI-TIC-CHECK)\n"
+            "## 3. 叙事禁令与题材风控 (Negative Constraints - AI-TIC-CHECK)\n"
+            f"{genre_section_str}"
             "- **绝对禁止**：\n"
             "  - 总结腔/升华词（如：“这一刻，命运的齿轮…”、“历史的车轮”、“总而言之”、“由此可见”、“某种意义上”、“不得不说”、“仿佛在诉说着”、“一切才刚刚开始”）。\n"
-            "  - 身体反应套路（如：“不禁一愣”、“微微一愣”、“心中一紧”、“心头一震”、“眸光微闪”、“瞳孔微缩”、“眼底闪过一丝”、“嘴角勾起一抹”、“倒吸一口凉气”、“苦笑一声”、“喃喃自语”以及独立副词“不禁”）。\n"
-            "  - 结构化对称（如：“不是A，而是B”、“并非A，而是B”、“与其说是A，不如说是B”、“是……，是……，是……”三连排比、“没有……，没有……，只有……”）。\n"
-            "- **强制检查**：写完后，全文扫描是否出现上述禁用表达。命中任意一项，视为生产事故，自动触发重写。\n\n"
+            "  - 身体反应套路与网文虚词（如：“不禁一愣”、“微微一愣”、“心中一紧”、“心头一震”、“眸光微闪”、“瞳孔微缩”、“眼底闪过一丝”、“嘴角勾起一抹”、“倒吸一口凉气”、“苦笑一声”、“喃喃自语”、独立副词“不禁”，以及“三分薄凉”、“空气仿佛凝固”、“微不可察地”、“犹如实质般的杀意”、“声音淬了冰”、“大提琴般的嗓音”、“神色晦暗不明”）。\n"
+            "  - 结构化对称与廉价路人震惊（如：“不是A，而是B”、“并非A，而是B”、“与其说是A，不如说是B”、“是……，是……，是……”三连排比、“没有……，没有……，只有……”；禁止高频堆砌“全场鸦雀无声/一片哗然/恐怖如斯”）。\n"
+            "- **强制检查**：写完后，全文扫描是否出现上述禁用表达、过期称谓、死人施动、余额透支或违规地名机构。命中任意 CRITICAL 项，视为生产事故，自动触发重写。\n\n"
             "## 4. 任务执行流 (Task Flow)\n"
-            "- 场景推进：必须基于当前的 [Scene_Context] 进行物理动作与对话推进，严格遵守 [Current_Asset_State] 中物件的物理位置与损耗状态。\n"
-            "- 逻辑一致性：对话与微动作必须符合 [Character_Identity_Anchor] 的性格档案，严禁角色 OOC (Out of Character)。\n"
-            "- 事件回收：若 [Foreshadow_Plan] 中存在到期必收事项或本章埋设事项，必须在本章通过具体器物与动作完成物理落实。\n\n"
+            "- 场景推进：必须基于当前的 [Scene_Context] 进行物理动作与对话推进，严格遵守 [Current_Asset_State] 中物件的物理位置与损耗状态，以及 [World_State_5D] 中的余额、伤势与倒计时约束。\n"
+            "- 逻辑一致性：对话与微动作必须符合 [Character_Identity_Anchor] 的性格档案与最新关系，严禁角色 OOC 或使用已作废称谓。\n"
+            "- 事件回收：若 [Foreshadow_Plan] 或 [World_State_5D] 中存在到期必收伏笔/期待感承诺或本章埋设事项，必须在本章通过具体器物与动作完成物理落实。\n"
+            f"{tomato_task_flow}\n"
             "## 5. 任务上下文 (Task Input)\n"
             "### [Scene_Context]\n"
             f"{scene_outline}\n\n"
@@ -147,30 +498,44 @@ class PromptCompiler:
         state: WorldStateManager,
         draft_text: str,
         report: ScanReport,
+        memory_pyramid: Optional[MemoryPyramid] = None,
     ) -> Tuple[str, str]:
         """Compile a deterministic surgical rewrite prompt when AI-TIC-CHECK detects a production incident."""
-        base_sys, base_user = self.compile_scene_prompt(scene, state)
+        base_sys, base_user = self.compile_scene_prompt(
+            scene, state, memory_pyramid=memory_pyramid
+        )
 
         violation_lines: List[str] = []
         for idx, v in enumerate(report.violations, start=1):
             violation_lines.append(
-                f"{idx}. [{v.rule_id} / {v.category}] 第 {v.line_number} 行命中：`{v.matched_text}`\n"
+                f"{idx}. [{v.severity} | {v.rule_id} / {v.category}] 第 {v.line_number} 行命中：`{v.matched_text}`\n"
                 f"   - 上下文片段：{v.context_snippet}\n"
                 f"   - 整改要求：{v.fix_hint}"
             )
         violations_block = "\n".join(violation_lines)
+
+        if self.project.meta.panel_policy == "allow_system_tag":
+            tail_instruction = (
+                "[请直接输出修正后的完整章节正文，第一个字符必须是正文的汉字、合法左引号（“「『）或受控系统标签【，"
+                "严禁前置空格或章节标题]"
+            )
+        else:
+            tail_instruction = (
+                "[请直接输出修正后的完整章节正文，第一个字符必须是正文的第一个汉字或合法左引号（“「『），"
+                "严禁前置空格、章节标题或【...】面板]"
+            )
 
         rewrite_user = (
             f"{base_user}\n\n"
             "================================================================\n"
             "## [PRODUCTION INCIDENT — AI-TIC-CHECK 自动重写指令]\n"
             f"上一版草稿触发了 {len(report.violations)} 项生产门禁违规，已被拦截打回！\n"
-            "请在不改变章纲事件推进、人物行为锚点、器物物理状态与伏笔细节的前提下，"
-            "彻底消除以下全部违规项，并通篇复查确保不引入新的禁用词或对称句式：\n\n"
+            "请在不改变章纲事件推进、人物行为锚点、器物物理状态、五维世界状态与伏笔细节的前提下，"
+            "彻底消除以下全部违规项，并通篇复查确保不引入新的禁用词、对称句式或节奏违规：\n\n"
             f"### 违规清单\n{violations_block}\n\n"
             f"### 被拦截的原草稿（共 {report.char_count} 字）\n"
             f"{draft_text}\n\n"
             "---\n"
-            "[请直接输出修正后的完整章节正文，第一个字符必须是正文的第一个汉字]"
+            f"{tail_instruction}"
         )
         return base_sys, rewrite_user
