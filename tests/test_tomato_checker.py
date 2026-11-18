@@ -94,6 +94,18 @@ class TestTomatoCheckerGates(unittest.TestCase):
         rep_ok = self.checker.scan(good_open, scene=_make_tomato_scene(chapter=1), project_meta=self.meta)
         self.assertTrue(rep_ok.passed, f"Unexpected violations: {rep_ok.violations}")
 
+        # Spoken dialogue mentioning weather during an active Ch.1 conflict opening passes HOOK_001
+        dialogue_weather_open = (
+            "“别看外面乌云密布，这单生意今天必须谈成。”陈默把合同摔在桌上。\n\n"
+            "对方脸色一僵，伸手去按桌角的警铃，被陈默一把扣住手腕。"
+        )
+        rep_dlg = self.checker.scan(
+            dialogue_weather_open,
+            scene=_make_tomato_scene(chapter=1),
+            project_meta=self.meta,
+        )
+        self.assertTrue(rep_dlg.passed, f"Dialogue weather triggered HOOK_001: {rep_dlg.violations}")
+
     def test_hook_002_blocks_deflating_ending(self) -> None:
         bad_end = (
             "陈默一脚踹翻了桌案，冷声报出底价。\n\n"
@@ -318,6 +330,98 @@ class TestTomatoCheckerGates(unittest.TestCase):
         diag = self.checker.diagnose(uniform_text, scene=_make_tomato_scene(chapter=2, min_chars=20), project_meta=self.meta)
         self.assertEqual(diag["burstiness_sigma"], rep.diagnostics["burstiness_sigma"])
         self.assertEqual(diag["bystander_shock_paragraphs"], [1, 2])
+
+    def test_state_overdraft_zero_balance_benign_prose_and_explicit_amounts(self) -> None:
+        benign_text = (
+            "陈默从兜里拿出一张纸条，低头看清上面写的地址。\n\n"
+            "他靠在巷口墙边掏出一根烟点上，花了十分钟才赶到医院门口。\n\n"
+            "等手里宽裕了，他迟早要买下一套房，顺手掏出一块手帕擦了擦汗，又花了一点时间核对账目。"
+        )
+        for balances in ({"cash": 0.0}, {"spirit_stones": 0.0}):
+            ws = WorldStateSnapshot(current_chapter=1, numeric_balances=balances)
+            rep = self.checker.scan(
+                benign_text,
+                scene=_make_tomato_scene(chapter=2, min_chars=10),
+                world_state=ws,
+                project_meta=self.meta,
+            )
+            self.assertTrue(
+                rep.passed,
+                f"Zero-balance {balances} triggered false-positive STATE_OVERDRAFT: {rep.violations}",
+            )
+
+        # Explicit monetary/resource expenditures still trigger STATE_OVERDRAFT on 0.0 balance
+        cash_zero = WorldStateSnapshot(current_chapter=1, numeric_balances={"cash": 0.0})
+        for expr in (
+            "陈默当场花了500元买下旧木盒。",
+            "陈默毫不犹豫刷了十万买下原石。",
+            "陈默直接花掉五百万盘下铺面。",
+            "陈默付了两万块定金。",
+            "陈默砸出三千五百万拍下压轴古玉。",
+        ):
+            rep_over = self.checker.scan(
+                expr,
+                scene=_make_tomato_scene(chapter=2, min_chars=5),
+                world_state=cash_zero,
+                project_meta=self.meta,
+            )
+            self.assertFalse(rep_over.passed, f"Expected STATE_OVERDRAFT for '{expr}'")
+            self.assertIn("STATE_OVERDRAFT", {v.rule_id for v in rep_over.violations})
+
+        silver_zero = WorldStateSnapshot(current_chapter=1, numeric_balances={"silver": 0.0})
+        rep_silver = self.checker.scan(
+            "陈默拍桌花了一百两银子买下消息。",
+            scene=_make_tomato_scene(chapter=2, min_chars=5),
+            world_state=silver_zero,
+            project_meta=self.meta,
+        )
+        self.assertFalse(rep_silver.passed)
+        self.assertIn("STATE_OVERDRAFT", {v.rule_id for v in rep_silver.violations})
+
+        stone_zero = WorldStateSnapshot(current_chapter=1, numeric_balances={"spirit_stones": 0.0})
+        rep_stone = self.checker.scan(
+            "陈默运转功法，一口气消耗了十块灵石。",
+            scene=_make_tomato_scene(chapter=2, min_chars=5),
+            world_state=stone_zero,
+            project_meta=self.meta,
+        )
+        self.assertFalse(rep_stone.passed)
+        self.assertIn("STATE_OVERDRAFT", {v.rule_id for v in rep_stone.violations})
+
+    def test_state_forbidden_title_pronoun_rejection_exemption(self) -> None:
+        ws = WorldStateSnapshot(
+            current_chapter=3,
+            character_states={
+                "su_qing": CharacterWorldState(
+                    character_id="su_qing",
+                    name="苏晴",
+                    status="alive",
+                    forbidden_titles=["老公", "夫君"],
+                ),
+            },
+            forbidden_titles={"su_qing": ["老公", "夫君"]},
+        )
+        exempt_text = (
+            "“别叫我老公，我们已经离婚了。”陈默推开她的手腕。\n\n"
+            "“也别再叫他夫君，宗门契约早就作废。”长老冷声开口。"
+        )
+        rep_ok = self.checker.scan(
+            exempt_text,
+            scene=_make_tomato_scene(chapter=4, min_chars=10),
+            world_state=ws,
+            project_meta=self.meta,
+        )
+        self.assertTrue(rep_ok.passed, f"Unexpected STATE_FORBIDDEN_TITLE: {rep_ok.violations}")
+
+        # Direct forbidden usage without rejection prefix still fails
+        rep_bad = self.checker.scan(
+            "苏晴眼眶通红，抓着他的衣角低声喊道：“老公，我错了。”",
+            scene=_make_tomato_scene(chapter=4, min_chars=10),
+            world_state=ws,
+            project_meta=self.meta,
+        )
+        self.assertFalse(rep_bad.passed)
+        self.assertIn("STATE_FORBIDDEN_TITLE", {v.rule_id for v in rep_bad.violations})
 
 
 if __name__ == "__main__":

@@ -228,13 +228,20 @@ _QUOTE_CHAR_CHECK_RE = re.compile(r"[“”‘’「」『』\"]")
 
 # Expenditure & Chinese numeral parsing for STATE_OVERDRAFT
 _EXPENDITURE_VERB_RE = re.compile(
-    r"(?:花了|花掉|花费|支出|支付|付了|刷卡|刷了|转账|转了|买下|拍下|砸出|砸下|掏出|拿出|赔偿|赔了|亏损|消耗|消耗了|扣除|扣除了|打赏|充值)"
+    r"(?P<verb>花了|花掉|花费|支出|支付|付了|刷卡|刷了|转账|转了|买下|拍下|砸出|砸下|掏出|拿出|赔偿|赔了|亏损|消耗|消耗了|扣除|扣除了|打赏|充值)"
     r"[^。！？；\n]{0,12}?"
     r"(?P<num>\d+(?:\.\d+)?|(?:[零一二三四五六七八九十百千万亿]|两(?!银子))+)"
     r"\s*(?P<scale>亿|千万|百万|十万|万|千)?"
-    r"\s*(?:枚|颗|张|块(?=[^\S\n]*(?:下品|中品|上品|极品)?灵石))?"
+    r"\s*(?:(?:枚|颗|块)(?=[^\S\n]*(?:下品|中品|上品|极品)?(?:灵石|金币|银两|铜钱)))?"
     r"\s*(?P<unit>下品灵石|中品灵石|上品灵石|极品灵石|灵石|金币|银两|两银子|铜钱|积分|元|块钱|块|点)?"
 )
+
+_NON_MONETARY_CLASSIFIER_RE = re.compile(
+    r"^\s*(?:分钟|秒钟|秒|小时|钟头|天|日(?![元薪租])|周|星期|个月|月(?![薪租费供])|年(?![薪费租])|岁|载|"
+    r"张|根|把|件|套|本(?![金息])|个|名|位|步|次|回|趟|遍|条|只|头|匹|辆|架|艘|栋|座|间|层|米|公里|千米|斤|公斤|克|吨|升|毫升|度|倍)"
+)
+_PHYSICAL_OBJECT_VERBS = frozenset({"掏出", "拿出", "买下", "拍下"})
+_BLOCK_CURRENCY_FOLLOW_RE = re.compile(r"^\s*(?:钱|买|去|给|交|付|抵|赔|就|才|都|还|也|了|着|吧|呢|吗|啊)")
 
 _CN_DIGITS: Dict[str, int] = {
     "零": 0,
@@ -405,6 +412,7 @@ def _match_balance_keys(unit: str, balances: Dict[str, float]) -> List[Tuple[str
             "金币": ("gold", "coin", "coins", "金币"),
             "银两": ("silver", "tael", "银两", "银子"),
             "两银子": ("silver", "tael", "银两", "银子"),
+            "铜钱": ("copper", "coin", "coins", "铜钱"),
             "积分": ("points", "score", "credit", "积分"),
             "点": ("points", "attribute", "点", "积分"),
         }
@@ -419,8 +427,13 @@ def _match_balance_keys(unit: str, balances: Dict[str, float]) -> List[Tuple[str
         matched = [(k, v) for k, v in balances.items() if k.lower() in money_keys or any(mk in k for mk in money_keys)]
         if matched:
             return matched
-    if len(balances) == 1 and unit in monetary_units:
+    if len(balances) == 1 and unit in {"", "亿", "千万", "百万", "十万", "万", "千"}:
         return list(balances.items())
+    if len(balances) == 1 and unit in {"元", "块", "块钱"}:
+        single_key = next(iter(balances)).lower()
+        non_rmb_tokens = ("spirit_stone", "silver", "tael", "gold", "copper", "point", "score", "credit", "attribute", "灵石", "银", "铜", "积分")
+        if not any(tok in single_key for tok in non_rmb_tokens):
+            return list(balances.items())
     return []
 
 
@@ -703,7 +716,12 @@ class AITicChecker:
 
         # 10. HOOK_001 & HOOK_002: First-screen 200-char gate & deflating ending gate
         if eff_track != "legacy" and eff_chapter == 1:
-            self._scan_hook_001(text, paragraphs_with_lines, violations)
+            self._scan_hook_001(
+                text,
+                masked_paragraphs_with_lines,
+                violations,
+                raw_paragraphs_with_lines=paragraphs_with_lines,
+            )
         self._scan_hook_002(text, masked_paragraphs_with_lines, violations)
 
         # 11. SAFE_001~SAFE_004: Compliance, symbol evasion, redlines, and AI clichés
@@ -856,16 +874,21 @@ class AITicChecker:
         text: str,
         paragraphs_with_lines: Sequence[Tuple[int, int, str]],
         out: List[Violation],
+        *,
+        raw_paragraphs_with_lines: Optional[Sequence[Tuple[int, int, str]]] = None,
     ) -> None:
         first_three = paragraphs_with_lines[:3]
         if not first_three:
             return
+        raw_first_three = raw_paragraphs_with_lines[:3] if raw_paragraphs_with_lines is not None else first_three
         opening_block = "\n".join(p for _, _, p in first_three)
+        raw_opening_block = "\n".join(p for _, _, p in raw_first_three)
         # Focus on the first 3 paragraphs (and first ~220 chars of opening)
         for pattern, hint in HOOK_OPENING_WEATHER_PATTERNS:
             for idx, (_, line_no, para) in enumerate(first_three):
                 m = re.search(pattern, para)
                 if m:
+                    raw_para = raw_first_three[idx][2] if idx < len(raw_first_three) else para
                     # Only treat paragraph 1 or standalone scenery sentences in first 3 paragraphs as violation
                     if idx == 0 or len(para) <= 60 or not _QUOTE_CHAR_CHECK_RE.search(para):
                         out.append(
@@ -875,7 +898,7 @@ class AITicChecker:
                                 severity="CRITICAL",
                                 matched_text=m.group(0),
                                 line_number=line_no,
-                                context_snippet=para[:60],
+                                context_snippet=raw_para[:60],
                                 fix_hint=hint,
                             )
                         )
@@ -892,7 +915,7 @@ class AITicChecker:
                         severity="CRITICAL",
                         matched_text=m.group(0),
                         line_number=line_no,
-                        context_snippet=_snippet_around(opening_block, m.start(), m.end()),
+                        context_snippet=_snippet_around(raw_opening_block, m.start(), m.end()),
                         fix_hint=hint,
                     )
                 )
@@ -1042,7 +1065,7 @@ class AITicChecker:
                 continue
             for m in re.finditer(re.escape(title), text):
                 prefix = text[max(0, m.start() - 8) : m.start()]
-                if re.search(r"(?:别叫|别再叫|不再叫|不再是|早就不是|不是你的|前任|昔日)$", prefix):
+                if re.search(r"(?:别叫|别再叫|不再叫|不要叫|别喊|别再喊|不再是|早就不是|不是你的|前任|昔日)(?:我|你|他|她)?$", prefix):
                     continue
                 out.append(
                     Violation(
@@ -1079,11 +1102,39 @@ class AITicChecker:
                             )
             if not flagged_overdraft:
                 for m in _EXPENDITURE_VERB_RE.finditer(text):
+                    verb_raw = m.group("verb")
                     num_raw = m.group("num")
                     scale_raw = m.group("scale") or ""
                     unit_raw = m.group("unit") or ""
+                    has_monetary_indicator = bool(
+                        unit_raw
+                        or scale_raw
+                        or any(mag in num_raw for mag in ("千", "万", "亿"))
+                    )
+                    if not has_monetary_indicator:
+                        continue
+                    trailing = text[m.end() :]
+                    if not unit_raw and _NON_MONETARY_CLASSIFIER_RE.match(trailing):
+                        continue
                     amount = parse_chinese_amount(num_raw, scale_raw)
                     if amount is None or amount <= 0:
+                        continue
+                    if (
+                        unit_raw == "块"
+                        and not scale_raw
+                        and amount == 1.0
+                        and verb_raw in _PHYSICAL_OBJECT_VERBS
+                        and re.match(r"^\s*[\u4e00-\u9fa5]", trailing)
+                        and not _BLOCK_CURRENCY_FOLLOW_RE.match(trailing)
+                    ):
+                        continue
+                    if (
+                        unit_raw == "点"
+                        and not scale_raw
+                        and amount == 1.0
+                        and verb_raw not in {"扣除", "扣除了", "消耗", "消耗了", "支出", "支付"}
+                        and not re.match(r"^\s*(?:积分|点数|属性|能量|经验|战力|功德|声望|贡献|灵力|体力|生命|法力|气血)", trailing)
+                    ):
                         continue
                     targets = _match_balance_keys(unit_raw, balances)
                     for key, bal in targets:
