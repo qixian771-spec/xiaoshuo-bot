@@ -1,0 +1,39 @@
+[Unit]
+Description=xiaoshuo-bot Cloud Novel Matrix Server & Telegram Controller
+After=network-online.target cpa.service
+Wants=network-online.target cpa.service
+
+[Service]
+Type=simple
+User=xiaoshuo
+Group=xiaoshuo
+WorkingDirectory=/opt/xiaoshuo-bot
+EnvironmentFile=/etc/xiaoshuo-bot/xiaoshuo.env
+
+# Zero plaintext secrets or tokens on CLI; all secrets are injected via EnvironmentFile (chmod 0600).
+# Loopback-only HTTP server behind Caddy reverse proxy.
+ExecStart=/opt/xiaoshuo-bot/.venv/bin/xiaoshuo-bot serve --host 127.0.0.1 --port 8080 --db /opt/xiaoshuo-bot/data/matrix.db --projects-root /opt/xiaoshuo-bot/projects
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Least-privilege systemd hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/xiaoshuo-bot/data /opt/xiaoshuo-bot/projects /var/log/xiaoshuo-bot
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xiaoshuo-bot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+# CLIProxyAPI (CPA) Zero-Fallback Production Configuration Template
+# Copy to /opt/cli-proxy-api/config.yaml on the Korea server and replace all placeholders.
+# Security invariant: CPA MUST bind exclusively to 127.0.0.1:8317 (never 0.0.0.0).
+
+host: "127.0.0.1"
+port: 8317
+
+# Directory storing uploaded OAuth/subscription credential JSON files (must be chmod 0700).
+auth-dir: "/opt/cli-proxy-api/auth-files"
+
+# Local gateway API keys required by xiaoshuo-bot (never leave empty; replace before deploy).
+api-keys:
+  - "__REPLACE_WITH_64_HEX_CPA_LOCAL_GATEWAY_KEY__"
+
+# Explicitly keep Gemini built-in image generation enabled for 600x800 cover pipeline.
+disable-image-generation: false
+
+# Strict anti-silent-downgrade quota policy:
+# - Rotate same-tier subscription accounts/projects on 429.
+# - NEVER silently downgrade to preview models.
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: false
+
+# Long-form SSE streaming keepalive settings (prevents proxy/socket idle drops).
+streaming:
+  keepalive-seconds: 15
+  send-keepalive-before-ft: true
+
+# Remote management API MUST remain loopback-only (access from local PC via ssh_cpa_tunnel.ps1).
+remote-management:
+  allow-remote: false
+  secret-key: "__REPLACE_WITH_64_HEX_CPA_MANAGEMENT_SECRET_KEY__"
+
+debug: false
+logging-to-file: false

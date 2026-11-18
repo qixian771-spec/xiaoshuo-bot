@@ -1,0 +1,39 @@
+[Unit]
+Description=CLIProxyAPI (CPA) Loopback Subscription Gateway
+Documentation=https://github.com/router-for-me/CLIProxyAPI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xiaoshuo
+Group=xiaoshuo
+WorkingDirectory=/opt/cli-proxy-api
+EnvironmentFile=/etc/xiaoshuo-bot/xiaoshuo.env
+
+# Zero secrets or tokens in CLI arguments; all config & keys reside in config.yaml (0600) & env file (0600).
+ExecStart=/opt/cli-proxy-api/cli-proxy-api --config /opt/cli-proxy-api/config.yaml
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Least-privilege systemd hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/cli-proxy-api/auth-files /var/log/cli-proxy-api
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cpa
+
+[Install]
+WantedBy=multi-user.target

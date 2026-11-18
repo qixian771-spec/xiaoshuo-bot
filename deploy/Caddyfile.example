@@ -1,0 +1,43 @@
+# Caddy Reverse Proxy Configuration for xiaoshuo-bot Matrix Control Console
+# Copy to /etc/caddy/Caddyfile on the Korea server.
+# Security invariants:
+#   - ONLY proxies to xiaoshuo-bot on 127.0.0.1:8080.
+#   - NEVER expose CPA (127.0.0.1:8317) to public traffic.
+#   - Passes X-Real-IP so xiaoshuo-bot's per-IP 5-failure lockout tracks real client IPs.
+
+(xiaoshuo_proxy) {
+	# Match server/app.py MAX_REQUEST_BODY_BYTES (16 MiB)
+	request_body {
+		max_size 16MB
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Disable response buffering so SSE (/api/events/stream) and 25s long-poll flush immediately
+		flush_interval -1
+
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+
+		transport http {
+			read_timeout 120s
+		}
+	}
+}
+
+# 1. Pre-domain fallback (initial IP/HTTP access before DNS is attached).
+#    Disable or remove once a domain is configured below.
+:80 {
+	import xiaoshuo_proxy
+}
+
+# 2. Production domain auto-HTTPS (uncomment and replace with your real domain once DNS points here):
+# matrix.example.com {
+# 	import xiaoshuo_proxy
+# }
