@@ -133,6 +133,7 @@ class AuditCPABindingOriginTests(unittest.TestCase):
             writer = [b for b in updated if b.role == "writer"][0]
             self.assertEqual(writer.model, "model-b")
             self.assertEqual(writer.base_url, "http://127.0.0.1:8317/v2")
+            sched.db.close()
 
     def test_base_url_host_change_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,6 +152,7 @@ class AuditCPABindingOriginTests(unittest.TestCase):
             writer = [b for b in sched.get_cpa_bindings() if b.role == "writer"][0]
             self.assertEqual(writer.base_url, "http://127.0.0.1:8317/v1")
             self.assertEqual(writer.model, "model-a")
+            sched.db.close()
 
 
 class AuditLeaseTests(unittest.TestCase):
