@@ -1,3 +1,5 @@
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,8 +10,15 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from xiaoshuo_bot.cli import main as cli_main
 from xiaoshuo_bot.compiler import PromptCompiler
+from xiaoshuo_bot.engine import NovelGenerationEngine
+from xiaoshuo_bot.llm.base import LLMProvider, LLMRequest, LLMResponse
 from xiaoshuo_bot.loader import load_project
 from xiaoshuo_bot.state import WorldStateManager
+
+
+class _MustNotCallProvider(LLMProvider):
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        raise AssertionError(f"LLM should not be called during verified --resume, got {request.request_id}")
 
 
 class TestPipelineAndFaultSmoke(unittest.TestCase):
@@ -44,8 +53,58 @@ class TestPipelineAndFaultSmoke(unittest.TestCase):
                 ]
             )
             self.assertEqual(rc, 0)
-            self.assertTrue((Path(tmpdir) / "audit" / "incidents.jsonl").exists())
-            self.assertTrue((Path(tmpdir) / "chapters" / "chapter_01.txt").exists())
+            out_dir = Path(tmpdir)
+            self.assertTrue((out_dir / "audit" / "incidents.jsonl").exists())
+            self.assertTrue((out_dir / "chapters" / "chapter_0001.txt").exists())
+            self.assertTrue((out_dir / "chapters" / "chapter_0001.meta.json").exists())
+            self.assertTrue((out_dir / "snapshots" / "chapter_0000_initial.json").exists())
+            self.assertTrue((out_dir / "snapshots" / "chapter_0001_after.json").exists())
+            self.assertTrue((out_dir / "snapshots" / "memory_0001_after.json").exists())
+
+            meta = json.loads((out_dir / "chapters" / "chapter_0001.meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["chapter"], 1)
+            self.assertEqual(len(meta["sha256"]), 64)
+
+    def test_resume_legacy_two_digit_baiwu_dukou_readonly_copy(self) -> None:
+        source_proj = ROOT / "projects" / "baiwu_dukou"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            copied_proj = Path(tmpdir) / "baiwu_dukou"
+            shutil.copytree(source_proj, copied_proj)
+
+            # Confirm legacy :02d files exist in the copied fixture
+            self.assertTrue((copied_proj / "output" / "chapters" / "chapter_01.txt").is_file())
+            self.assertTrue((copied_proj / "output" / "chapters" / "chapter_05.txt").is_file())
+            self.assertTrue((copied_proj / "output" / "snapshots" / "chapter_00_initial.json").is_file())
+
+            project = load_project(copied_proj)
+            engine = NovelGenerationEngine(
+                project=project,
+                provider=_MustNotCallProvider(),
+                output_dir=copied_proj / "output",
+            )
+            manifest = engine.run(resume=True)
+
+            self.assertEqual(manifest["chapter_count"], 5)
+            self.assertEqual(manifest["all_completed_chapters_on_disk"], [1, 2, 3, 4, 5])
+            self.assertTrue(manifest["all_gates_passed"])
+            # Legacy :02d chapter files must stay intact with zero ambiguous :04d duplicates
+            for ch in range(1, 6):
+                self.assertTrue((copied_proj / "output" / "chapters" / f"chapter_{ch:02d}.txt").is_file())
+                self.assertFalse((copied_proj / "output" / "chapters" / f"chapter_{ch:04d}.txt").exists())
+
+            # Also verify CLI `resume` subcommand works cleanly on the copied project
+            rc = cli_main(
+                [
+                    "resume",
+                    "--project",
+                    str(copied_proj),
+                    "--provider",
+                    "bridge",
+                    "--output-dir",
+                    str(copied_proj / "output"),
+                ]
+            )
+            self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":
