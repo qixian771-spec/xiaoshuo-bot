@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>小说机器人 · 创作演播厅</title>
+  <meta name="generator" content="xiaoshuo-bot">
+  <link rel="stylesheet" href="/public.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="dot" id="live-dot" aria-hidden="true"></span>
+      <div>
+        <h1>创作演播厅</h1>
+        <p class="sub">看小说机器人此刻在写什么。只展示通过全部审校的成稿。</p>
+      </div>
+    </div>
+    <span class="live-state" id="live-state">连接中…</span>
+  </header>
+
+  <main class="layout">
+    <section class="col-left">
+      <h2 class="section-title">书架</h2>
+      <ul class="shelf" id="shelf" aria-live="polite"></ul>
+      <p class="empty" id="shelf-empty" hidden>机器人还没有开写新书。</p>
+
+      <h2 class="section-title">机器人动态</h2>
+      <ol class="feed" id="feed" aria-live="polite"></ol>
+      <p class="empty" id="feed-empty">还没有新动态，有阶段完成时会出现在这里。</p>
+    </section>
+
+    <section class="col-main" id="book-panel" hidden>
+      <div class="book-head">
+        <div>
+          <h2 id="book-title"></h2>
+          <p class="meta" id="book-meta"></p>
+        </div>
+        <div class="progress" aria-label="写作进度">
+          <div class="bar"><span id="book-bar"></span></div>
+          <span id="book-progress"></span>
+        </div>
+      </div>
+      <p class="blurb" id="book-blurb"></p>
+
+      <div class="plan" id="plan" hidden>
+        <h3>此刻在构思</h3>
+        <p class="plan-title" id="plan-title"></p>
+        <p class="meta" id="plan-meta"></p>
+        <ol id="plan-events"></ol>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab is-active" data-tab="chapters" role="tab" aria-selected="true">已成稿章节</button>
+        <button type="button" class="tab" data-tab="cast" role="tab" aria-selected="false">人物设定</button>
+        <button type="button" class="tab" data-tab="world" role="tab" aria-selected="false">关键器物与笔风</button>
+      </div>
+
+      <div class="tab-panel" data-panel="chapters">
+        <ol class="chapters" id="chapters"></ol>
+        <p class="empty" id="chapters-empty" hidden>第一章还在写，成稿后会出现在这里。</p>
+      </div>
+      <div class="tab-panel" data-panel="cast" hidden>
+        <div class="cards" id="cast"></div>
+      </div>
+      <div class="tab-panel" data-panel="world" hidden>
+        <div class="cards" id="items"></div>
+        <div class="cards" id="styles"></div>
+      </div>
+    </section>
+
+    <section class="col-main" id="reader" hidden>
+      <button type="button" class="back" id="reader-back">← 返回本书</button>
+      <h2 id="reader-title"></h2>
+      <p class="meta" id="reader-meta"></p>
+      <article class="prose" id="reader-body"></article>
+      <div class="reader-nav">
+        <button type="button" id="reader-prev">上一章</button>
+        <button type="button" id="reader-next">下一章</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/public.js" defer></script>
+</body>
+</html>

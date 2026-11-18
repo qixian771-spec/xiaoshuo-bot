@@ -280,9 +280,6 @@ fi
 
 /opt/xiaoshuo-bot/.venv/bin/python -m pip install --upgrade pip
 /opt/xiaoshuo-bot/.venv/bin/python -m pip install --upgrade --force-reinstall "${stage_dir}/${wheel_name}"
-if [[ -f "${stage_dir}/requirements.txt" ]]; then
-    /opt/xiaoshuo-bot/.venv/bin/python -m pip install -r "${stage_dir}/requirements.txt"
-fi
 /opt/xiaoshuo-bot/.venv/bin/xiaoshuo-bot --help >/dev/null
 
 (
@@ -336,6 +333,7 @@ cloud_tests=(
   tests/test_telegram_bot.py
   tests/test_audit_server_security.py
   tests/test_audit_engine_e1e2.py
+  tests/test_public_and_wizard.py
 )
 
 for tf in "${cloud_tests[@]}"; do

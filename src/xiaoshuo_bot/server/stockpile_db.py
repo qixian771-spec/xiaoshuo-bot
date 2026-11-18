@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ..contracts import (
     BookRunStatus,
@@ -351,6 +351,30 @@ class StockpileDB:
                     detected_at TEXT NOT NULL,
                     resolved_at TEXT NOT NULL DEFAULT ''
                 );
+
+                CREATE TABLE IF NOT EXISTS production_stats (
+                    book_id TEXT NOT NULL,
+                    chapter INTEGER NOT NULL,
+                    duration_sec REAL NOT NULL,
+                    attempts_used INTEGER NOT NULL,
+                    rewrites_triggered INTEGER NOT NULL,
+                    char_count INTEGER NOT NULL,
+                    produced_at TEXT NOT NULL,
+                    PRIMARY KEY (book_id, chapter)
+                );
+
+                CREATE TABLE IF NOT EXISTS wizard_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    idea TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    step_index INTEGER NOT NULL,
+                    choices_json TEXT NOT NULL DEFAULT '[]',
+                    options_json TEXT NOT NULL DEFAULT '[]',
+                    book_id TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -358,6 +382,135 @@ class StockpileDB:
         with self._lock:
             row = self._conn.execute("PRAGMA journal_mode;").fetchone()
             return str(row[0]).lower() if row else ""
+
+    # -----------------------------------------------------------------------
+    # Production KPI (写稿耗时 vs 重写率)
+    # -----------------------------------------------------------------------
+    def record_production_stat(
+        self,
+        book_id: str,
+        chapter: int,
+        *,
+        duration_sec: float,
+        attempts_used: int,
+        rewrites_triggered: int,
+        char_count: int,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO production_stats
+                    (book_id, chapter, duration_sec, attempts_used, rewrites_triggered, char_count, produced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(book_id, chapter) DO UPDATE SET
+                    duration_sec = excluded.duration_sec,
+                    attempts_used = excluded.attempts_used,
+                    rewrites_triggered = excluded.rewrites_triggered,
+                    char_count = excluded.char_count,
+                    produced_at = excluded.produced_at
+                """,
+                (
+                    book_id,
+                    int(chapter),
+                    float(duration_sec),
+                    int(attempts_used),
+                    int(rewrites_triggered),
+                    int(char_count),
+                    self._now_iso(),
+                ),
+            )
+
+    def get_production_kpi(self, book_id: Optional[str] = None) -> Dict[str, Any]:
+        where = "WHERE book_id = ?" if book_id else ""
+        params: Tuple[Any, ...] = (book_id,) if book_id else ()
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT COUNT(*) AS chapters,
+                       COALESCE(AVG(duration_sec), 0) AS avg_duration_sec,
+                       COALESCE(SUM(CASE WHEN rewrites_triggered > 0 THEN 1 ELSE 0 END), 0) AS rewritten,
+                       COALESCE(AVG(attempts_used), 0) AS avg_attempts,
+                       COALESCE(SUM(char_count), 0) AS total_chars
+                FROM production_stats {where}
+                """,
+                params,
+            ).fetchone()
+        chapters = int(row["chapters"])
+        return {
+            "chapters": chapters,
+            "avg_duration_sec": round(float(row["avg_duration_sec"]), 1),
+            "rewrite_rate": round(int(row["rewritten"]) / chapters, 4) if chapters else 0.0,
+            "avg_attempts": round(float(row["avg_attempts"]), 2),
+            "total_chars": int(row["total_chars"]),
+        }
+
+    # -----------------------------------------------------------------------
+    # Admin new-book wizard sessions
+    # -----------------------------------------------------------------------
+    def create_wizard_session(self, session_id: str, idea: str, options: List[Dict[str, Any]]) -> None:
+        now = self._now_iso()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO wizard_sessions
+                    (session_id, idea, status, step_index, choices_json, options_json, created_at, updated_at)
+                VALUES (?, ?, 'IN_PROGRESS', 0, '[]', ?, ?, ?)
+                """,
+                (session_id, idea, json.dumps(options, ensure_ascii=False), now, now),
+            )
+
+    def get_wizard_session(self, session_id: str) -> Dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM wizard_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Wizard session '{session_id}' not found")
+        return {
+            "session_id": row["session_id"],
+            "idea": row["idea"],
+            "status": row["status"],
+            "step_index": int(row["step_index"]),
+            "choices": json.loads(row["choices_json"]),
+            "options": json.loads(row["options_json"]),
+            "book_id": row["book_id"],
+            "error_message": row["error_message"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def update_wizard_session(
+        self,
+        session_id: str,
+        *,
+        status: str,
+        step_index: int,
+        choices: List[Dict[str, Any]],
+        options: List[Dict[str, Any]],
+        book_id: str = "",
+        error_message: str = "",
+    ) -> None:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE wizard_sessions
+                SET status = ?, step_index = ?, choices_json = ?, options_json = ?,
+                    book_id = ?, error_message = ?, updated_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    status,
+                    int(step_index),
+                    json.dumps(choices, ensure_ascii=False),
+                    json.dumps(options, ensure_ascii=False),
+                    book_id,
+                    error_message,
+                    self._now_iso(),
+                    session_id,
+                ),
+            )
+            if cur.rowcount != 1:
+                raise KeyError(f"Wizard session '{session_id}' not found")
 
     # -----------------------------------------------------------------------
     # Book CRUD & Status

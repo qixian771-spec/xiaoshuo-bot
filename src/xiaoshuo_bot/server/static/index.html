@@ -125,6 +125,11 @@
               <div class="kpi-hint" id="kpi-today-cost">今日折算估算 $0.0000</div>
             </div>
             <div class="kpi-card">
+              <div class="kpi-label">写稿耗时 / 重写率</div>
+              <div class="kpi-value mono" id="kpi-production">— / —</div>
+              <div class="kpi-hint" id="kpi-production-hint">每章平均耗时 / 需要重写的章节占比</div>
+            </div>
+            <div class="kpi-card">
               <div class="kpi-label">验证码挂起 / 隔离</div>
               <div class="kpi-value" id="kpi-paused-isolated">0 / 0</div>
               <div class="kpi-hint">伴侣挂起账号 / 门禁隔离书目</div>
@@ -141,6 +146,8 @@
               <button type="button" class="filter-chip" data-filter="CUT_LOSS">已止损切书</button>
             </div>
             <div class="toolbar-right">
+              <a class="btn btn-sm btn-primary" href="/admin/wizard">✚ 新书向导</a>
+              <a class="btn btn-sm btn-ghost" href="/" target="_blank" rel="noopener">看演播厅</a>
               <button type="button" class="btn btn-sm btn-ghost" id="btn-overview-refresh">刷新列表</button>
               <button type="button" class="btn btn-sm btn-primary" id="btn-goto-create">+ 三源自动立项</button>
             </div>
@@ -479,6 +486,24 @@
       <div class="modal-body" id="detail-modal-body"></div>
       <div class="modal-footer">
         <button type="button" class="btn btn-primary" data-close-modal="book-detail-modal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Production circuit-breaker blocking modal (owner Web UI grill-me Q3=A) -->
+  <div class="modal-backdrop" id="isolation-modal" hidden role="alertdialog" aria-modal="true" aria-labelledby="isolation-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="isolation-modal-title">⛔ 生产熔断：需要老板处理</h3>
+      </div>
+      <div class="modal-body">
+        <p id="isolation-modal-book"></p>
+        <p class="muted" id="isolation-modal-reason"></p>
+        <p class="muted">这本书已经停笔，其它书照常写。处理之前这个窗口不会消失。</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" id="btn-isolation-later">先不恢复（保持停笔）</button>
+        <button type="button" class="btn btn-primary" id="btn-isolation-resume">恢复写作（重新写这一章）</button>
       </div>
     </div>
   </div>

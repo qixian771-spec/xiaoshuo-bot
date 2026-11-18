@@ -356,6 +356,7 @@ class MatrixScheduler:
             motif_store=self.motif_store,
             benchmark_chapters=request.benchmark_chapters or None,
             target_chapters=request.target_chapters,
+            creative_brief=request.creative_brief,
         )
         proj = result.project
         self.db.register_book(
@@ -651,6 +652,7 @@ class MatrixScheduler:
                 on_progress=_forward_progress,
             )
 
+        started_monotonic = time.monotonic()
         try:
             manifest = engine.run(target_chapters=[next_scene.chapter], resume=False, on_progress=_forward_progress)
         except ProductionGateFailure as exc:
@@ -709,6 +711,14 @@ class MatrixScheduler:
             author_note=author_note,
             sha256=sha256_val,
             locked=locked_val,
+        )
+        self.db.record_production_stat(
+            book_id,
+            item.chapter,
+            duration_sec=time.monotonic() - started_monotonic,
+            attempts_used=int(ch_summary["attempts_used"]),
+            rewrites_triggered=int(ch_summary["rewrites_triggered"]),
+            char_count=item.char_count,
         )
         self.event_broker.notify_poll_waiters()
         return {

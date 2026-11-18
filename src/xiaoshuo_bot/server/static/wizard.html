@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>新书向导 · 小说机器人后台</title>
+  <link rel="stylesheet" href="/public.css">
+  <link rel="stylesheet" href="/wizard.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div>
+        <h1>新书向导</h1>
+        <p class="sub">说一句题材，机器人每一步给 3 个方案，老板选定后自动开写。</p>
+      </div>
+    </div>
+    <a class="link" href="/admin/">← 回后台</a>
+  </header>
+
+  <main class="wiz">
+    <section class="card-box" id="login-box" hidden>
+      <h2>先登录后台</h2>
+      <p class="meta">输入管理员令牌（服务器上的 XIAOSHUO_ADMIN_TOKEN）。</p>
+      <form id="login-form" class="row">
+        <input type="password" id="login-token" autocomplete="current-password" placeholder="管理员令牌" required>
+        <button type="submit" class="primary">登录</button>
+      </form>
+    </section>
+
+    <section class="card-box" id="idea-box" hidden>
+      <h2>这本书想写什么？</h2>
+      <form id="idea-form" class="stack">
+        <textarea id="idea" rows="3" maxlength="300" placeholder="例如：外卖小哥捡到一部能看见明天新闻的旧手机" required></textarea>
+        <button type="submit" class="primary">开始</button>
+      </form>
+    </section>
+
+    <section class="card-box" id="step-box" hidden>
+      <p class="meta" id="step-progress"></p>
+      <h2 id="step-question"></h2>
+      <div class="options" id="options"></div>
+      <div class="actions">
+        <button type="button" id="reroll">都不满意，重出 3 个</button>
+      </div>
+      <form id="custom-form" class="stack" hidden>
+        <label class="meta" for="custom">或者自己写：</label>
+        <textarea id="custom" rows="2" maxlength="300"></textarea>
+        <button type="submit">用我写的</button>
+      </form>
+    </section>
+
+    <section class="card-box" id="confirm-box" hidden>
+      <h2>确认开写</h2>
+      <ol class="summary" id="summary"></ol>
+      <form id="confirm-form" class="row">
+        <input type="text" id="pen-name" maxlength="20" placeholder="笔名（可不填）">
+        <button type="submit" class="primary">确认，开始写这本书</button>
+      </form>
+    </section>
+
+    <section class="card-box" id="done-box" hidden>
+      <h2>已经开写</h2>
+      <p id="done-text"></p>
+      <p><a class="link" href="/">去演播厅看机器人写</a></p>
+    </section>
+
+    <div class="busy" id="busy" hidden>机器人正在想方案…</div>
+    <div class="error" id="error" role="alert" hidden></div>
+  </main>
+
+  <script src="/wizard.js" defer></script>
+</body>
+</html>

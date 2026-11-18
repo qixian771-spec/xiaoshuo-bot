@@ -558,6 +558,7 @@ class AutoNovelPlanner:
         benchmark_chapters: Optional[Sequence[str]] = None,
         target_chapters: Optional[int] = None,
         seed: Optional[int] = None,
+        creative_brief: str = "",
     ) -> PlannedProjectResult:
         """3-source auto-initiation producing a load_project()-validated dual-track project package."""
         if not isinstance(project_id, str) or not project_id.strip():
@@ -654,6 +655,13 @@ class AutoNovelPlanner:
             + "。"
         )
 
+        brief_text = (creative_brief or "").strip()
+        brief_section = (
+            "[老板在立项向导中逐项选定的要求，必须全部严格落实，不得改动方向、主角设定、笔风与书名]：\n"
+            f"{brief_text}\n"
+            if brief_text
+            else ""
+        )
         feedback = ""
         last_error: Optional[Exception] = None
         target_dir = Path(output_dir).resolve()
@@ -676,6 +684,7 @@ class AutoNovelPlanner:
                 f"热榜风向关键词: {', '.join(hot_keywords) if hot_keywords else '无'}\n"
                 f"对标拆书换皮蓝图:\n{blueprint_block}\n"
                 f"{track_instruction}\n"
+                f"{brief_section}"
                 f"{feedback_section}"
             )
             req = LLMRequest(

@@ -59,6 +59,19 @@ API_COMPANION_RESUME = "/api/companion/resume"
 
 API_EVENTS_STREAM = "/api/events/stream"
 
+# Public read-only studio (no auth; owner Web UI grill-me Q6/Q8/Q10)
+API_PUBLIC_BOOKS = "/api/public/books"
+API_PUBLIC_BOOK = "/api/public/books/{book_id}"
+API_PUBLIC_CHAPTER = "/api/public/books/{book_id}/chapters/{chapter}"
+API_PUBLIC_EVENTS_STREAM = "/api/public/events/stream"
+
+# Admin new-book wizard and production KPI (admin auth)
+API_WIZARD_SESSIONS = "/api/wizard/sessions"
+API_WIZARD_SESSION = "/api/wizard/sessions/{session_id}"
+API_WIZARD_ANSWER = "/api/wizard/sessions/{session_id}/answer"
+API_WIZARD_CONFIRM = "/api/wizard/sessions/{session_id}/confirm"
+API_PRODUCTION_KPI = "/api/production/kpi"
+
 ALL_API_ROUTES: Tuple[str, ...] = (
     API_HEALTH,
     API_GENRES,
@@ -87,6 +100,15 @@ ALL_API_ROUTES: Tuple[str, ...] = (
     API_COMPANION_CAPTCHA,
     API_COMPANION_RESUME,
     API_EVENTS_STREAM,
+    API_PUBLIC_BOOKS,
+    API_PUBLIC_BOOK,
+    API_PUBLIC_CHAPTER,
+    API_PUBLIC_EVENTS_STREAM,
+    API_WIZARD_SESSIONS,
+    API_WIZARD_SESSION,
+    API_WIZARD_ANSWER,
+    API_WIZARD_CONFIRM,
+    API_PRODUCTION_KPI,
 )
 
 
@@ -493,6 +515,7 @@ class AutoCreateBookRequest:
     hot_keywords: List[str] = field(default_factory=list)
     benchmark_chapters: List[str] = field(default_factory=list)
     target_chapters: Optional[int] = None
+    creative_brief: str = ""
 
     def __post_init__(self) -> None:
         if not self.project_id or not str(self.project_id).strip():
@@ -520,6 +543,7 @@ class AutoCreateBookRequest:
             target_chapters=(
                 int(data["target_chapters"]) if data.get("target_chapters") is not None else None
             ),
+            creative_brief=str(data.get("creative_brief", "")),
         )
 
 
@@ -992,6 +1016,15 @@ __all__ = [
     "API_CPA_OAUTH",
     "API_CPA_USAGE",
     "API_EVENTS_STREAM",
+    "API_PRODUCTION_KPI",
+    "API_PUBLIC_BOOK",
+    "API_PUBLIC_BOOKS",
+    "API_PUBLIC_CHAPTER",
+    "API_PUBLIC_EVENTS_STREAM",
+    "API_WIZARD_ANSWER",
+    "API_WIZARD_CONFIRM",
+    "API_WIZARD_SESSION",
+    "API_WIZARD_SESSIONS",
     "API_GENRES",
     "API_HEALTH",
     "AutoCreateBookRequest",

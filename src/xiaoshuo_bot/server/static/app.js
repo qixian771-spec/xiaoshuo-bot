@@ -26,6 +26,7 @@
     CPA_BINDINGS: "/api/cpa/bindings",
     COMPANION_RESUME: "/api/companion/resume",
     EVENTS_STREAM: "/api/events/stream",
+    PRODUCTION_KPI: "/api/production/kpi",
   });
 
   const SSE_EVENTS = Object.freeze({
@@ -383,6 +384,37 @@
     } catch (err) {
       showToast("加载矩阵书籍失败：" + err.message, "err");
     }
+  }
+
+  async function loadProductionKpi() {
+    try {
+      const kpi = await apiRequest(API_ROUTES.PRODUCTION_KPI, { method: "GET" });
+      const value = document.getElementById("kpi-production");
+      const hint = document.getElementById("kpi-production-hint");
+      if (!kpi.chapters) {
+        value.textContent = "— / —";
+        hint.textContent = "还没有成稿章节";
+        return;
+      }
+      value.textContent = Math.round(kpi.avg_duration_sec) + "s / " + (kpi.rewrite_rate * 100).toFixed(1) + "%";
+      hint.textContent = "共 " + kpi.chapters + " 章，平均每章尝试 " + kpi.avg_attempts + " 次";
+    } catch (err) {
+      showToast("加载写稿效率看板失败：" + err.message, "err");
+    }
+  }
+
+  function openIsolationModal(payload) {
+    const bookId = String(payload.book_id || "");
+    const book = state.books.find(function (b) { return b.book_id === bookId; });
+    const data = payload.data || {};
+    state.isolationBookId = bookId;
+    const chapterNo = Number(payload.chapter || 0);
+    document.getElementById("isolation-modal-book").textContent =
+      "《" + (book ? book.title : bookId) + "》" + (chapterNo > 0 ? "第 " + chapterNo + " 章" : "") +
+      "连续重写仍未通过审校，已熔断停笔。";
+    document.getElementById("isolation-modal-reason").textContent =
+      "原因：" + String(data.error || data.reason || payload.message || "见后台日志");
+    openModal("isolation-modal");
   }
 
   function syncCaptchaAlertsFromBooks() {
@@ -1583,10 +1615,12 @@
   };
   SSE_HANDLERS[SSE_EVENTS.CHAPTER_STOCKPILED] = function (payload) {
     loadBooks();
+    loadProductionKpi();
     return { level: "pass", title: "章节囤稿入库", detail: payload.message || ("第 " + (payload.chapter || 0) + " 章已入库") };
   };
   SSE_HANDLERS[SSE_EVENTS.BOOK_ISOLATED] = function (payload) {
     loadBooks();
+    openIsolationModal(payload);
     return { level: "fail", title: "单书故障隔离", detail: payload.message || "重写超限已隔离，不影响矩阵其余书目" };
   };
   SSE_HANDLERS[SSE_EVENTS.SAFETY_CUSHION_ALERT] = function (payload) {
@@ -2334,13 +2368,46 @@
     await loadBooks();
     if (!state.authRequired) {
       loadCpaUsage();
+      loadProductionKpi();
+      const isolated = state.books.find(function (b) { return b.status === "ISOLATED_GATE_FAILURE"; });
+      if (isolated) {
+        openIsolationModal({
+          book_id: isolated.book_id,
+          chapter: 0,
+          message: isolated.paused_reason || "",
+          data: {},
+        });
+      }
     }
+  }
+
+  function bindIsolationModal() {
+    document.getElementById("btn-isolation-later").addEventListener("click", function () {
+      closeModal("isolation-modal");
+      showToast("已保持停笔：" + state.isolationBookId, "ok");
+    });
+    document.getElementById("btn-isolation-resume").addEventListener("click", async function () {
+      const bookId = state.isolationBookId;
+      try {
+        await apiRequest(formatApiRoute(API_ROUTES.BOOK_RESUME, { book_id: bookId }), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ book_id: bookId }),
+        });
+        closeModal("isolation-modal");
+        showToast("已恢复写作：" + bookId, "ok");
+        await loadBooks();
+      } catch (err) {
+        showToast("恢复失败：" + err.message, "err");
+      }
+    });
   }
 
   async function init() {
     updateAuthUi();
     updateSseStatusUi();
     bindEvents();
+    bindIsolationModal();
     const health = await loadHealth();
     const authRequired = !health || health.admin_auth_required !== false;
     if (!state.authToken && authRequired) {

@@ -37,6 +37,10 @@ from ..contracts import (
     API_EVENTS_STREAM,
     API_GENRES,
     API_HEALTH,
+    API_PRODUCTION_KPI,
+    API_PUBLIC_BOOKS,
+    API_PUBLIC_EVENTS_STREAM,
+    API_WIZARD_SESSIONS,
     AutoCreateBookRequest,
     BookRunStatus,
     ChapterLockRequest,
@@ -76,6 +80,8 @@ from .auth import (
     validate_companion_secret,
 )
 from .matrix_scheduler import MatrixScheduler, SchedulerConfigurationError
+from .public_view import get_public_book, get_public_chapter, list_public_books, public_event
+from .wizard import NewBookWizard, WizardError
 from .stockpile_db import (
     BookNotFoundError,
     ChapterNotFoundError,
@@ -104,6 +110,18 @@ _RE_BOOK_PROMOTE = re.compile(r"^/api/books/(?P<book_id>[^/]+)/promote$")
 _RE_BOOK_EXTEND = re.compile(r"^/api/books/(?P<book_id>[^/]+)/extend$")
 _RE_BOOK_RESUME = re.compile(r"^/api/books/(?P<book_id>[^/]+)/resume$")
 _RE_CPA_AUTH_FILE_DETAIL = re.compile(r"^/api/cpa/auth-files/(?P<name>[^/]+)$")
+_RE_PUBLIC_BOOK = re.compile(r"^/api/public/books/(?P<book_id>[^/]+)$")
+_RE_PUBLIC_CHAPTER = re.compile(r"^/api/public/books/(?P<book_id>[^/]+)/chapters/(?P<chapter>\d+)$")
+_RE_WIZARD_SESSION = re.compile(r"^/api/wizard/sessions/(?P<session_id>[0-9a-f]{32})$")
+_RE_WIZARD_ACTION = re.compile(r"^/api/wizard/sessions/(?P<session_id>[0-9a-f]{32})/(?P<action>answer|confirm)$")
+
+# Static page routing: "/" is the public studio, "/admin/" the owner console.
+_STATIC_PAGE_ROUTES = {
+    "/": "public.html",
+    "/admin": "index.html",
+    "/admin/": "index.html",
+    "/admin/wizard": "wizard.html",
+}
 
 
 def _extract_multipart_auth_file(content_type: str, body: bytes) -> Tuple[str, bytes]:
@@ -183,7 +201,20 @@ class MatrixHTTPServer(ThreadingHTTPServer):
         self.now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
         self.telegram_bot = telegram_bot
         self.stop_event = threading.Event()
+        self.wizard = NewBookWizard(
+            db=scheduler.db,
+            provider_fn=self._require_llm_provider,
+            create_book_fn=scheduler.auto_create_book,
+            now_fn=self.now_fn,
+        )
         super().__init__(server_address, MatrixRequestHandler)
+
+    def _require_llm_provider(self) -> Any:
+        if self.scheduler.provider is None:
+            raise SchedulerConfigurationError(
+                "LLM provider/RoleModelRouter is not configured; the wizard cannot propose options."
+            )
+        return self.scheduler.provider
 
     def start_telegram_bot(self) -> Optional[threading.Thread]:
         if self.telegram_bot is None:
@@ -428,9 +459,34 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
 
         try:
-            # Static Web Console assets (served when static_dir exists; T12/T15)
+            # Static pages: "/" public studio, "/admin/" owner console, other assets by name
             if method == "GET" and not path.startswith("/api/"):
-                self._handle_static(path)
+                self._handle_static(_STATIC_PAGE_ROUTES.get(path, path))
+                return
+
+            # Public read-only studio (no auth, GET only, sanitized payloads)
+            if path.startswith("/api/public/"):
+                if method != "GET":
+                    self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "Public API is read-only")
+                    return
+                if path == API_PUBLIC_BOOKS:
+                    self._send_json(HTTPStatus.OK, {"books": list_public_books(self.server.db)})
+                    return
+                if path == API_PUBLIC_EVENTS_STREAM:
+                    self._handle_events_stream(public=True)
+                    return
+                m_pc = _RE_PUBLIC_CHAPTER.match(path)
+                if m_pc:
+                    self._send_json(
+                        HTTPStatus.OK,
+                        get_public_chapter(self.server.db, m_pc.group("book_id"), int(m_pc.group("chapter"))),
+                    )
+                    return
+                m_pb = _RE_PUBLIC_BOOK.match(path)
+                if m_pb:
+                    self._send_json(HTTPStatus.OK, get_public_book(self.server.db, m_pb.group("book_id")))
+                    return
+                self._send_error(HTTPStatus.NOT_FOUND, "NOT_FOUND", f"Unknown route {method} {path}")
                 return
 
             # Health Check (public, zero secrets)
@@ -481,6 +537,32 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
 
             if method == "GET" and path == API_EVENTS_STREAM:
                 self._handle_events_stream()
+                return
+
+            if method == "GET" and path == API_PRODUCTION_KPI:
+                book_q = (query.get("book_id") or [None])[0]
+                self._send_json(HTTPStatus.OK, self.server.db.get_production_kpi(book_q))
+                return
+
+            if path == API_WIZARD_SESSIONS and method == "POST":
+                data = self._parse_json_body(self._read_body_bytes())
+                self._send_json(HTTPStatus.CREATED, self.server.wizard.start(str(data.get("idea") or "")))
+                return
+            m_ws = _RE_WIZARD_SESSION.match(path)
+            if m_ws and method == "GET":
+                self._send_json(HTTPStatus.OK, self.server.wizard.get(m_ws.group("session_id")))
+                return
+            m_wa = _RE_WIZARD_ACTION.match(path)
+            if m_wa and method == "POST":
+                data = self._parse_json_body(self._read_body_bytes())
+                sid = m_wa.group("session_id")
+                if m_wa.group("action") == "answer":
+                    self._send_json(HTTPStatus.OK, self.server.wizard.answer(sid, data))
+                else:
+                    self._send_json(
+                        HTTPStatus.CREATED,
+                        self.server.wizard.confirm(sid, pen_name=str(data.get("pen_name") or "")),
+                    )
                 return
 
             if method == "GET" and path == API_GENRES:
@@ -603,6 +685,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
 
         except BookNotFoundError as exc:
             self._send_error(HTTPStatus.NOT_FOUND, "BOOK_NOT_FOUND", str(exc))
+        except WizardError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, "WIZARD_ERROR", str(exc))
         except ChapterNotFoundError as exc:
             self._send_error(HTTPStatus.NOT_FOUND, "CHAPTER_NOT_FOUND", str(exc))
         except SequentialLeaseLockError as exc:
@@ -1026,7 +1110,7 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
         )
         self._send_json(HTTPStatus.OK, res)
 
-    def _handle_events_stream(self) -> None:
+    def _handle_events_stream(self, public: bool = False) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -1052,7 +1136,14 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             while not self.server.stop_event.is_set():
                 try:
                     evt = q.get(timeout=0.5)
-                    frame = evt.to_sse_frame()
+                    if public:
+                        titles = {b["book_id"]: b["title"] for b in self.server.db.list_books()}
+                        pub = public_event(evt, titles)
+                        if pub is None:
+                            continue
+                        frame = format_sse_frame(evt.event, pub)
+                    else:
+                        frame = evt.to_sse_frame()
                     self.wfile.write(frame.encode("utf-8"))
                     self.wfile.flush()
                     last_heartbeat = time.monotonic()
