@@ -214,10 +214,38 @@ _SCENES_BATCH_JSON_EXAMPLE: Dict[str, Any] = {
             "segment_comment_cue": "<可供读者段评吐槽或站队的引爆点>",
             "volume": 1,
             "calendar_days_elapsed": 1,
-            "post_scene_asset_mutations": [],
-            "ledger_mutations": [],
-            "character_mutations": [],
-            "expectation_directives": [],
+            "post_scene_asset_mutations": [
+                {
+                    "asset_id": "<设定包已有器物id；本章器物无变化时整个数组写 []>",
+                    "location": "<器物本章结束时所在位置，可省略>",
+                    "holder": "<本章结束时持有者的角色id，可省略>",
+                    "condition": "<器物状态变化，如：表盖撬开，可省略>",
+                    "note": "<变化原因一句话>",
+                }
+            ],
+            "ledger_mutations": [
+                {
+                    "ledger_key": "<设定包 ledgers 里已有的账本键名，如 cash；本章数值无变化时整个数组写 []>",
+                    "delta": -1,
+                    "reason": "<数值变化原因一句话>",
+                }
+            ],
+            "character_mutations": [
+                {
+                    "character_id": "<设定包已有角色id；本章人物状态无变化时整个数组写 []>",
+                    "status": "alive",
+                    "note": "<状态或关系变化说明>",
+                }
+            ],
+            "expectation_directives": [
+                {
+                    "id": "<期待感条目英文id，如 exp_pocketwatch_truth>",
+                    "title": "<读者期待的悬念一句话>",
+                    "due_chapter": 10,
+                    "action": "open",
+                    "description": "<何时、如何兑现>",
+                }
+            ],
         }
     ]
 }
@@ -1679,7 +1707,8 @@ class AutoNovelPlanner:
             "3. pov_character、active_characters、active_assets、style_profile_ids 只能使用设定包给出的已有 id，且 pov_character 必须在 active_characters 中。\n"
             "4. emotion_polarity 只能取 suppress / burst / neutral / mixed，且全书（含跨批衔接）连续 suppress 绝对不超过 2 章。\n"
             "5. 本批要求埋设或回收的伏笔，必须在对应章节的 events 中显式体现该伏笔 id 及物理关键词。\n"
-            "6. 必须严格遵循以下完整 JSON 格式样例：\n"
+            "6. 四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；有变化时每一项都必须照样例的字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。\n"
+            "7. 必须严格遵循以下完整 JSON 格式样例：\n"
             f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
 
@@ -2311,6 +2340,7 @@ class AutoNovelPlanner:
             "你是番茄长篇滚动续纲策划师。本阶段仅生成后续批次的连续章纲，请严格输出单个 JSON 对象：\n"
             "- scenes: 数组（仅输出本批章号范围的连续章节大纲，承接已锁定的本卷地图与前序章节，"
             "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
+            "四个变化数组本章无变化就写 []；有变化时每一项都照样例字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；action 只能取 open / fulfill。\n"
             f"JSON 模板示例（所有尖括号为占位说明）：\n"
             f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
@@ -2721,6 +2751,7 @@ class AutoNovelPlanner:
             "你是番茄长篇完结总收官策划师。本阶段仅生成终卷后续批次的连续章纲，请严格输出单个 JSON 对象：\n"
             "- scenes: 数组（仅输出本批章号范围的连续终卷大纲，按已锁定的伏笔与期待感清账排期落地对应章事件，"
             "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
+            "四个变化数组本章无变化就写 []；有变化时每一项都照样例字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；action 只能取 open / fulfill。\n"
             f"JSON 模板示例（所有尖括号为占位说明）：\n"
             f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
