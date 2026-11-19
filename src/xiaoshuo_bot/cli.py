@@ -40,11 +40,14 @@ from .llm import (
     RoleEndpointConfig,
     RoleModelRouter,
     UsageBudgetLedger,
+    WORKBUDDY_MODEL_COOLDOWN_ENV,
+    WORKBUDDY_RATE_LIMIT_BACKOFF_ENV,
     WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
     WORKBUDDY_SLOT_HY4,
     WORKBUDDY_SLOT_HY4_FLASH,
     WORKBUDDY_SLOT_MIMO_V2_6_PRO,
     WorkBuddyModelCatalog,
+    parse_rate_limit_backoff_sec,
 )
 from .loader import load_project
 from .models import ChapterArtifact, resolve_chapter_path
@@ -697,6 +700,27 @@ def _build_serve_router(
                 api_keys=_split_csv(img_ov["api_keys"] or default_keys_raw),
                 provider_type=img_ov["provider_type"] or "auto",
             )
+        raw_wb_backoff = _resolve_env_or_arg(
+            getattr(args, "workbuddy_rate_limit_backoff", None),
+            WORKBUDDY_RATE_LIMIT_BACKOFF_ENV,
+        )
+        wb_backoff = (
+            parse_rate_limit_backoff_sec(raw_wb_backoff)
+            if raw_wb_backoff is not None
+            else None
+        )
+        raw_wb_cooldown = _resolve_env_or_arg(
+            getattr(args, "workbuddy_model_cooldown_sec", None),
+            WORKBUDDY_MODEL_COOLDOWN_ENV,
+        )
+        wb_model_cooldown: Optional[float] = None
+        if raw_wb_cooldown is not None:
+            try:
+                wb_model_cooldown = float(raw_wb_cooldown)
+            except ValueError as exc:
+                raise LLMConfigurationError(
+                    f"Invalid {WORKBUDDY_MODEL_COOLDOWN_ENV}={raw_wb_cooldown!r}: must be a positive number."
+                ) from exc
         return RoleModelRouter.from_workbuddy_catalog(
             wb_catalog,
             base_url=wb_base_url or "",
@@ -706,6 +730,8 @@ def _build_serve_router(
             role_api_key_overrides=role_key_ov,
             image_role=image_cfg,
             ledger=ledger,
+            model_cooldown_sec=wb_model_cooldown,
+            rate_limit_backoff_sec=wb_backoff,
         )
 
     roles_cfg: Dict[str, RoleEndpointConfig] = {}
@@ -1405,6 +1431,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_srv.add_argument("--workbuddy-hy4", help="Configured CPA upstream ID for WorkBuddy Hy4 manual-only (env WORKBUDDY_MODEL_HY4)")
     p_srv.add_argument("--workbuddy-deepseek-v4-1-flash", help="Configured CPA upstream ID for WorkBuddy DeepSeek-V4.1-Flash (env WORKBUDDY_MODEL_DEEPSEEK_V4_1_FLASH)")
     p_srv.add_argument("--workbuddy-mimo-v2-6-pro", help="Configured CPA upstream ID for WorkBuddy Xiaomi MiMo-V2.6-Pro (env WORKBUDDY_MODEL_MIMO_V2_6_PRO)")
+    p_srv.add_argument(
+        "--workbuddy-rate-limit-backoff",
+        help="Comma-separated HTTP 429 backoff retry delays in seconds before switching models (default 30,60,120; env WORKBUDDY_RATE_LIMIT_BACKOFF_SEC)",
+    )
+    p_srv.add_argument(
+        "--workbuddy-model-cooldown-sec",
+        type=float,
+        help="Cooldown seconds for a quota-exhausted WorkBuddy model before auto-restoring (default 3600 = 1 hour; env WORKBUDDY_MODEL_COOLDOWN_SEC)",
+    )
     p_srv.add_argument("--base-url", help="Default CPA/OpenAI base URL for RoleModelRouter")
     p_srv.add_argument("--api-key", help="Default CPA/OpenAI API key (or comma-separated pool)")
     p_srv.add_argument("--model", help="Default model for text roles")

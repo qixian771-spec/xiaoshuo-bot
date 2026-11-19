@@ -385,11 +385,15 @@ class StockpileDB:
                     book_title TEXT NOT NULL DEFAULT '',
                     chapter INTEGER NOT NULL DEFAULT 0,
                     role TEXT NOT NULL,
+                    event_type TEXT NOT NULL DEFAULT 'model_switched',
                     from_model TEXT NOT NULL,
                     to_model TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     status_code INTEGER,
                     upstream_code TEXT NOT NULL DEFAULT '',
+                    retry_attempt INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 0,
+                    wait_seconds REAL NOT NULL DEFAULT 0.0,
                     created_at TEXT NOT NULL
                 );
 
@@ -423,6 +427,26 @@ class StockpileDB:
             if "model" not in prod_stat_cols:
                 cur.execute(
                     "ALTER TABLE production_stats ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+                )
+            # Legacy schema migration: rate_limit_retry & model_restored metadata on model_switch_events.
+            switch_cols = {
+                row[1] for row in cur.execute("PRAGMA table_info(model_switch_events)").fetchall()
+            }
+            if "event_type" not in switch_cols:
+                cur.execute(
+                    "ALTER TABLE model_switch_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'model_switched'"
+                )
+            if "retry_attempt" not in switch_cols:
+                cur.execute(
+                    "ALTER TABLE model_switch_events ADD COLUMN retry_attempt INTEGER NOT NULL DEFAULT 0"
+                )
+            if "max_retries" not in switch_cols:
+                cur.execute(
+                    "ALTER TABLE model_switch_events ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 0"
+                )
+            if "wait_seconds" not in switch_cols:
+                cur.execute(
+                    "ALTER TABLE model_switch_events ADD COLUMN wait_seconds REAL NOT NULL DEFAULT 0.0"
                 )
             self._migrate_legacy_manual_pause_books_unlocked()
 
@@ -503,26 +527,36 @@ class StockpileDB:
         chapter: int = 0,
         status_code: Optional[int] = None,
         upstream_code: str = "",
+        event_type: str = "model_switched",
+        retry_attempt: int = 0,
+        max_retries: int = 0,
+        wait_seconds: float = 0.0,
         created_at: Optional[str] = None,
     ) -> Dict[str, Any]:
         ts = (created_at or "").strip() or self._now_iso()
+        clean_type = str(event_type or "model_switched").strip() or "model_switched"
         with self._lock:
             cur = self._conn.execute(
                 """
                 INSERT INTO model_switch_events
-                    (book_id, book_title, chapter, role, from_model, to_model, reason, status_code, upstream_code, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (book_id, book_title, chapter, role, event_type, from_model, to_model,
+                     reason, status_code, upstream_code, retry_attempt, max_retries, wait_seconds, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(book_id or ""),
                     str(book_title or ""),
                     int(chapter or 0),
                     str(role or ""),
+                    clean_type,
                     str(from_model or ""),
                     str(to_model or ""),
                     str(reason or ""),
                     int(status_code) if status_code is not None else None,
                     str(upstream_code or ""),
+                    int(retry_attempt or 0),
+                    int(max_retries or 0),
+                    float(wait_seconds or 0.0),
                     ts,
                 ),
             )
@@ -533,11 +567,15 @@ class StockpileDB:
             "book_title": str(book_title or ""),
             "chapter": int(chapter or 0),
             "role": str(role or ""),
+            "event_type": clean_type,
             "from_model": str(from_model or ""),
             "to_model": str(to_model or ""),
             "reason": str(reason or ""),
             "status_code": int(status_code) if status_code is not None else None,
             "upstream_code": str(upstream_code or ""),
+            "retry_attempt": int(retry_attempt or 0),
+            "max_retries": int(max_retries or 0),
+            "wait_seconds": float(wait_seconds or 0.0),
             "created_at": ts,
         }
 
@@ -552,8 +590,8 @@ class StockpileDB:
             if book_id:
                 rows = self._conn.execute(
                     """
-                    SELECT id, book_id, book_title, chapter, role, from_model, to_model,
-                           reason, status_code, upstream_code, created_at
+                    SELECT id, book_id, book_title, chapter, role, event_type, from_model, to_model,
+                           reason, status_code, upstream_code, retry_attempt, max_retries, wait_seconds, created_at
                     FROM model_switch_events
                     WHERE book_id = ?
                     ORDER BY id DESC
@@ -564,8 +602,8 @@ class StockpileDB:
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT id, book_id, book_title, chapter, role, from_model, to_model,
-                           reason, status_code, upstream_code, created_at
+                    SELECT id, book_id, book_title, chapter, role, event_type, from_model, to_model,
+                           reason, status_code, upstream_code, retry_attempt, max_retries, wait_seconds, created_at
                     FROM model_switch_events
                     ORDER BY id DESC
                     LIMIT ?
@@ -579,11 +617,15 @@ class StockpileDB:
                 "book_title": str(r["book_title"] or ""),
                 "chapter": int(r["chapter"] or 0),
                 "role": str(r["role"] or ""),
+                "event_type": str(r["event_type"] or "model_switched"),
                 "from_model": str(r["from_model"] or ""),
                 "to_model": str(r["to_model"] or ""),
                 "reason": str(r["reason"] or ""),
                 "status_code": int(r["status_code"]) if r["status_code"] is not None else None,
                 "upstream_code": str(r["upstream_code"] or ""),
+                "retry_attempt": int(r["retry_attempt"] or 0),
+                "max_retries": int(r["max_retries"] or 0),
+                "wait_seconds": float(r["wait_seconds"] or 0.0),
                 "created_at": str(r["created_at"] or ""),
             }
             for r in rows

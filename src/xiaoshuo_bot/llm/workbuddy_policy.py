@@ -52,6 +52,14 @@ WORKBUDDY_MODEL_ENV_KEYS: Dict[str, str] = {
     WORKBUDDY_SLOT_MIMO_V2_6_PRO: "WORKBUDDY_MODEL_MIMO_V2_6_PRO",
 }
 
+# Configurable rate-limit backoff & exhausted-model cooldown defaults (owner review fixes):
+# - HTTP 429 rate_limit_exceeded retries on the SAME model with backoff before switching.
+# - Exhausted models cool down for 1 hour (3600s) by default (not 60s).
+DEFAULT_RATE_LIMIT_BACKOFF_SEC: Tuple[float, ...] = (30.0, 60.0, 120.0)
+DEFAULT_MODEL_QUOTA_COOLDOWN_SEC: float = 3600.0
+WORKBUDDY_RATE_LIMIT_BACKOFF_ENV = "WORKBUDDY_RATE_LIMIT_BACKOFF_SEC"
+WORKBUDDY_MODEL_COOLDOWN_ENV = "WORKBUDDY_MODEL_COOLDOWN_SEC"
+
 # Forbidden model patterns:
 # - DeepSeek-V4-Pro (and prefix/separator variants)
 # - Auto-routing modes: auto / auto-* / 快速 / 均衡 / 极致
@@ -84,9 +92,40 @@ _UPSTREAM_CODE_PHRASE_14018_RE = re.compile(
 )
 
 
+def parse_rate_limit_backoff_sec(raw: Any) -> Tuple[float, ...]:
+    """Parse configurable 429 rate-limit backoff delays (CSV string or sequence of non-negative numbers)."""
+    if raw is None:
+        return DEFAULT_RATE_LIMIT_BACKOFF_SEC
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if not cleaned:
+            return ()
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    elif isinstance(raw, Sequence):
+        parts = list(raw)
+    else:
+        raise LLMConfigurationError(
+            f"rate_limit_backoff_sec must be a sequence or CSV string of non-negative seconds, got {type(raw).__name__}."
+        )
+    delays: list[float] = []
+    for item in parts:
+        try:
+            val = float(item)
+        except (TypeError, ValueError) as exc:
+            raise LLMConfigurationError(
+                f"Invalid rate_limit_backoff_sec entry {item!r}: {exc}"
+            ) from None
+        if val < 0:
+            raise LLMConfigurationError(
+                f"rate_limit_backoff_sec entries must be >= 0, got {val}."
+            )
+        delays.append(val)
+    return tuple(delays)
+
+
 @dataclass(frozen=True)
 class ModelSwitchEvent:
-    """Structured record emitted whenever RoleModelRouter rotates to the next whitelisted model."""
+    """Structured record emitted whenever RoleModelRouter switches or restores a whitelisted model."""
 
     role: str
     from_model: str
@@ -99,9 +138,11 @@ class ModelSwitchEvent:
     to_label: str = ""
     status_code: Optional[int] = None
     upstream_code: str = ""
+    event_type: str = "model_switched"  # "model_switched" | "model_restored"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "event_type": self.event_type,
             "role": self.role,
             "from_model": self.from_model,
             "to_model": self.to_model,
@@ -113,6 +154,39 @@ class ModelSwitchEvent:
             "chapter": int(self.chapter),
             "status_code": self.status_code,
             "upstream_code": self.upstream_code,
+        }
+
+
+@dataclass(frozen=True)
+class RateLimitRetryEvent:
+    """Structured record emitted on each same-model backoff retry after HTTP 429 rate_limit_exceeded."""
+
+    role: str
+    model: str
+    attempt: int
+    max_retries: int
+    wait_seconds: float
+    reason: str
+    timestamp: str
+    book_id: str = ""
+    chapter: int = 0
+    model_label: str = ""
+    status_code: int = 429
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event_type": "rate_limit_retry",
+            "role": self.role,
+            "model": self.model,
+            "model_label": self.model_label or self.model,
+            "attempt": int(self.attempt),
+            "max_retries": int(self.max_retries),
+            "wait_seconds": float(self.wait_seconds),
+            "reason": self.reason,
+            "timestamp": self.timestamp,
+            "book_id": self.book_id,
+            "chapter": int(self.chapter),
+            "status_code": int(self.status_code),
         }
 
 
@@ -265,37 +339,23 @@ def _extract_json_code_tokens(raw_text: str) -> Tuple[str, ...]:
     return tuple(codes)
 
 
-def classify_workbuddy_quota_exhausted(exc: LLMRequestError) -> Tuple[bool, str]:
-    """Determine whether an LLMRequestError represents verified WorkBuddy/CPA quota exhaustion.
+def classify_workbuddy_failure_kind(exc: LLMRequestError) -> Tuple[str, str]:
+    """Classify an LLMRequestError into ('credit_exhausted' | 'rate_limit' | 'non_quota', reason).
 
-    Evidence (read-only audit of ygq-future/cpa-workbuddy @ 2a1a608fb0ff28c51996393822a7f36df4367d5b
-    and router-for-me/CLIProxyAPI v8.0.69):
-    1. HTTP 429 (status_code == 429):
-       - cpa-workbuddy/internal/workbuddy/chat_errors.go:107-108 -> code="rate_limit_exceeded", HTTPStatus=429
-       - cpa-workbuddy/internal/workbuddy/chat_faults_test.go:25,29 -> HTTP 429
-       - CLIProxyAPI v8.0.69 internal/pluginhost/rpc_client.go:51-106,455-460 &
-         sdk/api/handlers/handlers_errors.go:108-122 -> preserves HTTP 429 to client
-    2. WorkBuddy credit package exhausted (HTTP 4xx + upstream code 14018 / credit_package_exhausted):
-       - cpa-workbuddy/internal/workbuddy/chat_errors.go:95-96 -> matches upstream code "14018" or
-         "credits exhausted" / "额度已用尽", emits code="credit_package_exhausted",
-         message="WorkBuddy requires an active credit package with available balance (upstream code 14018)",
-         preserving upstream HTTPStatus (chat_faults_test.go:21 shows HTTP 400!)
-       - cpa-workbuddy/internal/workbuddy/chat_faults_test.go:28 confirms strict numeric boundary
-         (code 140185 MUST NOT match 14018).
-
-    Non-quota errors MUST NEVER trigger model rotation:
-    - Network / transport / DNS / timeout errors (status_code is None or 408)
-    - Upstream 5xx (500, 502, 503, 504 including client_version_rejected 10085, upstream_stream_error)
-    - Non-quota 400 (11128 channel_rejected, 11153 tool_continuation_rejected,
-      11159 thinking_signature_rejected, context_length_exceeded, 140185)
-    - 401 authentication errors (invalid_token, invalid_grant, 12153)
-    - 403 account restriction / permission denied (11140 account_restricted, model_permission_denied)
+    - 'credit_exhausted': Explicit credit package exhaustion (cpa-workbuddy chat_errors.go:95-96:
+      code='credit_package_exhausted' / upstream code 14018 / 'credits exhausted' / '额度已用尽').
+      Rotates immediately without backoff wait.
+    - 'rate_limit': HTTP 429 rate_limit_exceeded without explicit credit exhaustion
+      (cpa-workbuddy chat_errors.go:107-108). Retries on the SAME model with configured backoff
+      (default 30s / 60s / 120s, 3 retries) before judging the model exhausted and rotating.
+    - 'non_quota': Network error, timeout (408/504), 5xx, 401 auth error, 403 account_restricted /
+      model_permission_denied, non-14018 400 (including boundary code 140185). Never rotates.
     """
     status = exc.status_code
     if status is None:
-        return False, ""
+        return "non_quota", ""
     if status == 408 or status >= 500:
-        return False, ""
+        return "non_quota", ""
 
     error_code = (exc.error_code or "").strip().lower()
     upstream_code = (exc.upstream_code or "").strip()
@@ -304,39 +364,42 @@ def classify_workbuddy_quota_exhausted(exc: LLMRequestError) -> Tuple[bool, str]
     json_codes = _extract_json_code_tokens(exc.response_body)
     json_codes_lower = {c.lower() for c in json_codes}
 
-    if status == 429:
-        if (
-            error_code == "credit_package_exhausted"
-            or upstream_code == "14018"
-            or "credit_package_exhausted" in json_codes_lower
-            or "14018" in json_codes
-            or _UPSTREAM_CODE_PHRASE_14018_RE.search(combined_raw)
-            or "credits exhausted" in combined_lower
-            or "额度已用尽" in combined_raw
-        ):
-            return True, "HTTP 429 · WorkBuddy 积分包额度已用尽 (credit_package_exhausted / 14018)"
-        return True, "HTTP 429 · WorkBuddy 模型限流/额度用尽 (rate_limit_exceeded)"
+    is_credit_exhausted = (
+        error_code == "credit_package_exhausted"
+        or upstream_code == "14018"
+        or "credit_package_exhausted" in json_codes_lower
+        or "14018" in json_codes
+        or "credit_package_exhausted" in combined_lower
+        or "workbuddy requires an active credit package with available balance" in combined_lower
+        or "credits exhausted" in combined_lower
+        or "额度已用尽" in combined_raw
+        or bool(_UPSTREAM_CODE_PHRASE_14018_RE.search(combined_raw))
+        or bool(_JSON_CODE_14018_RE.search(combined_raw))
+    )
 
-    if 400 <= status < 500:
-        is_credit_exhausted = (
-            error_code == "credit_package_exhausted"
-            or upstream_code == "14018"
-            or "credit_package_exhausted" in json_codes_lower
-            or "14018" in json_codes
-            or "credit_package_exhausted" in combined_lower
-            or "workbuddy requires an active credit package with available balance" in combined_lower
-            or "credits exhausted" in combined_lower
-            or "额度已用尽" in combined_raw
-            or bool(_UPSTREAM_CODE_PHRASE_14018_RE.search(combined_raw))
-            or bool(_JSON_CODE_14018_RE.search(combined_raw))
-        )
+    if status == 429:
         if is_credit_exhausted:
             return (
-                True,
-                f"HTTP {status} · WorkBuddy 积分包额度已用尽 (credit_package_exhausted / upstream code 14018)",
+                "credit_exhausted",
+                "HTTP 429 · WorkBuddy 积分包额度已用尽 (credit_package_exhausted / 14018)",
             )
+        return "rate_limit", "HTTP 429 · WorkBuddy 模型限流 (rate_limit_exceeded)"
 
-    return False, ""
+    if 400 <= status < 500 and is_credit_exhausted:
+        return (
+            "credit_exhausted",
+            f"HTTP {status} · WorkBuddy 积分包额度已用尽 (credit_package_exhausted / upstream code 14018)",
+        )
+
+    return "non_quota", ""
+
+
+def classify_workbuddy_quota_exhausted(exc: LLMRequestError) -> Tuple[bool, str]:
+    """Return (is_quota_or_rate_limit, reason) backed by cpa-workbuddy @ 2a1a608 & CPA v8.0.69."""
+    kind, reason = classify_workbuddy_failure_kind(exc)
+    if kind == "non_quota":
+        return False, ""
+    return True, reason
 
 
 def now_shanghai_iso() -> str:
@@ -601,10 +664,15 @@ def verify_router_models_against_cpa(
 
 
 __all__ = [
+    "DEFAULT_MODEL_QUOTA_COOLDOWN_SEC",
+    "DEFAULT_RATE_LIMIT_BACKOFF_SEC",
     "ModelSwitchEvent",
+    "RateLimitRetryEvent",
     "WORKBUDDY_MANUAL_ONLY_SLOTS",
+    "WORKBUDDY_MODEL_COOLDOWN_ENV",
     "WORKBUDDY_MODEL_ENV_KEYS",
     "WORKBUDDY_PLANNER_ROTATION_SLOTS",
+    "WORKBUDDY_RATE_LIMIT_BACKOFF_ENV",
     "WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH",
     "WORKBUDDY_SLOT_DISPLAY_NAMES",
     "WORKBUDDY_SLOT_HY4",
@@ -613,9 +681,11 @@ __all__ = [
     "WORKBUDDY_WHITELIST_SLOTS",
     "WORKBUDDY_WRITER_ROTATION_SLOTS",
     "WorkBuddyModelCatalog",
+    "classify_workbuddy_failure_kind",
     "classify_workbuddy_quota_exhausted",
     "find_forbidden_model_reason",
     "now_shanghai_iso",
+    "parse_rate_limit_backoff_sec",
     "validate_workbuddy_model_allowed",
     "validate_workbuddy_rotation_chain",
     "verify_router_models_against_cpa",

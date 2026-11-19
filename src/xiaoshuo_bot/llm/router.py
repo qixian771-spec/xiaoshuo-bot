@@ -33,9 +33,14 @@ from .base import (
 )
 from .openai_compat import OpenAICompatibleProvider
 from .workbuddy_policy import (
+    DEFAULT_MODEL_QUOTA_COOLDOWN_SEC,
+    DEFAULT_RATE_LIMIT_BACKOFF_SEC,
     ModelSwitchEvent,
+    RateLimitRetryEvent,
     WorkBuddyModelCatalog,
+    classify_workbuddy_failure_kind,
     classify_workbuddy_quota_exhausted,
+    parse_rate_limit_backoff_sec,
     validate_workbuddy_model_allowed,
     validate_workbuddy_rotation_chain,
 )
@@ -83,6 +88,7 @@ class RoleEndpointConfig:
     rotation_models: Tuple[str, ...] = ()
     manual_only_models: Tuple[str, ...] = ()
     model_cooldown_sec: Optional[float] = None
+    rate_limit_backoff_sec: Optional[Tuple[float, ...]] = None
     model_labels: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -125,6 +131,8 @@ class RoleEndpointConfig:
                 raise LLMConfigurationError(
                     f"model_cooldown_sec must be >= 0 for role {self.role!r}."
                 )
+        if self.rate_limit_backoff_sec is not None:
+            self.rate_limit_backoff_sec = parse_rate_limit_backoff_sec(self.rate_limit_backoff_sec)
 
         def _normalize_str_tuple(raw_val: Any, field_name: str) -> Tuple[str, ...]:
             if raw_val is None:
@@ -157,11 +165,16 @@ class RoleEndpointConfig:
             )
 
     def effective_model_cooldown_sec(self) -> float:
-        return (
-            float(self.model_cooldown_sec)
-            if self.model_cooldown_sec is not None
-            else float(self.cooldown_sec)
-        )
+        """Exhausted-model cooldown duration (defaults to 1 hour / 3600s, NOT 60s)."""
+        if self.model_cooldown_sec is not None:
+            return float(self.model_cooldown_sec)
+        return float(DEFAULT_MODEL_QUOTA_COOLDOWN_SEC)
+
+    def effective_rate_limit_backoff_sec(self) -> Tuple[float, ...]:
+        """Same-model HTTP 429 retry backoff schedule (defaults to 30s, 60s, 120s)."""
+        if self.rate_limit_backoff_sec is not None:
+            return tuple(self.rate_limit_backoff_sec)
+        return DEFAULT_RATE_LIMIT_BACKOFF_SEC
 
     def format_model_label(self, model_id: str) -> str:
         cleaned = (model_id or "").strip()
@@ -211,6 +224,11 @@ class RoleEndpointConfig:
             model_cooldown_sec=(
                 float(data["model_cooldown_sec"])
                 if data.get("model_cooldown_sec") is not None
+                else None
+            ),
+            rate_limit_backoff_sec=(
+                parse_rate_limit_backoff_sec(data["rate_limit_backoff_sec"])
+                if data.get("rate_limit_backoff_sec") is not None
                 else None
             ),
             model_labels=model_labels,
@@ -465,7 +483,9 @@ class RoleModelRouter:
         ledger: Optional[UsageBudgetLedger] = None,
         monotonic_fn: Optional[Callable[[], float]] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
+        on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
         now_fn: Optional[Callable[[], datetime]] = None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
         workbuddy_catalog: Optional[WorkBuddyModelCatalog] = None,
     ) -> None:
         self._lock = threading.Lock()
@@ -476,14 +496,20 @@ class RoleModelRouter:
         self._model_cooldowns: Dict[str, Dict[str, float]] = {}
         self._model_key_cursors: Dict[str, Dict[str, int]] = {}
         self._model_key_cooldowns: Dict[str, Dict[str, Dict[int, float]]] = {}
+        self._last_chapter_by_role: Dict[str, Optional[int]] = {}
         self._switch_listeners: List[Callable[[ModelSwitchEvent], None]] = []
         self._switch_history: List[ModelSwitchEvent] = []
+        self._retry_listeners: List[Callable[[RateLimitRetryEvent], None]] = []
+        self._retry_history: List[RateLimitRetryEvent] = []
         self.ledger = ledger or UsageBudgetLedger()
         self._monotonic = monotonic_fn or time.monotonic
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
+        self._sleep = sleep_fn or time.sleep
         self.workbuddy_catalog: Optional[WorkBuddyModelCatalog] = workbuddy_catalog
         if on_model_switched is not None:
             self._switch_listeners.append(on_model_switched)
+        if on_rate_limit_retry is not None:
+            self._retry_listeners.append(on_rate_limit_retry)
 
         for role_name, raw_cfg in roles.items():
             cfg = (
@@ -502,6 +528,7 @@ class RoleModelRouter:
             self._model_cooldowns[cfg.role] = {}
             self._model_key_cursors[cfg.role] = {}
             self._model_key_cooldowns[cfg.role] = {}
+            self._last_chapter_by_role[cfg.role] = None
 
     @classmethod
     def from_workbuddy_catalog(
@@ -516,14 +543,23 @@ class RoleModelRouter:
         image_role: Optional[RoleEndpointConfig] = None,
         ledger: Optional[UsageBudgetLedger] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
+        on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
+        monotonic_fn: Optional[Callable[[], float]] = None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
         timeout: int = 300,
         stream: bool = True,
         cooldown_sec: float = 60.0,
         model_cooldown_sec: Optional[float] = None,
+        rate_limit_backoff_sec: Optional[Sequence[float]] = None,
     ) -> "RoleModelRouter":
         overrides = role_model_overrides or {}
         url_ov = role_base_url_overrides or {}
         key_ov = role_api_key_overrides or {}
+        parsed_backoff = (
+            parse_rate_limit_backoff_sec(rate_limit_backoff_sec)
+            if rate_limit_backoff_sec is not None
+            else None
+        )
         roles_cfg: Dict[str, RoleEndpointConfig] = {}
         for role in ("planner", "writer", "critic", "polisher"):
             primary_model, rotation_chain = catalog.default_role_model_and_rotation(
@@ -545,6 +581,7 @@ class RoleModelRouter:
                 rotation_models=rotation_chain,
                 manual_only_models=catalog.manual_only(),
                 model_cooldown_sec=model_cooldown_sec,
+                rate_limit_backoff_sec=parsed_backoff,
                 model_labels=catalog.labels(),
             )
         if image_role is not None:
@@ -552,7 +589,10 @@ class RoleModelRouter:
         return cls(
             roles=roles_cfg,
             ledger=ledger,
+            monotonic_fn=monotonic_fn,
             on_model_switched=on_model_switched,
+            on_rate_limit_retry=on_rate_limit_retry,
+            sleep_fn=sleep_fn,
             workbuddy_catalog=catalog,
         )
 
@@ -562,6 +602,9 @@ class RoleModelRouter:
         config: Mapping[str, Any],
         ledger: Optional[UsageBudgetLedger] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
+        on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
+        monotonic_fn: Optional[Callable[[], float]] = None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
     ) -> "RoleModelRouter":
         catalog: Optional[WorkBuddyModelCatalog] = None
         if "workbuddy_models" in config and config["workbuddy_models"] is not None:
@@ -581,12 +624,20 @@ class RoleModelRouter:
                     else None,
                     ledger=ledger,
                     on_model_switched=on_model_switched,
+                    on_rate_limit_retry=on_rate_limit_retry,
+                    monotonic_fn=monotonic_fn,
+                    sleep_fn=sleep_fn,
                     timeout=int(config.get("timeout", 300)),
                     stream=bool(config.get("stream", True)),
                     cooldown_sec=float(config.get("cooldown_sec", 60.0)),
                     model_cooldown_sec=(
                         float(config["model_cooldown_sec"])
                         if config.get("model_cooldown_sec") is not None
+                        else None
+                    ),
+                    rate_limit_backoff_sec=(
+                        parse_rate_limit_backoff_sec(config["rate_limit_backoff_sec"])
+                        if config.get("rate_limit_backoff_sec") is not None
                         else None
                     ),
                 )
@@ -596,7 +647,14 @@ class RoleModelRouter:
             raise LLMConfigurationError("Router config must be a mapping of role -> endpoint config.")
 
         if catalog is None:
-            return cls(roles=roles_raw, ledger=ledger, on_model_switched=on_model_switched)
+            return cls(
+                roles=roles_raw,
+                ledger=ledger,
+                monotonic_fn=monotonic_fn,
+                on_model_switched=on_model_switched,
+                on_rate_limit_retry=on_rate_limit_retry,
+                sleep_fn=sleep_fn,
+            )
 
         enriched_roles: Dict[str, RoleEndpointConfig] = {}
         for role_name, raw_cfg in roles_raw.items():
@@ -612,6 +670,10 @@ class RoleModelRouter:
                 merged.setdefault("model_whitelist", list(catalog.whitelist()))
                 merged.setdefault("manual_only_models", list(catalog.manual_only()))
                 merged.setdefault("model_labels", dict(catalog.labels()))
+                if "model_cooldown_sec" not in merged and config.get("model_cooldown_sec") is not None:
+                    merged["model_cooldown_sec"] = config["model_cooldown_sec"]
+                if "rate_limit_backoff_sec" not in merged and config.get("rate_limit_backoff_sec") is not None:
+                    merged["rate_limit_backoff_sec"] = config["rate_limit_backoff_sec"]
                 if "rotation_models" not in merged or merged["rotation_models"] is None:
                     merged["rotation_models"] = list(default_rotation)
             enriched_roles[role_name] = RoleEndpointConfig.from_mapping(role_name, merged)
@@ -619,7 +681,10 @@ class RoleModelRouter:
         return cls(
             roles=enriched_roles,
             ledger=ledger,
+            monotonic_fn=monotonic_fn,
             on_model_switched=on_model_switched,
+            on_rate_limit_retry=on_rate_limit_retry,
+            sleep_fn=sleep_fn,
             workbuddy_catalog=catalog,
         )
 
@@ -627,6 +692,11 @@ class RoleModelRouter:
         with self._lock:
             if callback not in self._switch_listeners:
                 self._switch_listeners.append(callback)
+
+    def add_rate_limit_retry_listener(self, callback: Callable[[RateLimitRetryEvent], None]) -> None:
+        with self._lock:
+            if callback not in self._retry_listeners:
+                self._retry_listeners.append(callback)
 
     def get_active_model(self, role: str) -> str:
         cfg = self.get_role_config(role)
@@ -636,6 +706,69 @@ class RoleModelRouter:
     def get_model_switch_history(self) -> List[ModelSwitchEvent]:
         with self._lock:
             return list(self._switch_history)
+
+    def get_rate_limit_retry_history(self) -> List[RateLimitRetryEvent]:
+        with self._lock:
+            return list(self._retry_history)
+
+    def recover_preferred_models(
+        self,
+        *,
+        roles: Optional[Sequence[str]] = None,
+        book_id: str = "",
+        chapter: int = 0,
+    ) -> List[ModelSwitchEvent]:
+        """Before writing a new chapter, restore the earliest cooled-off model in each role's rotation chain."""
+        with self._lock:
+            target_roles = (
+                [r for r in roles if r in self._roles]
+                if roles is not None
+                else [r for r in ("planner", "writer", "critic", "polisher") if r in self._roles]
+            )
+        restored_events: List[ModelSwitchEvent] = []
+        for role in target_roles:
+            cfg = self.get_role_config(role)
+            if not cfg.rotation_models:
+                continue
+            with self._lock:
+                current_model = self._active_models.get(role, cfg.rotation_models[0])
+            try:
+                cur_idx = cfg.rotation_models.index(current_model)
+            except ValueError:
+                continue
+            if cur_idx <= 0:
+                continue
+            for earlier_model in cfg.rotation_models[:cur_idx]:
+                if self._is_model_in_cooldown(role, earlier_model):
+                    continue
+                with self._lock:
+                    self._active_models[role] = earlier_model
+                    self._model_key_cooldowns.setdefault(role, {}).pop(earlier_model, None)
+                cooldown_min = round(cfg.effective_model_cooldown_sec() / 60.0, 1)
+                cooldown_desc = (
+                    f"{int(cfg.effective_model_cooldown_sec() // 3600)} 小时"
+                    if cfg.effective_model_cooldown_sec() >= 3600 and cfg.effective_model_cooldown_sec() % 3600 == 0
+                    else (f"{cooldown_min:g} 分钟" if cfg.effective_model_cooldown_sec() >= 60 else f"{int(cfg.effective_model_cooldown_sec())} 秒")
+                )
+                ch_prefix = f"第 {chapter} 章开写前，" if chapter > 0 else ""
+                earlier_idx = cfg.rotation_models.index(earlier_model)
+                target_desc = "首选模型" if earlier_idx == 0 else "更靠前可用模型"
+                event = ModelSwitchEvent(
+                    role=role,
+                    from_model=current_model,
+                    to_model=earlier_model,
+                    from_label=cfg.format_model_label(current_model),
+                    to_label=cfg.format_model_label(earlier_model),
+                    reason=f"{ch_prefix}{cfg.format_model_label(earlier_model)} 冷却期（{cooldown_desc}）已过，已自动切回{target_desc}",
+                    timestamp=self._now_fn().isoformat(),
+                    book_id=str(book_id or ""),
+                    chapter=int(chapter or 0),
+                    event_type="model_restored",
+                )
+                self._emit_model_switch(event)
+                restored_events.append(event)
+                break
+        return restored_events
 
     def reset_model_rotation(self, role: Optional[str] = None) -> None:
         with self._lock:
@@ -648,6 +781,7 @@ class RoleModelRouter:
                 self._model_cooldowns[r] = {}
                 self._model_key_cursors[r] = {}
                 self._model_key_cooldowns[r] = {}
+                self._last_chapter_by_role[r] = None
                 self._cooldowns[r] = {}
                 self._cursors[r] = 0
 
@@ -789,6 +923,20 @@ class RoleModelRouter:
         for listener in listeners:
             listener(event)
 
+    def _emit_rate_limit_retry(self, event: RateLimitRetryEvent) -> None:
+        with self._lock:
+            self._retry_history.append(event)
+            listeners = list(self._retry_listeners)
+        for listener in listeners:
+            listener(event)
+
+    def _clear_key_cooldowns_for_model(self, role: str, model_id: str, cfg: RoleEndpointConfig) -> None:
+        with self._lock:
+            if cfg.rotation_models:
+                self._model_key_cooldowns.setdefault(role, {}).pop(model_id, None)
+            else:
+                self._cooldowns[role] = {}
+
     def _build_text_provider(
         self,
         cfg: RoleEndpointConfig,
@@ -869,6 +1017,21 @@ class RoleModelRouter:
                 context=f"role={role} request.metadata.model",
             )
 
+        # Bug 2 fix: before writing a new chapter, check whether an earlier (higher-priority)
+        # model in the rotation chain has finished cooling down and restore it automatically.
+        if cfg.rotation_models and chapter_no is not None:
+            with self._lock:
+                prev_chapter = self._last_chapter_by_role.get(role)
+                chapter_changed = prev_chapter != chapter_no
+            if chapter_changed:
+                self.recover_preferred_models(
+                    roles=(role,),
+                    book_id=str(request.metadata.get("book_id") or ""),
+                    chapter=chapter_no,
+                )
+                with self._lock:
+                    self._last_chapter_by_role[role] = chapter_no
+
         if cfg.rotation_models:
             with self._lock:
                 active_model = self._active_models.get(role, cfg.rotation_models[0])
@@ -882,6 +1045,7 @@ class RoleModelRouter:
             model_chain = (cfg.model,)
 
         policy_active = bool(cfg.rotation_models or cfg.model_whitelist)
+        backoff_delays = cfg.effective_rate_limit_backoff_sec() if policy_active else ()
         last_quota_reason = "HTTP 429"
         last_status_code: Optional[int] = None
         last_upstream_code = ""
@@ -890,14 +1054,6 @@ class RoleModelRouter:
             if cfg.rotation_models and self._is_model_in_cooldown(role, current_model):
                 last_quota_reason = f"模型 {current_model} 仍在额度冷却期内"
                 continue
-
-            candidates = self._candidate_key_indices_for_model(role, current_model, cfg)
-            model_exhausted = not candidates
-            if model_exhausted and not cfg.rotation_models:
-                raise QuotaExhaustedError(
-                    f"All {len(cfg.api_keys)} credentials for role '{role}' (model '{current_model}') "
-                    "are currently in 429 cooldown. Refusing to downgrade model."
-                )
 
             req_for_model = request
             if explicit_req_model and explicit_req_model != current_model:
@@ -914,59 +1070,117 @@ class RoleModelRouter:
                     metadata=cleaned_meta,
                 )
 
-            for key_idx in candidates:
-                api_key = cfg.api_keys[key_idx]
-                provider = self._build_text_provider(cfg, api_key, model=current_model)
-                try:
-                    resp = provider.generate(req_for_model)
-                    self._mark_key_success_for_model(role, current_model, key_idx, cfg)
-                    resolved_model = (resp.model or current_model).strip()
-                    in_tok, out_tok = _extract_tokens(resp.usage)
-                    self.ledger.record_usage(
-                        role=role,
-                        model=resolved_model,
-                        input_tokens=in_tok,
-                        output_tokens=out_tok,
-                        chapter=chapter_no,
-                        input_cost_per_1m=cfg.input_cost_per_1m,
-                        output_cost_per_1m=cfg.output_cost_per_1m,
-                    )
-                    return resp
-                except LLMStreamTruncatedError as exc:
-                    # Upstream already generated (and billed) tokens; record them and NEVER switch models.
-                    self._mark_key_success_for_model(role, current_model, key_idx, cfg)
-                    in_tok, out_tok = _extract_tokens(getattr(exc, "usage", None) or {})
-                    self.ledger.record_usage(
-                        role=role,
-                        model=getattr(exc, "model", "") or current_model,
-                        input_tokens=in_tok,
-                        output_tokens=out_tok,
-                        chapter=chapter_no,
-                        input_cost_per_1m=cfg.input_cost_per_1m,
-                        output_cost_per_1m=cfg.output_cost_per_1m,
-                    )
-                    raise
-                except LLMRequestError as exc:
-                    if policy_active:
-                        is_quota, quota_reason = classify_workbuddy_quota_exhausted(exc)
-                    else:
-                        is_quota = exc.status_code == 429
-                        quota_reason = "HTTP 429"
-                    if is_quota:
-                        self._mark_key_quota_for_model(role, current_model, key_idx, cfg)
-                        last_quota_reason = quota_reason
-                        last_status_code = exc.status_code
-                        last_upstream_code = exc.upstream_code or ""
-                        continue
-                    raise LLMRequestError(
-                        redact_secrets(str(exc), cfg.api_keys),
-                        status_code=exc.status_code,
-                        error_code=exc.error_code,
-                        upstream_code=exc.upstream_code,
-                        response_body=redact_secrets(exc.response_body, cfg.api_keys),
-                    ) from None
+            # Bug 1 fix: HTTP 429 rate_limit_exceeded retries on the SAME model using configured
+            # backoff delays (default 30s, 60s, 120s = 3 retries) before judging quota exhausted.
+            # Explicit credit_package_exhausted / upstream code 14018 rotates immediately.
+            max_same_model_attempts = (len(backoff_delays) + 1) if policy_active else 1
+            for retry_idx in range(max_same_model_attempts):
+                candidates = self._candidate_key_indices_for_model(role, current_model, cfg)
+                if not candidates:
+                    if not cfg.rotation_models:
+                        raise QuotaExhaustedError(
+                            f"All {len(cfg.api_keys)} credentials for role '{role}' (model '{current_model}') "
+                            "are currently in 429 cooldown. Refusing to downgrade model."
+                        )
+                    break
 
-            # All candidate keys for current_model exhausted quota.
+                saw_rate_limit = False
+                credit_exhausted_immediately = False
+
+                for key_idx in candidates:
+                    api_key = cfg.api_keys[key_idx]
+                    provider = self._build_text_provider(cfg, api_key, model=current_model)
+                    try:
+                        resp = provider.generate(req_for_model)
+                        self._mark_key_success_for_model(role, current_model, key_idx, cfg)
+                        resolved_model = (resp.model or current_model).strip()
+                        in_tok, out_tok = _extract_tokens(resp.usage)
+                        self.ledger.record_usage(
+                            role=role,
+                            model=resolved_model,
+                            input_tokens=in_tok,
+                            output_tokens=out_tok,
+                            chapter=chapter_no,
+                            input_cost_per_1m=cfg.input_cost_per_1m,
+                            output_cost_per_1m=cfg.output_cost_per_1m,
+                        )
+                        return resp
+                    except LLMStreamTruncatedError as exc:
+                        # Upstream already generated (and billed) tokens; record them and NEVER switch models.
+                        self._mark_key_success_for_model(role, current_model, key_idx, cfg)
+                        in_tok, out_tok = _extract_tokens(getattr(exc, "usage", None) or {})
+                        self.ledger.record_usage(
+                            role=role,
+                            model=getattr(exc, "model", "") or current_model,
+                            input_tokens=in_tok,
+                            output_tokens=out_tok,
+                            chapter=chapter_no,
+                            input_cost_per_1m=cfg.input_cost_per_1m,
+                            output_cost_per_1m=cfg.output_cost_per_1m,
+                        )
+                        raise
+                    except LLMRequestError as exc:
+                        if policy_active:
+                            fail_kind, quota_reason = classify_workbuddy_failure_kind(exc)
+                        else:
+                            fail_kind = "rate_limit" if exc.status_code == 429 else "non_quota"
+                            quota_reason = "HTTP 429"
+                        if fail_kind != "non_quota":
+                            self._mark_key_quota_for_model(role, current_model, key_idx, cfg)
+                            last_quota_reason = quota_reason
+                            last_status_code = exc.status_code
+                            last_upstream_code = exc.upstream_code or ""
+                            if fail_kind == "credit_exhausted":
+                                credit_exhausted_immediately = True
+                            else:
+                                saw_rate_limit = True
+                            continue
+                        raise LLMRequestError(
+                            redact_secrets(str(exc), cfg.api_keys),
+                            status_code=exc.status_code,
+                            error_code=exc.error_code,
+                            upstream_code=exc.upstream_code,
+                            response_body=redact_secrets(exc.response_body, cfg.api_keys),
+                        ) from None
+
+                if (
+                    policy_active
+                    and saw_rate_limit
+                    and not credit_exhausted_immediately
+                    and retry_idx < len(backoff_delays)
+                ):
+                    wait_sec = float(backoff_delays[retry_idx])
+                    retry_event = RateLimitRetryEvent(
+                        role=role,
+                        model=current_model,
+                        model_label=cfg.format_model_label(current_model),
+                        attempt=retry_idx + 1,
+                        max_retries=len(backoff_delays),
+                        wait_seconds=wait_sec,
+                        reason=last_quota_reason,
+                        timestamp=self._now_fn().isoformat(),
+                        book_id=str(request.metadata.get("book_id") or ""),
+                        chapter=int(request.chapter or 0),
+                        status_code=429,
+                    )
+                    self._emit_rate_limit_retry(retry_event)
+                    self._sleep(wait_sec)
+                    self._clear_key_cooldowns_for_model(role, current_model, cfg)
+                    continue
+
+                if (
+                    policy_active
+                    and saw_rate_limit
+                    and not credit_exhausted_immediately
+                    and len(backoff_delays) > 0
+                ):
+                    last_quota_reason = (
+                        f"HTTP 429 · 连续 {len(backoff_delays)} 次退避重试后仍被限流，"
+                        "判定该模型额度用尽 (rate_limit_exceeded)"
+                    )
+                break
+
+            # All candidate keys (and any rate-limit backoff retries) for current_model exhausted quota.
             if cfg.rotation_models:
                 self._mark_model_quota_exhausted(role, current_model, cfg)
                 next_model: Optional[str] = None
@@ -989,6 +1203,7 @@ class RoleModelRouter:
                         chapter=int(request.chapter or 0),
                         status_code=last_status_code,
                         upstream_code=last_upstream_code,
+                        event_type="model_switched",
                     )
                     self._emit_model_switch(event)
                     continue

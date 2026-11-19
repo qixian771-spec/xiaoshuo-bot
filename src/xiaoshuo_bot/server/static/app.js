@@ -93,10 +93,12 @@
     PAUSED: { text: "手动暂停", cls: "tag-slate" },
   });
 
-  // Reusable alert kinds for both Q14 quota/budget circuit-breaker and future WorkBuddy model rotation
+  // Reusable alert kinds for Q14 quota/budget circuit-breaker and WorkBuddy model rotation
   const MODEL_QUOTA_ALERT_KINDS = Object.freeze({
     QUOTA_EXHAUSTED: "quota_exhausted",
     MODEL_SWITCHED: "model_switched",
+    RATE_LIMIT_RETRY: "rate_limit_retry",
+    MODEL_RESTORED: "model_restored",
   });
 
   const CHAPTER_STATUS_LABELS = Object.freeze({
@@ -741,16 +743,35 @@
   }
 
   /* ------------------------------------------------------------------
-   * Reusable Model Switch & Quota/Budget Alert Component (Q14 / P1-2)
-   * Supports both "quota_exhausted" (critical halt) and "model_switched" (rotation notice)
+   * Reusable Model Switch, Rate-Limit Retry, Restore & Quota Alert Component (Q14 / P1-2 / WB1)
+   * Supports:
+   * - "quota_exhausted": red critical halt banner
+   * - "model_switched": amber rotation notice
+   * - "rate_limit_retry": non-red sky-blue backoff retry notice
+   * - "model_restored": non-red emerald auto-restore notice
    * ------------------------------------------------------------------ */
+  function normalizeModelQuotaAlertKind(rawKind, fallbackKind) {
+    const val = String(rawKind || "").trim();
+    if (val === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED) {
+      return MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED;
+    }
+    if (val === MODEL_QUOTA_ALERT_KINDS.RATE_LIMIT_RETRY) {
+      return MODEL_QUOTA_ALERT_KINDS.RATE_LIMIT_RETRY;
+    }
+    if (val === MODEL_QUOTA_ALERT_KINDS.MODEL_RESTORED) {
+      return MODEL_QUOTA_ALERT_KINDS.MODEL_RESTORED;
+    }
+    if (val === MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED) {
+      return MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
+    }
+    return fallbackKind || MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
+  }
+
   function upsertModelQuotaAlert(entry) {
     if (!entry || typeof entry !== "object") {
       return;
     }
-    const kind = entry.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
-      ? MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
-      : MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
+    const kind = normalizeModelQuotaAlertKind(entry.kind, MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED);
     const bookId = String(entry.book_id || "");
     const alertId = String(entry.id || (kind + ":" + (bookId || "global")));
     state.dismissedQuotaAlertIds.delete(alertId);
@@ -759,8 +780,12 @@
       kind: kind,
       book_id: bookId,
       book_title: String(entry.book_title || ""),
+      model: String(entry.model || entry.from_model || ""),
       from_model: String(entry.from_model || ""),
       to_model: String(entry.to_model || ""),
+      retry_attempt: Number(entry.retry_attempt || 0),
+      max_retries: Number(entry.max_retries || 0),
+      wait_seconds: Number(entry.wait_seconds || 0),
       reason: String(entry.reason || ""),
       error_type: String(entry.error_type || ""),
       timestamp: String(entry.timestamp || ""),
@@ -786,17 +811,25 @@
         if (!ev || typeof ev !== "object") {
           return;
         }
-        const alertId = MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED + ":" + String(ev.id || "");
+        const evKind = normalizeModelQuotaAlertKind(
+          ev.event_type,
+          MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
+        );
+        const alertId = evKind + ":" + String(ev.id || "");
         if (state.dismissedQuotaAlertIds.has(alertId)) {
           return;
         }
         state.modelQuotaAlerts.set(alertId, {
           id: alertId,
-          kind: MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED,
+          kind: evKind,
           book_id: String(ev.book_id || ""),
           book_title: String(ev.book_title || ev.book_id || ""),
+          model: String(ev.from_model || ev.to_model || ""),
           from_model: String(ev.from_model || ""),
           to_model: String(ev.to_model || ""),
+          retry_attempt: Number(ev.retry_attempt || 0),
+          max_retries: Number(ev.max_retries || 0),
+          wait_seconds: Number(ev.wait_seconds || 0),
           reason: String(ev.reason || ""),
           error_type: "",
           timestamp: String(ev.created_at || ""),
@@ -827,8 +860,12 @@
         kind: MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED,
         book_id: String(book.book_id || ""),
         book_title: String(book.title || book.book_id || ""),
+        model: "",
         from_model: "",
         to_model: "",
+        retry_attempt: 0,
+        max_retries: 0,
+        wait_seconds: 0,
         reason: String(book.paused_reason || "全部额度用尽或触发预算熔断，已停机保护"),
         error_type: "",
         timestamp: String(book.updated_at || ""),
@@ -868,15 +905,56 @@
     }
     region.hidden = false;
     region.innerHTML = alerts.map(function (item) {
+      const isQuotaHalt = item.kind === MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
       const isSwitch = item.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED;
-      const cls = isSwitch ? "model-alert-card is-warn" : "model-alert-card is-danger";
-      const ariaRole = isSwitch ? "status" : "alert";
-      const ariaLive = isSwitch ? "polite" : "assertive";
-      const heading = isSwitch ? "🔄 写作模型已切换" : "🚨 超预算 / 全部额度用尽 · 熔断停机";
+      const isRateLimit = item.kind === MODEL_QUOTA_ALERT_KINDS.RATE_LIMIT_RETRY;
+      const isRestored = item.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_RESTORED;
+
+      let cls = "model-alert-card is-danger";
+      let ariaRole = "alert";
+      let ariaLive = "assertive";
+      let heading = "🚨 超预算 / 全部额度用尽 · 熔断停机";
+      let modelStep = "";
+      let defaultDetail = "触发超预算或额度熔断，自动写作已停止";
+      let hintText = "严禁悄悄降级：请先前往 CPA 配置页检查额度/预算，处理完成后再点击恢复写作。";
+
+      if (isSwitch) {
+        cls = "model-alert-card is-warn";
+        ariaRole = "status";
+        ariaLive = "polite";
+        heading = "🔄 写作模型已切换";
+        if (item.from_model || item.to_model) {
+          modelStep = '<span class="tag tag-gold">从 ' + escapeHtml(item.from_model || "原模型") + ' 切到 ' + escapeHtml(item.to_model || "目标模型") + '</span>';
+        }
+        defaultDetail = "已按白名单顺序切换写作模型";
+        hintText = "已记录本次切换原因与对应章节所用模型，可继续观察写作进度。";
+      } else if (isRateLimit) {
+        cls = "model-alert-card is-info";
+        ariaRole = "status";
+        ariaLive = "polite";
+        const modelName = item.model || item.from_model || "当前模型";
+        const attemptNo = Math.max(1, Number(item.retry_attempt || 1));
+        const maxRetries = Math.max(attemptNo, Number(item.max_retries || 3));
+        const waitSec = Number(item.wait_seconds || 0);
+        heading = "⏳ " + modelName + " 被限流，第 " + attemptNo + " 次等待重试";
+        const waitPart = waitSec > 0 ? (" · 退避等待 " + waitSec + " 秒") : "";
+        modelStep = '<span class="tag tag-cyan">第 ' + escapeHtml(attemptNo) + '/' + escapeHtml(maxRetries) + ' 次重试' + escapeHtml(waitPart) + '</span>';
+        defaultDetail = modelName + " 触发 HTTP 429 限流，正在同模型退避重试";
+        hintText = "当前未切换模型：同模型连续 " + maxRetries + " 次仍被限流后，才会判定额度用尽并轮换下一白名单模型。";
+      } else if (isRestored) {
+        cls = "model-alert-card is-ok";
+        ariaRole = "status";
+        ariaLive = "polite";
+        const targetModel = item.to_model || "首选模型";
+        heading = "✅ 已切回 " + targetModel;
+        if (item.from_model || item.to_model) {
+          modelStep = '<span class="tag tag-emerald">从 ' + escapeHtml(item.from_model || "备选模型") + ' 切回 ' + escapeHtml(targetModel) + '</span>';
+        }
+        defaultDetail = targetModel + " 冷却期已过，已自动切回";
+        hintText = "前序高优先级模型冷却期已结束，新章节已恢复优先使用该模型写作。";
+      }
+
       const bookLabel = item.book_title || item.book_id;
-      const modelStep = (item.from_model || item.to_model)
-        ? ('<span class="tag tag-gold">从 ' + escapeHtml(item.from_model || "原模型") + ' 切到 ' + escapeHtml(item.to_model || "目标模型") + '</span>')
-        : "";
       const detailParts = [];
       if (bookLabel) {
         detailParts.push("书目：" + bookLabel);
@@ -884,11 +962,8 @@
       if (item.reason) {
         detailParts.push("原因：" + item.reason);
       }
-      const detailText = detailParts.join(" · ") || (isSwitch ? "已按白名单顺序切换写作模型" : "触发超预算或额度熔断，自动写作已停止");
-      const hintText = isSwitch
-        ? "已记录本次切换原因与对应章节所用模型，可继续观察写作进度。"
-        : "严禁悄悄降级：请先前往 CPA 配置页检查额度/预算，处理完成后再点击恢复写作。";
-      const resumeBtn = (!isSwitch && item.book_id)
+      const detailText = detailParts.join(" · ") || defaultDetail;
+      const resumeBtn = (isQuotaHalt && item.book_id)
         ? ('<button type="button" class="btn btn-sm btn-primary" data-alert-action="resume-book" data-book-id="' + escapeHtml(item.book_id) + '" data-alert-id="' + escapeHtml(item.id) + '">▶ 恢复写作</button>')
         : "";
       return (
@@ -904,7 +979,7 @@
           '<div class="model-alert-actions">' +
             '<button type="button" class="btn btn-sm btn-outline" data-alert-action="goto-cpa">前往 CPA 配置</button>' +
             resumeBtn +
-            '<button type="button" class="btn btn-sm btn-ghost" data-alert-action="dismiss" data-alert-id="' + escapeHtml(item.id) + '">' + escapeHtml(isSwitch ? "知道了" : "暂时收起") + '</button>' +
+            '<button type="button" class="btn btn-sm btn-ghost" data-alert-action="dismiss" data-alert-id="' + escapeHtml(item.id) + '">' + escapeHtml(isQuotaHalt ? "暂时收起" : "知道了") + '</button>' +
           '</div>' +
         '</div>'
       );
@@ -1881,24 +1956,48 @@
   };
   SSE_HANDLERS[SSE_EVENTS.CPA_QUOTA_ALERT] = function (payload) {
     const d = payload.data || {};
-    const kind = d.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
-      ? MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
-      : MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
+    const kind = normalizeModelQuotaAlertKind(
+      d.kind || d.event_type,
+      MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED
+    );
     const matchedBook = state.books.find(function (b) {
       return b.book_id === payload.book_id;
     });
+    const alertId = d.event_id ? (kind + ":" + String(d.event_id)) : "";
     upsertModelQuotaAlert({
+      id: alertId,
       kind: kind,
       book_id: payload.book_id || "",
       book_title: matchedBook ? matchedBook.title : (d.book_title || payload.book_id || ""),
+      model: d.model || d.from_model || "",
       from_model: d.from_model || "",
       to_model: d.to_model || "",
+      retry_attempt: Number(d.retry_attempt || 0),
+      max_retries: Number(d.max_retries || 0),
+      wait_seconds: Number(d.wait_seconds || 0),
       reason: d.reason || payload.message || "同档凭据冷却或额度触顶",
       error_type: d.error_type || "",
       timestamp: payload.timestamp || "",
       source: "sse",
     });
     loadBooks();
+    if (kind === MODEL_QUOTA_ALERT_KINDS.RATE_LIMIT_RETRY) {
+      const m = d.model || d.from_model || "当前模型";
+      const n = Math.max(1, Number(d.retry_attempt || 1));
+      return {
+        level: "info",
+        title: m + " 被限流，第 " + n + " 次等待重试",
+        detail: payload.message || (d.reason || "HTTP 429 限流，同模型退避重试"),
+      };
+    }
+    if (kind === MODEL_QUOTA_ALERT_KINDS.MODEL_RESTORED) {
+      const target = d.to_model || "首选模型";
+      return {
+        level: "pass",
+        title: "已切回 " + target,
+        detail: (d.from_model ? (d.from_model + " → " + target + " · ") : "") + (d.reason || payload.message || "冷却期已过，已自动切回"),
+      };
+    }
     if (kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED) {
       return {
         level: "warn",

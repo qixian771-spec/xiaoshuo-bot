@@ -719,6 +719,13 @@ class NovelGenerationEngine:
             if isinstance(self.provider, RoleModelRouter)
             else 0
         )
+        if self.router is not None:
+            # Bug 2 fix: before writing each chapter, check whether an earlier model in the
+            # rotation chain has finished cooling down and switch back automatically.
+            self.router.recover_preferred_models(
+                roles=("writer", "critic", "polisher"),
+                chapter=scene.chapter,
+            )
 
         sys_prompt, user_prompt = self.compiler.compile_scene_prompt(
             scene, self.state, memory_pyramid=self.memory

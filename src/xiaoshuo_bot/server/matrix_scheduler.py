@@ -48,7 +48,7 @@ from ..llm.base import (
 )
 from ..llm.cpa_manager import CPAManagementClient
 from ..llm.router import RoleEndpointConfig, RoleModelRouter, VALID_ROLES
-from ..llm.workbuddy_policy import ModelSwitchEvent
+from ..llm.workbuddy_policy import ModelSwitchEvent, RateLimitRetryEvent
 from ..loader import load_project
 from ..models import (
     ChapterArtifact,
@@ -252,18 +252,34 @@ class MatrixScheduler:
 
         if isinstance(self.provider, RoleModelRouter):
             self.provider.add_model_switch_listener(self._handle_model_switched)
+            self.provider.add_rate_limit_retry_listener(self._handle_rate_limit_retry)
 
-    def _handle_model_switched(self, event: ModelSwitchEvent) -> None:
-        book_id = event.book_id or str(getattr(self._thread_ctx, "book_id", "") or "")
-        chapter = int(event.chapter or getattr(self._thread_ctx, "chapter", 0) or 0)
+    def _resolve_event_book_context(
+        self,
+        event_book_id: str,
+        event_chapter: int,
+    ) -> Tuple[str, str, int]:
+        book_id = event_book_id or str(getattr(self._thread_ctx, "book_id", "") or "")
+        chapter = int(event_chapter or getattr(self._thread_ctx, "chapter", 0) or 0)
         book_title = str(getattr(self._thread_ctx, "book_title", "") or "")
         if book_id and not book_title:
             book_rec = self.db.get_book(book_id)
             if book_rec:
                 book_title = str(book_rec.get("title") or "")
+        return book_id, book_title, chapter
 
+    def _handle_model_switched(self, event: ModelSwitchEvent) -> None:
+        book_id, book_title, chapter = self._resolve_event_book_context(
+            event.book_id,
+            event.chapter,
+        )
         from_display = event.from_label or event.from_model
         to_display = event.to_label or event.to_model
+        ev_type = (
+            event.event_type
+            if event.event_type in ("model_switched", "model_restored")
+            else "model_switched"
+        )
         saved = self.db.record_model_switch(
             role=event.role,
             from_model=from_display,
@@ -274,15 +290,21 @@ class MatrixScheduler:
             chapter=chapter,
             status_code=event.status_code,
             upstream_code=event.upstream_code,
+            event_type=ev_type,
             created_at=event.timestamp,
         )
+        if ev_type == "model_restored":
+            msg = f"角色 {event.role} 已切回 {to_display}（原模型：{from_display}；{event.reason}）"
+        else:
+            msg = f"角色 {event.role} 模型已从 {from_display} 切到 {to_display}（原因：{event.reason}）"
         self._emit(
             SSE_CPA_QUOTA_ALERT,
             book_id=book_id,
             chapter=chapter,
-            message=f"角色 {event.role} 模型已从 {from_display} 切到 {to_display}（原因：{event.reason}）",
+            message=msg,
             data={
-                "kind": "model_switched",
+                "kind": ev_type,
+                "event_type": ev_type,
                 "event_id": saved["id"],
                 "role": event.role,
                 "from_model": from_display,
@@ -293,6 +315,57 @@ class MatrixScheduler:
                 "book_title": book_title,
                 "status_code": event.status_code,
                 "upstream_code": event.upstream_code,
+            },
+        )
+
+    def _handle_rate_limit_retry(self, event: RateLimitRetryEvent) -> None:
+        book_id, book_title, chapter = self._resolve_event_book_context(
+            event.book_id,
+            event.chapter,
+        )
+        model_display = event.model_label or event.model
+        wait_val = float(event.wait_seconds)
+        wait_str = str(int(wait_val)) if wait_val.is_integer() else f"{wait_val:g}"
+        retry_msg = (
+            f"{model_display} 被限流，第 {event.attempt} 次等待重试"
+            f"（共 {event.max_retries} 次，等待 {wait_str} 秒）"
+        )
+        saved = self.db.record_model_switch(
+            role=event.role,
+            from_model=model_display,
+            to_model=model_display,
+            reason=event.reason,
+            book_id=book_id,
+            book_title=book_title,
+            chapter=chapter,
+            status_code=event.status_code,
+            upstream_code="rate_limit_exceeded",
+            event_type="rate_limit_retry",
+            retry_attempt=event.attempt,
+            max_retries=event.max_retries,
+            wait_seconds=wait_val,
+            created_at=event.timestamp,
+        )
+        self._emit(
+            SSE_CPA_QUOTA_ALERT,
+            book_id=book_id,
+            chapter=chapter,
+            message=retry_msg,
+            data={
+                "kind": "rate_limit_retry",
+                "event_type": "rate_limit_retry",
+                "event_id": saved["id"],
+                "role": event.role,
+                "model": model_display,
+                "model_id": event.model,
+                "from_model": model_display,
+                "to_model": model_display,
+                "retry_attempt": event.attempt,
+                "max_retries": event.max_retries,
+                "wait_seconds": wait_val,
+                "reason": event.reason,
+                "book_title": book_title,
+                "status_code": event.status_code,
             },
         )
 
@@ -1147,6 +1220,7 @@ class MatrixScheduler:
                     rotation_models=next_rotation,
                     manual_only_models=existing.manual_only_models,
                     model_cooldown_sec=existing.model_cooldown_sec,
+                    rate_limit_backoff_sec=existing.rate_limit_backoff_sec,
                     model_labels=dict(existing.model_labels),
                 )
                 router.update_role(new_cfg)

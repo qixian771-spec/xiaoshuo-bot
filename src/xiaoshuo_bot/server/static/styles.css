@@ -379,6 +379,20 @@ code {
   color: #fef3c7;
 }
 
+.model-alert-card.is-info {
+  background: rgba(12, 74, 110, 0.36);
+  border-color: rgba(56, 189, 248, 0.58);
+  border-left-color: #38bdf8;
+  color: #e0f2fe;
+}
+
+.model-alert-card.is-ok {
+  background: rgba(6, 78, 59, 0.38);
+  border-color: rgba(16, 185, 129, 0.58);
+  border-left-color: #10b981;
+  color: #d1fae5;
+}
+
 .model-alert-main {
   flex: 1 1 320px;
   min-width: 0;

@@ -441,7 +441,12 @@ class TestPerChapterModelConsistencyAndMigration(unittest.TestCase):
             def chat_handler(payload: Dict[str, Any]):
                 m = payload.get("model")
                 if m == CFG_MODELS["hy4_flash"]:
-                    return 429, {"error": {"code": "rate_limit_exceeded", "message": "WorkBuddy rate limit exceeded"}}, False
+                    return 400, {
+                        "error": {
+                            "code": "credit_package_exhausted",
+                            "message": "WorkBuddy requires an active credit package with available balance (upstream code 14018)",
+                        }
+                    }, False
                 msgs = payload.get("messages") or []
                 prompt_blob = "\n".join(str(x.get("content") or "") for x in msgs)
                 if "first_screen_hook" in prompt_blob or "weak_paragraphs" in prompt_blob:
