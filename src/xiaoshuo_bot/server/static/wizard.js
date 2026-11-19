@@ -2,9 +2,11 @@
   "use strict";
 
   const TOKEN_KEY = "xiaoshuo_admin_token";
+  const POLL_INTERVAL_MS = 3000;
   const API = Object.freeze({
     HEALTH: "/api/health",
     SESSIONS: "/api/wizard/sessions",
+    SESSION: "/api/wizard/sessions/{session_id}",
     ANSWER: "/api/wizard/sessions/{session_id}/answer",
     CONFIRM: "/api/wizard/sessions/{session_id}/confirm",
   });
@@ -20,6 +22,7 @@
   const $ = (id) => document.getElementById(id);
   let token = "";
   let session = null;
+  let pollTimer = null;
 
   try { token = window.sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { token = ""; }
 
@@ -30,7 +33,54 @@
   }
 
   function show(id) {
-    ["login-box", "idea-box", "step-box", "confirm-box", "done-box"].forEach((b) => { $(b).hidden = b !== id; });
+    ["login-box", "idea-box", "step-box", "confirm-box", "planning-box", "failed-box", "done-box"].forEach((b) => { $(b).hidden = b !== id; });
+  }
+
+  function stopPolling() {
+    if (pollTimer !== null) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function formatProgress(progress) {
+    const p = progress || {};
+    if (p.stage === "bible") return "正在规划：设定包";
+    if (p.stage === "scenes" && p.batch && p.batches) {
+      return "正在规划：章纲第 " + p.batch + "/" + p.batches + " 批";
+    }
+    if (p.stage === "master_outline" && p.batch && p.batches) {
+      return "正在规划：总纲第 " + p.batch + "/" + p.batches + " 批";
+    }
+    return "正在规划：设定包";
+  }
+
+  function updateProgressBar(progress) {
+    const bar = $("planning-bar");
+    const p = progress || {};
+    if ((p.stage === "scenes" || p.stage === "master_outline") && p.batch && p.batches) {
+      bar.max = Number(p.batches);
+      bar.value = Number(p.batch);
+    } else {
+      bar.removeAttribute("value");
+    }
+  }
+
+  function schedulePoll() {
+    stopPolling();
+    if (!session || session.status !== "PLANNING") return;
+    pollTimer = window.setTimeout(async () => {
+      pollTimer = null;
+      if (!session || session.status !== "PLANNING") return;
+      try {
+        session = await api(route(API.SESSION, { session_id: session.session_id }));
+        setError("");
+        render();
+      } catch (err) {
+        setError("查询规划进度失败：" + err.message);
+        schedulePoll();
+      }
+    }, POLL_INTERVAL_MS);
   }
 
   function setBusy(on, text) {
@@ -50,6 +100,7 @@
     const resp = await fetch(url, { method: body === undefined ? "GET" : "POST", headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const data = await resp.json();
     if (resp.status === 401 || resp.status === 403) {
+      stopPolling();
       show("login-box");
       throw new Error("令牌无效或已过期，请重新登录");
     }
@@ -82,6 +133,7 @@
 
   function render() {
     if (session.status === "IN_PROGRESS") {
+      stopPolling();
       show("step-box");
       $("step-progress").textContent = "第 " + (session.step_index + 1) + " / " + session.total_steps + " 步 · " + session.step.title;
       $("step-question").textContent = session.step.question;
@@ -98,6 +150,7 @@
       $("custom-form").hidden = !session.step.allow_custom || session.step.key === "direction";
       $("custom").value = "";
     } else if (session.status === "READY_TO_CONFIRM") {
+      stopPolling();
       show("confirm-box");
       const ol = $("summary");
       ol.textContent = "";
@@ -108,7 +161,18 @@
         li.appendChild(document.createTextNode(parts.join("；")));
         ol.appendChild(li);
       });
+    } else if (session.status === "PLANNING") {
+      show("planning-box");
+      $("planning-progress").textContent = formatProgress(session.progress);
+      updateProgressBar(session.progress);
+      schedulePoll();
+    } else if (session.status === "FAILED") {
+      stopPolling();
+      show("failed-box");
+      $("failed-reason").textContent = session.error_message || "立项失败，未返回详细原因";
+      $("retry-pen-name").value = $("pen-name").value || $("retry-pen-name").value || "";
     } else if (session.status === "CREATED") {
+      stopPolling();
       show("done-box");
       $("done-text").textContent = "新书已立项（编号 " + session.book_id + "），机器人会自动一章一章写下去。";
     }
@@ -131,6 +195,13 @@
     return run(() => api(route(API.ANSWER, { session_id: session.session_id }), body), "机器人正在想下一步的方案…");
   }
 
+  function submitConfirm(penName) {
+    return run(
+      () => api(route(API.CONFIRM, { session_id: session.session_id }), { pen_name: penName }),
+      "正在提交立项任务…"
+    );
+  }
+
   $("login-form").addEventListener("submit", (e) => {
     e.preventDefault();
     token = $("login-token").value.trim();
@@ -148,7 +219,12 @@
   });
   $("confirm-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    run(() => api(route(API.CONFIRM, { session_id: session.session_id }), { pen_name: $("pen-name").value }), "机器人正在生成整本书的设定和大纲，大约需要一两分钟…");
+    submitConfirm($("pen-name").value);
+  });
+  $("retry-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    $("pen-name").value = $("retry-pen-name").value;
+    submitConfirm($("retry-pen-name").value);
   });
 
   fetch(API.HEALTH)

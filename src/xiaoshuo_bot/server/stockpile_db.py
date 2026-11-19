@@ -372,11 +372,24 @@ class StockpileDB:
                     options_json TEXT NOT NULL DEFAULT '[]',
                     book_id TEXT NOT NULL DEFAULT '',
                     error_message TEXT NOT NULL DEFAULT '',
+                    progress_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 """
             )
+            # Legacy schema migration for existing matrix.db databases created before T5.
+            wizard_cols = {
+                row[1] for row in cur.execute("PRAGMA table_info(wizard_sessions)").fetchall()
+            }
+            if "progress_json" not in wizard_cols:
+                cur.execute(
+                    "ALTER TABLE wizard_sessions ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "error_message" not in wizard_cols:
+                cur.execute(
+                    "ALTER TABLE wizard_sessions ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"
+                )
 
     def get_journal_mode(self) -> str:
         with self._lock:
@@ -453,19 +466,16 @@ class StockpileDB:
             self._conn.execute(
                 """
                 INSERT INTO wizard_sessions
-                    (session_id, idea, status, step_index, choices_json, options_json, created_at, updated_at)
-                VALUES (?, ?, 'IN_PROGRESS', 0, '[]', ?, ?, ?)
+                    (session_id, idea, status, step_index, choices_json, options_json, progress_json, created_at, updated_at)
+                VALUES (?, ?, 'IN_PROGRESS', 0, '[]', ?, '{}', ?, ?)
                 """,
                 (session_id, idea, json.dumps(options, ensure_ascii=False), now, now),
             )
 
-    def get_wizard_session(self, session_id: str) -> Dict[str, Any]:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM wizard_sessions WHERE session_id = ?", (session_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Wizard session '{session_id}' not found")
+    @staticmethod
+    def _row_to_wizard_session(row: sqlite3.Row) -> Dict[str, Any]:
+        raw_prog = row["progress_json"] if "progress_json" in row.keys() else "{}"
+        progress = json.loads(raw_prog) if raw_prog else {}
         return {
             "session_id": row["session_id"],
             "idea": row["idea"],
@@ -475,9 +485,19 @@ class StockpileDB:
             "options": json.loads(row["options_json"]),
             "book_id": row["book_id"],
             "error_message": row["error_message"],
+            "progress": progress,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    def get_wizard_session(self, session_id: str) -> Dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM wizard_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Wizard session '{session_id}' not found")
+        return self._row_to_wizard_session(row)
 
     def update_wizard_session(
         self,
@@ -489,28 +509,127 @@ class StockpileDB:
         options: List[Dict[str, Any]],
         book_id: str = "",
         error_message: str = "",
+        progress: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        now = self._now_iso()
+        with self._lock:
+            if progress is None:
+                cur = self._conn.execute(
+                    """
+                    UPDATE wizard_sessions
+                    SET status = ?, step_index = ?, choices_json = ?, options_json = ?,
+                        book_id = ?, error_message = ?, updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (
+                        status,
+                        int(step_index),
+                        json.dumps(choices, ensure_ascii=False),
+                        json.dumps(options, ensure_ascii=False),
+                        book_id,
+                        error_message,
+                        now,
+                        session_id,
+                    ),
+                )
+            else:
+                cur = self._conn.execute(
+                    """
+                    UPDATE wizard_sessions
+                    SET status = ?, step_index = ?, choices_json = ?, options_json = ?,
+                        book_id = ?, error_message = ?, progress_json = ?, updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (
+                        status,
+                        int(step_index),
+                        json.dumps(choices, ensure_ascii=False),
+                        json.dumps(options, ensure_ascii=False),
+                        book_id,
+                        error_message,
+                        json.dumps(dict(progress), ensure_ascii=False),
+                        now,
+                        session_id,
+                    ),
+                )
+            if cur.rowcount != 1:
+                raise KeyError(f"Wizard session '{session_id}' not found")
+
+    def update_wizard_progress(self, session_id: str, progress: Mapping[str, Any]) -> None:
+        now = self._now_iso()
         with self._lock:
             cur = self._conn.execute(
                 """
                 UPDATE wizard_sessions
-                SET status = ?, step_index = ?, choices_json = ?, options_json = ?,
-                    book_id = ?, error_message = ?, updated_at = ?
+                SET progress_json = ?, updated_at = ?
                 WHERE session_id = ?
                 """,
-                (
-                    status,
-                    int(step_index),
-                    json.dumps(choices, ensure_ascii=False),
-                    json.dumps(options, ensure_ascii=False),
-                    book_id,
-                    error_message,
-                    self._now_iso(),
-                    session_id,
-                ),
+                (json.dumps(dict(progress), ensure_ascii=False), now, session_id),
             )
             if cur.rowcount != 1:
                 raise KeyError(f"Wizard session '{session_id}' not found")
+
+    def fail_interrupted_planning_sessions(
+        self, reason: str = "服务重启中断了立项，请重新点确认"
+    ) -> int:
+        now = self._now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                UPDATE wizard_sessions
+                SET status = 'FAILED', error_message = ?, updated_at = ?
+                WHERE status = 'PLANNING'
+                """,
+                (reason, now),
+            )
+            return int(cur.rowcount)
+
+    def try_start_wizard_planning(
+        self,
+        session_id: str,
+        *,
+        initial_progress: Mapping[str, Any],
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Atomically transition READY_TO_CONFIRM/FAILED -> PLANNING if no session is currently PLANNING.
+
+        Returns (code, session_or_none) where code is:
+        - "OK": transitioned and session returned
+        - "BUSY_SELF": this session is already PLANNING
+        - "BUSY_OTHER": another session is currently PLANNING
+        - "INVALID_STATUS:<status>": session is not READY_TO_CONFIRM or FAILED
+        """
+        now = self._now_iso()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM wizard_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Wizard session '{session_id}' not found")
+            current_status = str(row["status"])
+            if current_status == "PLANNING":
+                return "BUSY_SELF", None
+            if current_status not in ("READY_TO_CONFIRM", "FAILED"):
+                return f"INVALID_STATUS:{current_status}", None
+            busy_other = self._conn.execute(
+                "SELECT session_id FROM wizard_sessions WHERE status = 'PLANNING' AND session_id != ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if busy_other is not None:
+                return "BUSY_OTHER", None
+            self._conn.execute(
+                """
+                UPDATE wizard_sessions
+                SET status = 'PLANNING', options_json = '[]', error_message = '',
+                    progress_json = ?, updated_at = ?
+                WHERE session_id = ? AND status IN ('READY_TO_CONFIRM', 'FAILED')
+                """,
+                (json.dumps(dict(initial_progress), ensure_ascii=False), now, session_id),
+            )
+            updated = self._conn.execute(
+                "SELECT * FROM wizard_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            assert updated is not None
+            return "OK", self._row_to_wizard_session(updated)
 
     # -----------------------------------------------------------------------
     # Book CRUD & Status

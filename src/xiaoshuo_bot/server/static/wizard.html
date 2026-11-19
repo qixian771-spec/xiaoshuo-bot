@@ -59,10 +59,26 @@
       </form>
     </section>
 
+    <section class="card-box" id="planning-box" hidden>
+      <h2>正在规划整本书</h2>
+      <p class="planning-status" id="planning-progress" role="status" aria-live="polite">正在规划：设定包</p>
+      <progress id="planning-bar" aria-labelledby="planning-progress"></progress>
+      <p class="meta">分批规划需要几分钟，页面每 3 秒自动刷新进度，请勿重复提交。</p>
+    </section>
+
+    <section class="card-box" id="failed-box" hidden>
+      <h2>立项失败</h2>
+      <pre class="error-detail" id="failed-reason"></pre>
+      <form id="retry-form" class="row">
+        <input type="text" id="retry-pen-name" maxlength="20" placeholder="笔名（可不填）">
+        <button type="submit" class="primary">重新确认</button>
+      </form>
+    </section>
+
     <section class="card-box" id="done-box" hidden>
       <h2>已经开写</h2>
       <p id="done-text"></p>
-      <p><a class="link" href="/">去演播厅看机器人写</a></p>
+      <p><a class="link" href="/">去演播厅看</a></p>
     </section>
 
     <div class="busy" id="busy" hidden>机器人正在想方案…</div>

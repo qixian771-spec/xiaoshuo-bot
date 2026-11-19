@@ -336,6 +336,7 @@ cloud_tests=(
   tests/test_public_and_wizard.py
   tests/test_export_only_scheduler.py
   tests/test_length_target.py
+  tests/test_staged_planner.py
 )
 
 for tf in "${cloud_tests[@]}"; do

@@ -288,6 +288,25 @@ class _MatrixSimState:
             {"chapter": i, "title": f"总纲节点{i}", "summary": f"第{i}章核心爽点推进"}
             for i in range(1, 101)
         ]
+        range_m = re.search(r"本批章号范围[:：]\s*第\s*(\d+)\s*章\s*~\s*第\s*(\d+)\s*章", usr_txt)
+        if "阶段: scenes" in usr_txt:
+            start_ch = int(range_m.group(1)) if range_m else 1
+            end_ch = int(range_m.group(2)) if range_m else len(scenes)
+            return json.dumps(
+                {"scenes": [s for s in scenes if start_ch <= s["chapter"] <= end_ch]},
+                ensure_ascii=False,
+            )
+        if "阶段: master_outline" in usr_txt:
+            start_ch = int(range_m.group(1)) if range_m else 1
+            end_ch = int(range_m.group(2)) if range_m else len(master_outline)
+            return json.dumps(
+                {
+                    "master_outline": [
+                        item for item in master_outline if start_ch <= item["chapter"] <= end_ch
+                    ]
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(
             {
                 "project": {
@@ -378,8 +397,6 @@ class _MatrixSimState:
                 "volume_cap_locks": [
                     {"ledger_key": "cash_wan", "volume": 1, "max_value": 10000, "unit": "万元"}
                 ],
-                "scenes": scenes,
-                "master_outline": master_outline,
             },
             ensure_ascii=False,
         )

@@ -29,3 +29,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .busy { color: var(--gold); }
 .error { color: var(--red); background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.4); border-radius: 8px; padding: 10px 14px; }
+.planning-status { margin: 0 0 12px; color: var(--gold); font-weight: 600; }
+#planning-bar { inline-size: 100%; accent-color: var(--gold); margin-bottom: 12px; }
+.error-detail {
+  margin: 0 0 16px; padding: 12px 14px; border-radius: 8px;
+  background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.4);
+  color: var(--red); font-size: 13px; white-space: pre-wrap; word-break: break-word;
+}

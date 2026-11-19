@@ -10,8 +10,10 @@ there is no silent retry or default option. The admin can explicitly ask for a r
 from __future__ import annotations
 
 from datetime import datetime
+import inspect
 import json
 import logging
+import threading
 from typing import Any, Callable, Dict, List, Mapping, Optional
 import uuid
 
@@ -30,9 +32,15 @@ class WizardError(ValueError):
     """Raised for invalid wizard input or invalid LLM proposals (surfaced to the admin as 400)."""
 
 
+class WizardConflictError(WizardError):
+    """Raised when a planning job is already running (surfaced to the admin as 409)."""
+
+
 STATUS_IN_PROGRESS = "IN_PROGRESS"
 STATUS_READY = "READY_TO_CONFIRM"
+STATUS_PLANNING = "PLANNING"
 STATUS_CREATED = "CREATED"
+STATUS_FAILED = "FAILED"
 
 OPTIONS_PER_STEP = 3
 # Invalid proposals are fed back to the LLM with the exact validation error, at most this many
@@ -162,6 +170,13 @@ class NewBookWizard:
         self._provider_fn = provider_fn
         self._create_book_fn = create_book_fn
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
+        self._planning_thread: Optional[threading.Thread] = None
+        interrupted = self.db.fail_interrupted_planning_sessions()
+        if interrupted > 0:
+            logger.warning(
+                "Marked %d orphaned PLANNING wizard session(s) as FAILED on startup",
+                interrupted,
+            )
 
     # ---------------------------------------------------------------- LLM
     def _propose(self, idea: str, step_index: int, choices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -221,8 +236,8 @@ class NewBookWizard:
         )
 
     # ---------------------------------------------------------------- views
-    def _view(self, session_id: str) -> Dict[str, Any]:
-        s = self.db.get_wizard_session(session_id)
+    @staticmethod
+    def _format_view(s: Mapping[str, Any]) -> Dict[str, Any]:
         step = WIZARD_STEPS[s["step_index"]] if s["status"] == STATUS_IN_PROGRESS else None
         return {
             "session_id": s["session_id"],
@@ -243,7 +258,12 @@ class NewBookWizard:
             "options": s["options"],
             "choices": s["choices"],
             "book_id": s["book_id"],
+            "progress": s["progress"],
+            "error_message": s["error_message"],
         }
+
+    def _view(self, session_id: str) -> Dict[str, Any]:
+        return self._format_view(self.db.get_wizard_session(session_id))
 
     def get(self, session_id: str) -> Dict[str, Any]:
         return self._view(session_id)
@@ -306,22 +326,37 @@ class NewBookWizard:
             )
         return self._view(session_id)
 
-    def confirm(self, session_id: str, *, pen_name: str = "") -> Dict[str, Any]:
-        s = self.db.get_wizard_session(session_id)
-        if s["status"] != STATUS_READY:
-            raise WizardError(f"会话状态为 {s['status']}，四步都选完才能确认开写")
+    def _begin_planning(self, session_id: str) -> Dict[str, Any]:
+        initial_progress = {"stage": "bible", "batch": 1, "batches": 1}
+        code, session = self.db.try_start_wizard_planning(
+            session_id, initial_progress=initial_progress
+        )
+        if code == "BUSY_SELF":
+            raise WizardConflictError("该会话正在规划中，请勿重复确认")
+        if code == "BUSY_OTHER":
+            raise WizardConflictError("已有另一本书正在规划中，请等当前规划完成后再确认")
+        if code.startswith("INVALID_STATUS:"):
+            st = code.split(":", 1)[1]
+            raise WizardError(f"会话状态为 {st}，四步都选完才能确认开写")
+        assert session is not None
+        return session
+
+    def _build_create_request(self, s: Mapping[str, Any], pen_name: str) -> AutoCreateBookRequest:
         by_step = {c["step"]: c["option"] for c in s["choices"]}
         direction = by_step["direction"]
         scale = by_step["scale"]
-        project_id = "book_" + self._now_fn().strftime("%Y%m%d_%H%M%S")
+        sid_suffix = str(s["session_id"])[:6]
+        project_id = f"book_{self._now_fn().strftime('%Y%m%d_%H%M%S')}_{sid_suffix}"
         brief = (
             f"原始题材：{s['idea']}\n"
             f"书名必须为：{scale['title']}\n"
             f"简介方向：{scale['blurb']}\n"
+            "人名要求：向导中出现的人物姓名只是示意，正式姓名必须从推荐安全角色名池中选取，"
+            "其余主角设定（身份、性格、金手指、代价、成长线）必须保留。\n"
             f"{_choices_text(s['choices'])}"
         )
         target = int(scale["target_chapters"]) if scale["author_level"] == "lv0_1" else None
-        req = AutoCreateBookRequest(
+        return AutoCreateBookRequest(
             project_id=project_id,
             genre_id=direction["genre_id"],
             author_level=scale["author_level"],
@@ -329,17 +364,79 @@ class NewBookWizard:
             target_chapters=target,
             creative_brief=brief,
         )
-        summary = self._create_book_fn(req)
-        book_id = getattr(summary, "book_id", "") or project_id
-        self.db.update_wizard_session(
-            session_id,
-            status=STATUS_CREATED,
-            step_index=s["step_index"],
-            choices=s["choices"],
-            options=[],
-            book_id=book_id,
+
+    def _invoke_create_book(
+        self,
+        req: AutoCreateBookRequest,
+        on_progress: Callable[[Dict[str, Any]], None],
+    ) -> Any:
+        sig = inspect.signature(self._create_book_fn)
+        accepts_progress = "on_progress" in sig.parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
         )
+        if accepts_progress:
+            return self._create_book_fn(req, on_progress=on_progress)
+        return self._create_book_fn(req)
+
+    def _run_planning(
+        self,
+        session_id: str,
+        session_snapshot: Dict[str, Any],
+        pen_name: str,
+        *,
+        reraise: bool,
+    ) -> None:
+        def _record_progress(prog: Dict[str, Any]) -> None:
+            self.db.update_wizard_progress(session_id, prog)
+
+        try:
+            req = self._build_create_request(session_snapshot, pen_name)
+            summary = self._invoke_create_book(req, _record_progress)
+            book_id = getattr(summary, "book_id", "") or req.project_id
+            self.db.update_wizard_session(
+                session_id,
+                status=STATUS_CREATED,
+                step_index=session_snapshot["step_index"],
+                choices=session_snapshot["choices"],
+                options=[],
+                book_id=book_id,
+                error_message="",
+                progress={"stage": "done"},
+            )
+        except Exception as exc:
+            logger.exception("Wizard planning failed for session %s: %s", session_id, exc)
+            self.db.update_wizard_session(
+                session_id,
+                status=STATUS_FAILED,
+                step_index=session_snapshot["step_index"],
+                choices=session_snapshot["choices"],
+                options=[],
+                book_id="",
+                error_message=str(exc),
+            )
+            if reraise:
+                raise
+
+    def confirm(self, session_id: str, *, pen_name: str = "") -> Dict[str, Any]:
+        """Run book planning synchronously and return the final session view."""
+        snap = self._begin_planning(session_id)
+        self._run_planning(session_id, snap, pen_name, reraise=True)
         return self._view(session_id)
 
+    def confirm_async(self, session_id: str, *, pen_name: str = "") -> Dict[str, Any]:
+        """Transition session to PLANNING and run staged book planning in a background thread."""
+        snap = self._begin_planning(session_id)
+        accepted_view = self._format_view(snap)
+        worker = threading.Thread(
+            target=self._run_planning,
+            args=(session_id, snap, pen_name),
+            kwargs={"reraise": False},
+            name=f"wizard-plan-{session_id[:8]}",
+            daemon=True,
+        )
+        self._planning_thread = worker
+        worker.start()
+        return accepted_view
 
-__all__ = ["NewBookWizard", "WizardError", "WIZARD_STEPS"]
+
+__all__ = ["NewBookWizard", "WizardConflictError", "WizardError", "WIZARD_STEPS"]

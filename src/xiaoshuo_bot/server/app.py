@@ -81,7 +81,7 @@ from .auth import (
 )
 from .matrix_scheduler import MatrixScheduler, SchedulerConfigurationError
 from .public_view import get_public_book, get_public_chapter, list_public_books, public_event
-from .wizard import NewBookWizard, WizardError
+from .wizard import NewBookWizard, WizardConflictError, WizardError
 from .stockpile_db import (
     BookNotFoundError,
     ChapterNotFoundError,
@@ -560,8 +560,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(HTTPStatus.OK, self.server.wizard.answer(sid, data))
                 else:
                     self._send_json(
-                        HTTPStatus.CREATED,
-                        self.server.wizard.confirm(sid, pen_name=str(data.get("pen_name") or "")),
+                        HTTPStatus.ACCEPTED,
+                        self.server.wizard.confirm_async(sid, pen_name=str(data.get("pen_name") or "")),
                     )
                 return
 
@@ -685,6 +685,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
 
         except BookNotFoundError as exc:
             self._send_error(HTTPStatus.NOT_FOUND, "BOOK_NOT_FOUND", str(exc))
+        except WizardConflictError as exc:
+            self._send_error(HTTPStatus.CONFLICT, "WIZARD_PLANNING_BUSY", str(exc))
         except WizardError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, "WIZARD_ERROR", str(exc))
         except ChapterNotFoundError as exc:

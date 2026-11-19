@@ -330,7 +330,12 @@ class MatrixScheduler:
     def get_book_status(self, book_id: str) -> BookSummaryResponse:
         return self.db.get_book_summary(book_id)
 
-    def auto_create_book(self, request: AutoCreateBookRequest) -> BookSummaryResponse:
+    def auto_create_book(
+        self,
+        request: AutoCreateBookRequest,
+        *,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> BookSummaryResponse:
         get_genre(request.genre_id)
         pid = (request.project_id or "").strip()
         if not pid or "/" in pid or "\\" in pid or ".." in pid:
@@ -363,6 +368,7 @@ class MatrixScheduler:
             benchmark_chapters=request.benchmark_chapters or None,
             target_chapters=request.target_chapters,
             creative_brief=request.creative_brief,
+            on_progress=on_progress,
         )
         proj = result.project
         self.db.register_book(

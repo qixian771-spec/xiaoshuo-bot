@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import uuid
 import yaml
 
@@ -25,7 +25,11 @@ from .llm.router import RoleModelRouter
 from .loader import load_project
 from .models import (
     AUTHOR_LEVELS,
+    CHARACTER_STATUSES,
     EMOTION_POLARITIES,
+    EXPECTATION_ACTIONS,
+    PANEL_POLICIES,
+    POV_MODES,
     SHANGHAI_TZ,
     NovelProject,
     ProjectValidationError,
@@ -72,6 +76,760 @@ def _parse_json_payload(raw_text: str, stage: str) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ProjectValidationError(f"{stage}: expected JSON object, got {type(parsed).__name__}")
     return parsed
+
+
+SCENE_BATCH_SIZE = 10
+MASTER_OUTLINE_TOTAL = 100
+MASTER_OUTLINE_BATCH_SIZE = 25
+STAGE_BIBLE_MAX_TOKENS = 8192
+STAGE_SCENES_MAX_TOKENS = 8192
+STAGE_MASTER_OUTLINE_MAX_TOKENS = 8192
+
+PlanProgressCallback = Callable[[Dict[str, Any]], None]
+
+_BIBLE_JSON_EXAMPLE: Dict[str, Any] = {
+    "project": {
+        "title": "<书名，1~15个字符，严禁包含书名号《》>",
+        "alternate_titles": [
+            "<备选书名1，1~15字无《》>",
+            "<备选书名2，1~15字无《》>",
+            "<备选书名3，1~15字无《》>",
+            "<备选书名4，1~15字无《》>",
+            "<备选书名5，1~15字无《》>",
+        ],
+        "synopsis": "<作品主简介，说明核心冲突、金手指与主线目标>",
+        "alternate_blurbs": [
+            "<备选简介1，三段式>",
+            "<备选简介2，三段式>",
+            "<备选简介3，三段式>",
+        ],
+        "tweet_aliases": [
+            "<推文别名1，4~8字纯简体常用汉字>",
+            "<推文别名2，4~8字纯简体常用汉字>",
+            "<推文别名3，4~8字纯简体常用汉字>",
+        ],
+        "default_pov_character": "mc",
+        "pov_mode": "third_limited",
+        "panel_policy": "forbid",
+        "opening_motif": "<开篇母题关键词>",
+        "golden_finger_type": "<金手指类型>",
+        "golden_finger_description": "<金手指触发机制、上限与使用代价>",
+        "target_word_count": 176000,
+        "initial_balances": {"cash": 500.0},
+    },
+    "characters": [
+        {
+            "id": "mc",
+            "name": "<必须从推荐安全角色名池选取的正式姓名>",
+            "role": "<主角身份定位与核心困境>",
+            "personality": "<核心性格锚点>",
+            "speech_style": "<说话方式与句长特征>",
+            "behavioral_anchors": {
+                "<克制或紧张时的触发情境>": "<可见物理微动作，严禁抽象套话>"
+            },
+            "forbidden_ooc": ["<严禁出现的违背人设行为>"],
+            "initial_status": "alive",
+            "faction": "<所属阵营>",
+            "relations": {"rival": "<与该角色的关系标签>"},
+            "forbidden_titles": [],
+        },
+        {
+            "id": "rival",
+            "name": "<从推荐安全角色名池选取的另一不撞音姓名>",
+            "role": "<主要冲突方身份定位>",
+            "personality": "<核心性格>",
+            "speech_style": "<说话方式>",
+            "behavioral_anchors": {"<施压场景>": "<可见肢体动作>"},
+            "forbidden_ooc": ["<禁止降智行为>"],
+            "initial_status": "alive",
+            "faction": "<敌对阵营>",
+            "relations": {"mc": "<关系标签>"},
+            "forbidden_titles": [],
+        },
+    ],
+    "assets": [
+        {
+            "id": "core_item",
+            "name": "<核心器物/道具名称>",
+            "location": "<初始物理位置>",
+            "holder": "<当前持有人姓名>",
+            "condition": "<当前外观与完好状态>",
+            "physical_details": "<材质、尺寸、磨损或编号等物理细节>",
+        }
+    ],
+    "foreshadows": [
+        {
+            "id": "FS-01",
+            "title": "<伏笔标题>",
+            "plant_chapter": 1,
+            "due_chapter": 10,
+            "plant_instruction": "<埋设章节必须出现的具体物理细节指令>",
+            "payoff_instruction": "<回收章节必须完成的物理兑现指令>",
+            "plant_keywords": ["<埋设物理证据词1>", "<埋设物理证据词2>"],
+            "payoff_keywords": ["<回收物理证据词1>", "<回收物理证据词2>"],
+            "cross_volume": False,
+        }
+    ],
+    "style_profiles": [
+        {
+            "id": "<文风id，可直接沿用赛道默认模板ID或新增>",
+            "name": "<文风名称>",
+            "granularity_notes": "<叙述视角、句式节奏、感官与动作密度要求>",
+            "sample_text": "<60~120字正文示范切片，严禁总结腔>",
+        }
+    ],
+    "volume_cap_locks": [
+        {
+            "ledger_key": "cash",
+            "volume": 1,
+            "max_value": 1000000.0,
+            "unit": "元",
+        }
+    ],
+}
+
+_SCENES_BATCH_JSON_EXAMPLE: Dict[str, Any] = {
+    "scenes": [
+        {
+            "chapter": 1,
+            "scene_id": "ch0001_scene",
+            "internal_title": "<内部章纲节点名>",
+            "public_title": "<对外章节标题，严禁带第X章前缀>",
+            "pov_character": "<设定包中已有角色id，且必须在active_characters内>",
+            "active_characters": ["<设定包角色id1>", "<设定包角色id2>"],
+            "active_assets": ["<设定包器物id>"],
+            "style_profile_ids": ["<设定包文风id或赛道默认模板ID>"],
+            "location_time": "<本章具体时间与物理地点>",
+            "location_id": "<场景英文坐标id>",
+            "events": [
+                "<本章发生的第1个具体物理事件>",
+                "<本章发生的第2个具体物理事件与冲突推进>",
+            ],
+            "stop_condition": "<本章写到哪一个具体动作/画面立即停笔>",
+            "min_chars": 2050,
+            "max_chars": 2300,
+            "beat_type": "<爽点节拍，如：压抑蓄力/反转打脸/危机加码>",
+            "emotion_polarity": "mixed",
+            "cliffhanger_hook": "<章末最高张力悬念钩子>",
+            "segment_comment_cue": "<可供读者段评吐槽或站队的引爆点>",
+            "volume": 1,
+            "calendar_days_elapsed": 1,
+            "post_scene_asset_mutations": [],
+            "ledger_mutations": [],
+            "character_mutations": [],
+            "expectation_directives": [],
+        }
+    ]
+}
+
+_MASTER_OUTLINE_BATCH_JSON_EXAMPLE: Dict[str, Any] = {
+    "master_outline": [
+        {
+            "chapter": 1,
+            "title": "<章节标题，不带第X章前缀>",
+            "summary": "<本章核心冲突、爽点兑现或地图推进一句话梗概>",
+        }
+    ]
+}
+
+
+def _is_strict_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_strict_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _nonempty_str(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped if stripped else None
+
+
+def _check_tomato_title_str(raw: Any, label: str, errors: List[str]) -> None:
+    if not isinstance(raw, str) or not raw.strip():
+        errors.append(f"{label} must be a non-empty string (1..15 chars without 《》)")
+        return
+    title = raw.strip()
+    if "《" in title or "》" in title:
+        errors.append(f"{label} must not contain '《》': {title!r}")
+    if len(title) > 15:
+        errors.append(f"{label} length must be 1..15 chars (got {len(title)}): {title!r}")
+
+
+def _collect_bible_errors(
+    payload: Mapping[str, Any],
+    *,
+    author_level: str,
+    target_chapters: int,
+    recipe: GenreRecipe,
+) -> List[str]:
+    """Collect ALL validation errors for Stage 1 (bible) without stopping at the first error."""
+    errors: List[str] = []
+    if not isinstance(payload, Mapping):
+        return [f"bible payload must be a JSON object, got {type(payload).__name__}"]
+
+    # 1. characters (parse first so we can verify default_pov_character)
+    valid_char_ids: set[str] = set()
+    raw_chars = payload.get("characters")
+    if not isinstance(raw_chars, list) or not raw_chars:
+        errors.append("characters must be a non-empty list of objects")
+    else:
+        cast_namer = CharacterNamer()
+        for idx, item in enumerate(raw_chars):
+            prefix = f"characters[{idx}]"
+            if not isinstance(item, Mapping):
+                errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+                continue
+            cid = _nonempty_str(item.get("id"))
+            if not cid:
+                errors.append(f"{prefix}: missing non-empty string 'id'")
+            elif cid in valid_char_ids:
+                errors.append(f"{prefix}: duplicate character id {cid!r}")
+            else:
+                valid_char_ids.add(cid)
+
+            cname = _nonempty_str(item.get("name"))
+            if not cname:
+                errors.append(f"{prefix}: missing non-empty string 'name'")
+            else:
+                try:
+                    cast_namer.register_name(cname)
+                except NamerError as exc:
+                    errors.append(f"{prefix}.name ({cname!r}): {exc}")
+
+            for req_field in ("role", "personality", "speech_style"):
+                if not _nonempty_str(item.get(req_field)):
+                    errors.append(f"{prefix}: missing non-empty string '{req_field}'")
+
+            if "initial_status" in item and item["initial_status"] is not None:
+                ist = item["initial_status"]
+                if not isinstance(ist, str) or ist not in CHARACTER_STATUSES:
+                    errors.append(
+                        f"{prefix}.initial_status {ist!r} must be one of {CHARACTER_STATUSES}"
+                    )
+            if "behavioral_anchors" in item and item["behavioral_anchors"] is not None:
+                if not isinstance(item["behavioral_anchors"], Mapping):
+                    errors.append(f"{prefix}.behavioral_anchors must be an object")
+            if "relations" in item and item["relations"] is not None:
+                if not isinstance(item["relations"], Mapping):
+                    errors.append(f"{prefix}.relations must be an object")
+            for list_field in ("forbidden_ooc", "forbidden_titles"):
+                if list_field in item and item[list_field] is not None:
+                    if not isinstance(item[list_field], list):
+                        errors.append(f"{prefix}.{list_field} must be a list")
+
+    # 2. project
+    raw_meta = payload.get("project")
+    if not isinstance(raw_meta, Mapping):
+        errors.append("project must be a non-empty object")
+    else:
+        _check_tomato_title_str(raw_meta.get("title"), "project.title", errors)
+
+        raw_alt_titles = raw_meta.get("alternate_titles")
+        if not isinstance(raw_alt_titles, list):
+            errors.append("project.alternate_titles must be a list of exactly 5 titles")
+        else:
+            cleaned_alts = [t for t in raw_alt_titles if isinstance(t, str) and t.strip()]
+            if len(cleaned_alts) != 5 or len(raw_alt_titles) != 5:
+                errors.append(
+                    f"project.alternate_titles must contain exactly 5 non-empty titles, got {len(cleaned_alts)}"
+                )
+            for idx, alt_t in enumerate(raw_alt_titles):
+                _check_tomato_title_str(alt_t, f"project.alternate_titles[{idx}]", errors)
+
+        raw_blurbs = raw_meta.get("alternate_blurbs")
+        if not isinstance(raw_blurbs, list):
+            errors.append("project.alternate_blurbs must be a list of exactly 3 blurbs")
+        else:
+            cleaned_blurbs = [b for b in raw_blurbs if isinstance(b, str) and b.strip()]
+            if len(cleaned_blurbs) != 3 or len(raw_blurbs) != 3:
+                errors.append(
+                    f"project.alternate_blurbs must contain exactly 3 non-empty blurbs, got {len(cleaned_blurbs)}"
+                )
+
+        raw_aliases = raw_meta.get("tweet_aliases")
+        if not isinstance(raw_aliases, list) or not [a for a in raw_aliases if isinstance(a, str) and a.strip()]:
+            errors.append("project.tweet_aliases must be a non-empty list of validated aliases")
+        else:
+            for idx, alias in enumerate(raw_aliases):
+                alias_s = _nonempty_str(alias)
+                if not alias_s:
+                    errors.append(f"project.tweet_aliases[{idx}] must be a non-empty string")
+                    continue
+                try:
+                    validate_tweet_alias(alias_s)
+                except InvalidTweetAliasError as exc:
+                    errors.append(f"project.tweet_aliases[{idx}] ({alias_s!r}): {exc}")
+
+        if not _nonempty_str(raw_meta.get("synopsis")):
+            errors.append("project.synopsis must be a non-empty string")
+
+        default_pov = _nonempty_str(raw_meta.get("default_pov_character"))
+        if not default_pov:
+            errors.append("project.default_pov_character must be a non-empty string")
+        elif valid_char_ids and default_pov not in valid_char_ids:
+            errors.append(
+                f"project.default_pov_character {default_pov!r} not found in characters ids {sorted(valid_char_ids)}"
+            )
+
+        if "pov_mode" in raw_meta and raw_meta["pov_mode"] is not None:
+            if not isinstance(raw_meta["pov_mode"], str) or raw_meta["pov_mode"] not in POV_MODES:
+                errors.append(f"project.pov_mode {raw_meta['pov_mode']!r} must be one of {POV_MODES}")
+        if "panel_policy" in raw_meta and raw_meta["panel_policy"] is not None:
+            if not isinstance(raw_meta["panel_policy"], str) or raw_meta["panel_policy"] not in PANEL_POLICIES:
+                errors.append(
+                    f"project.panel_policy {raw_meta['panel_policy']!r} must be one of {PANEL_POLICIES}"
+                )
+
+        raw_twc = raw_meta.get("target_word_count")
+        if raw_twc is not None:
+            if not _is_strict_int(raw_twc):
+                errors.append(f"project.target_word_count must be an integer, got {raw_twc!r}")
+            elif author_level == "lv0_1":
+                eff_twc = target_chapters * 2200 if raw_twc == 0 else raw_twc
+                if not (150_000 <= eff_twc <= 200_000):
+                    errors.append(
+                        f"project.target_word_count for lv0_1 must be in 150000..200000, got {eff_twc}"
+                    )
+
+        if "initial_balances" in raw_meta and raw_meta["initial_balances"] is not None:
+            if not isinstance(raw_meta["initial_balances"], Mapping):
+                errors.append("project.initial_balances must be an object mapping ledger keys to numbers")
+            else:
+                for bk, bv in raw_meta["initial_balances"].items():
+                    if not _is_strict_number(bv):
+                        errors.append(f"project.initial_balances[{bk!r}] must be numeric, got {bv!r}")
+
+    # 3. assets
+    valid_asset_ids: set[str] = set()
+    raw_assets = payload.get("assets")
+    if not isinstance(raw_assets, list) or not raw_assets:
+        errors.append("assets must be a non-empty list of objects")
+    else:
+        for idx, item in enumerate(raw_assets):
+            prefix = f"assets[{idx}]"
+            if not isinstance(item, Mapping):
+                errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+                continue
+            aid = _nonempty_str(item.get("id"))
+            if not aid:
+                errors.append(f"{prefix}: missing non-empty string 'id'")
+            elif aid in valid_asset_ids:
+                errors.append(f"{prefix}: duplicate asset id {aid!r}")
+            else:
+                valid_asset_ids.add(aid)
+            for req_field in ("name", "location", "holder", "condition", "physical_details"):
+                if not _nonempty_str(item.get(req_field)):
+                    errors.append(f"{prefix}: missing non-empty string '{req_field}'")
+
+    # 4. foreshadows
+    seen_fs_ids: set[str] = set()
+    raw_foreshadows = payload.get("foreshadows")
+    if not isinstance(raw_foreshadows, list) or not raw_foreshadows:
+        errors.append("foreshadows must be a non-empty list of objects")
+    else:
+        for idx, item in enumerate(raw_foreshadows):
+            prefix = f"foreshadows[{idx}]"
+            if not isinstance(item, Mapping):
+                errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+                continue
+            fid = _nonempty_str(item.get("id"))
+            if not fid:
+                errors.append(f"{prefix}: missing non-empty string 'id'")
+            elif fid in seen_fs_ids:
+                errors.append(f"{prefix}: duplicate foreshadow id {fid!r}")
+            else:
+                seen_fs_ids.add(fid)
+
+            for req_field in ("title", "plant_instruction", "payoff_instruction"):
+                if not _nonempty_str(item.get(req_field)):
+                    errors.append(f"{prefix}: missing non-empty string '{req_field}'")
+
+            cross_vol = item.get("cross_volume", False)
+            if not isinstance(cross_vol, bool):
+                errors.append(f"{prefix}.cross_volume must be a boolean, got {cross_vol!r}")
+                cross_vol = False
+
+            status = str(item.get("status", "pending"))
+            p_ch = item.get("plant_chapter")
+            d_ch = item.get("due_chapter")
+            p_ok = _is_strict_int(p_ch)
+            d_ok = _is_strict_int(d_ch)
+            if not p_ok:
+                errors.append(f"{prefix}.plant_chapter must be an integer, got {p_ch!r}")
+            if not d_ok:
+                errors.append(f"{prefix}.due_chapter must be an integer, got {d_ch!r}")
+            if p_ok and d_ok:
+                if d_ch < p_ch:
+                    errors.append(f"{prefix}: due_chapter ({d_ch}) < plant_chapter ({p_ch})")
+                if not (1 <= p_ch <= target_chapters):
+                    if not (cross_vol and status in ("planted", "resolved")):
+                        errors.append(
+                            f"{prefix}: plant_chapter {p_ch} must be in 1..{target_chapters}"
+                        )
+                if status != "resolved" and not (1 <= d_ch <= target_chapters):
+                    if not cross_vol:
+                        errors.append(
+                            f"{prefix}: due_chapter {d_ch} must be in 1..{target_chapters} (or set cross_volume=true for cross-volume foreshadow)"
+                        )
+
+            raw_pk = item.get("plant_keywords")
+            pk_list = (
+                [k.strip() for k in ([raw_pk] if isinstance(raw_pk, str) else raw_pk) if isinstance(k, str) and k.strip()]
+                if isinstance(raw_pk, (list, str))
+                else []
+            )
+            if status == "pending" and not pk_list:
+                errors.append(f"{prefix}.plant_keywords must contain at least one non-empty keyword")
+
+            raw_rk = item.get("payoff_keywords")
+            rk_list = (
+                [k.strip() for k in ([raw_rk] if isinstance(raw_rk, str) else raw_rk) if isinstance(k, str) and k.strip()]
+                if isinstance(raw_rk, (list, str))
+                else []
+            )
+            if status != "resolved" and not rk_list:
+                errors.append(f"{prefix}.payoff_keywords must contain at least one non-empty keyword")
+
+    # 5. style_profiles
+    raw_styles = payload.get("style_profiles")
+    if raw_styles is None or not isinstance(raw_styles, list):
+        errors.append("style_profiles must be a list of objects")
+    else:
+        for idx, item in enumerate(raw_styles):
+            prefix = f"style_profiles[{idx}]"
+            if not isinstance(item, Mapping):
+                errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+                continue
+            for req_field in ("id", "name", "granularity_notes", "sample_text"):
+                if not _nonempty_str(item.get(req_field)):
+                    errors.append(f"{prefix}: missing non-empty string '{req_field}'")
+
+    # 6. volume_cap_locks
+    raw_locks = payload.get("volume_cap_locks")
+    if not isinstance(raw_locks, list) or not raw_locks:
+        errors.append("volume_cap_locks must be a non-empty list of objects")
+    else:
+        has_vol1 = False
+        for idx, item in enumerate(raw_locks):
+            prefix = f"volume_cap_locks[{idx}]"
+            if not isinstance(item, Mapping):
+                errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+                continue
+            if not _nonempty_str(item.get("ledger_key")):
+                errors.append(f"{prefix}: missing non-empty string 'ledger_key'")
+            vol = item.get("volume")
+            if not _is_strict_int(vol) or vol < 1:
+                errors.append(f"{prefix}.volume must be a positive integer, got {vol!r}")
+            elif vol == 1:
+                has_vol1 = True
+            if not _is_strict_number(item.get("max_value")):
+                errors.append(f"{prefix}.max_value must be numeric, got {item.get('max_value')!r}")
+        if not has_vol1:
+            errors.append("volume_cap_locks must define at least one lock with volume=1")
+
+    return errors
+
+
+def _collect_scene_batch_errors(
+    batch: Any,
+    bible: Mapping[str, Any],
+    chapter_range: Tuple[int, int],
+    *,
+    recipe: GenreRecipe,
+    prior_trailing_suppress: int = 0,
+) -> List[str]:
+    """Collect ALL validation errors for a Stage 2 scene batch without stopping at the first error."""
+    start_ch, end_ch = chapter_range
+    expected_chapters = list(range(start_ch, end_ch + 1))
+    if not isinstance(batch, list) or not batch:
+        return [f"scenes must be a non-empty list covering chapters {start_ch}..{end_ch}"]
+
+    valid_char_ids = {
+        str(c["id"]).strip()
+        for c in (bible.get("characters") or [])
+        if isinstance(c, Mapping) and _nonempty_str(c.get("id"))
+    }
+    valid_asset_ids = {
+        str(a["id"]).strip()
+        for a in (bible.get("assets") or [])
+        if isinstance(a, Mapping) and _nonempty_str(a.get("id"))
+    }
+    valid_style_ids = {
+        str(sp["id"]).strip()
+        for sp in (bible.get("style_profiles") or [])
+        if isinstance(sp, Mapping) and _nonempty_str(sp.get("id"))
+    }
+    valid_style_ids.add(recipe.style_profile.id)
+    default_pov = str((bible.get("project") or {}).get("default_pov_character") or "").strip()
+
+    errors: List[str] = []
+    seen_chapters: List[int] = []
+    seen_chapter_set: set[int] = set()
+    valid_scenes_by_ch: Dict[int, Mapping[str, Any]] = {}
+
+    for idx, item in enumerate(batch):
+        prefix = f"scenes[{idx}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+            continue
+
+        raw_ch = item.get("chapter")
+        if not _is_strict_int(raw_ch):
+            errors.append(f"{prefix}: missing integer 'chapter' (got {raw_ch!r})")
+            ch_label = prefix
+        else:
+            ch_label = f"Chapter {raw_ch}"
+            if not (start_ch <= raw_ch <= end_ch):
+                errors.append(
+                    f"{ch_label}: chapter {raw_ch} is outside expected batch range {start_ch}..{end_ch}"
+                )
+            elif raw_ch in seen_chapter_set:
+                errors.append(f"{ch_label}: duplicate chapter number {raw_ch} in batch")
+            else:
+                seen_chapter_set.add(raw_ch)
+                seen_chapters.append(raw_ch)
+                valid_scenes_by_ch[raw_ch] = item
+
+        for req_str in ("scene_id", "internal_title", "location_time", "stop_condition"):
+            if not _nonempty_str(item.get(req_str)):
+                errors.append(f"{ch_label}: missing non-empty string '{req_str}'")
+
+        raw_pub = item.get("public_title")
+        pub_title = _nonempty_str(raw_pub)
+        if not pub_title:
+            errors.append(f"{ch_label}: missing non-empty string 'public_title'")
+        elif _CHAPTER_PREFIX_RE.match(pub_title):
+            errors.append(
+                f"{ch_label}: public_title {pub_title!r} must not start with '第X章/回/节' prefix"
+            )
+
+        raw_events = item.get("events")
+        if not isinstance(raw_events, list) or not [e for e in raw_events if isinstance(e, str) and e.strip()]:
+            errors.append(f"{ch_label}: 'events' must be a non-empty list of non-empty strings")
+
+        pov_char = str(item.get("pov_character") or default_pov).strip()
+        if not pov_char or pov_char not in valid_char_ids:
+            errors.append(
+                f"{ch_label}: pov_character {pov_char!r} not in bible characters {sorted(valid_char_ids)}"
+            )
+
+        raw_active_chars = item.get("active_characters")
+        if not isinstance(raw_active_chars, list) or not raw_active_chars:
+            errors.append(f"{ch_label}: 'active_characters' must be a non-empty list of character ids")
+        else:
+            for cid in raw_active_chars:
+                if not isinstance(cid, str) or cid not in valid_char_ids:
+                    errors.append(
+                        f"{ch_label}: unknown character id {cid!r} in active_characters (allowed: {sorted(valid_char_ids)})"
+                    )
+            if pov_char in valid_char_ids and pov_char not in raw_active_chars:
+                errors.append(
+                    f"{ch_label}: pov_character {pov_char!r} must be listed in active_characters"
+                )
+
+        raw_active_assets = item.get("active_assets", [])
+        if not isinstance(raw_active_assets, list):
+            errors.append(f"{ch_label}: 'active_assets' must be a list of asset ids")
+        else:
+            for aid in raw_active_assets:
+                if not isinstance(aid, str) or aid not in valid_asset_ids:
+                    errors.append(
+                        f"{ch_label}: unknown asset id {aid!r} in active_assets (allowed: {sorted(valid_asset_ids)})"
+                    )
+
+        raw_styles = item.get("style_profile_ids", [])
+        if not isinstance(raw_styles, list):
+            errors.append(f"{ch_label}: 'style_profile_ids' must be a list of style profile ids")
+        else:
+            for sp_id in raw_styles:
+                if not isinstance(sp_id, str) or sp_id not in valid_style_ids:
+                    errors.append(
+                        f"{ch_label}: unknown style_profile id {sp_id!r} (allowed: {sorted(valid_style_ids)})"
+                    )
+
+        if "emotion_polarity" in item and item["emotion_polarity"] is not None:
+            ep = item["emotion_polarity"]
+            if not isinstance(ep, str) or ep not in EMOTION_POLARITIES:
+                errors.append(
+                    f"{ch_label}: unknown emotion_polarity {ep!r}; expected one of {EMOTION_POLARITIES}"
+                )
+
+        if "min_chars" in item and item["min_chars"] is not None and not _is_strict_int(item["min_chars"]):
+            errors.append(f"{ch_label}: min_chars must be an integer, got {item['min_chars']!r}")
+        if "max_chars" in item and item["max_chars"] is not None and not _is_strict_int(item["max_chars"]):
+            errors.append(f"{ch_label}: max_chars must be an integer, got {item['max_chars']!r}")
+        if (
+            _is_strict_int(item.get("min_chars"))
+            and _is_strict_int(item.get("max_chars"))
+            and item["min_chars"] > item["max_chars"]
+        ):
+            errors.append(
+                f"{ch_label}: min_chars ({item['min_chars']}) > max_chars ({item['max_chars']})"
+            )
+
+        # Nested optional mutation lists
+        raw_asset_muts = item.get("post_scene_asset_mutations", [])
+        if not isinstance(raw_asset_muts, list):
+            errors.append(f"{ch_label}: post_scene_asset_mutations must be a list")
+        else:
+            for m_idx, mut in enumerate(raw_asset_muts):
+                if not isinstance(mut, Mapping):
+                    errors.append(f"{ch_label}: post_scene_asset_mutations[{m_idx}] must be an object")
+                    continue
+                aid = mut.get("asset_id")
+                if not isinstance(aid, str) or aid not in valid_asset_ids:
+                    errors.append(
+                        f"{ch_label}: post_scene_asset_mutations[{m_idx}] unknown asset_id {aid!r}"
+                    )
+
+        raw_char_muts = item.get("character_mutations", [])
+        if not isinstance(raw_char_muts, list):
+            errors.append(f"{ch_label}: character_mutations must be a list")
+        else:
+            for m_idx, cm in enumerate(raw_char_muts):
+                if not isinstance(cm, Mapping):
+                    errors.append(f"{ch_label}: character_mutations[{m_idx}] must be an object")
+                    continue
+                cid = cm.get("character_id")
+                if not isinstance(cid, str) or cid not in valid_char_ids:
+                    errors.append(
+                        f"{ch_label}: character_mutations[{m_idx}] unknown character_id {cid!r}"
+                    )
+                if cm.get("status") is not None and cm.get("status") not in CHARACTER_STATUSES:
+                    errors.append(
+                        f"{ch_label}: character_mutations[{m_idx}] invalid status {cm.get('status')!r}"
+                    )
+                rel_target = cm.get("relation_target_id")
+                if rel_target and (not isinstance(rel_target, str) or rel_target not in valid_char_ids):
+                    errors.append(
+                        f"{ch_label}: character_mutations[{m_idx}] unknown relation_target_id {rel_target!r}"
+                    )
+
+        raw_ledger_muts = item.get("ledger_mutations", [])
+        if not isinstance(raw_ledger_muts, list):
+            errors.append(f"{ch_label}: ledger_mutations must be a list")
+        else:
+            for m_idx, lm in enumerate(raw_ledger_muts):
+                if not isinstance(lm, Mapping):
+                    errors.append(f"{ch_label}: ledger_mutations[{m_idx}] must be an object")
+                    continue
+                if not _nonempty_str(lm.get("ledger_key")):
+                    errors.append(f"{ch_label}: ledger_mutations[{m_idx}] missing ledger_key")
+                if not _is_strict_number(lm.get("delta")):
+                    errors.append(f"{ch_label}: ledger_mutations[{m_idx}] delta must be numeric")
+
+        raw_exp_dirs = item.get("expectation_directives", [])
+        if not isinstance(raw_exp_dirs, list):
+            errors.append(f"{ch_label}: expectation_directives must be a list")
+        else:
+            for m_idx, ed in enumerate(raw_exp_dirs):
+                if not isinstance(ed, Mapping):
+                    errors.append(f"{ch_label}: expectation_directives[{m_idx}] must be an object")
+                    continue
+                if not _nonempty_str(ed.get("id")) or not _nonempty_str(ed.get("title")):
+                    errors.append(f"{ch_label}: expectation_directives[{m_idx}] missing id or title")
+                if not _is_strict_int(ed.get("due_chapter")):
+                    errors.append(f"{ch_label}: expectation_directives[{m_idx}] due_chapter must be int")
+                act = ed.get("action", "open")
+                if act not in EXPECTATION_ACTIONS:
+                    errors.append(
+                        f"{ch_label}: expectation_directives[{m_idx}] invalid action {act!r}"
+                    )
+
+    # Contiguous chapter coverage check
+    missing = [ch for ch in expected_chapters if ch not in seen_chapter_set]
+    if missing:
+        errors.append(
+            f"scenes batch {start_ch}..{end_ch}: missing chapters {missing}"
+        )
+
+    # Consecutive suppress polarity check (carrying over trailing suppress from previous batch)
+    consecutive_suppress = max(0, int(prior_trailing_suppress))
+    suppress_run: List[int] = []
+    for ch in sorted(valid_scenes_by_ch):
+        ep = valid_scenes_by_ch[ch].get("emotion_polarity", "neutral")
+        if ep == "suppress":
+            consecutive_suppress += 1
+            suppress_run.append(ch)
+            if consecutive_suppress > 2:
+                errors.append(
+                    f"Chapter {ch}: consecutive emotion_polarity='suppress' exceeds max 2 "
+                    f"(prior_trailing={prior_trailing_suppress}, batch_run={suppress_run})"
+                )
+        else:
+            consecutive_suppress = 0
+            suppress_run.clear()
+
+    return errors
+
+
+def _collect_master_outline_batch_errors(
+    batch: Any,
+    chapter_range: Tuple[int, int],
+) -> List[str]:
+    """Collect ALL validation errors for a Stage 3 master_outline batch."""
+    start_ch, end_ch = chapter_range
+    expected_chapters = list(range(start_ch, end_ch + 1))
+    if not isinstance(batch, list) or not batch:
+        return [f"master_outline must be a non-empty list covering chapters {start_ch}..{end_ch}"]
+
+    errors: List[str] = []
+    seen_chapters: set[int] = set()
+    for idx, item in enumerate(batch):
+        prefix = f"master_outline[{idx}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{prefix} must be an object, got {type(item).__name__}")
+            continue
+        raw_ch = item.get("chapter")
+        if not _is_strict_int(raw_ch):
+            errors.append(f"{prefix}: missing integer 'chapter' (got {raw_ch!r})")
+            label = prefix
+        else:
+            label = f"master_outline chapter {raw_ch}"
+            if not (start_ch <= raw_ch <= end_ch):
+                errors.append(
+                    f"{label}: chapter {raw_ch} is outside expected batch range {start_ch}..{end_ch}"
+                )
+            elif raw_ch in seen_chapters:
+                errors.append(f"{label}: duplicate chapter {raw_ch}")
+            else:
+                seen_chapters.add(raw_ch)
+        if not _nonempty_str(item.get("title")):
+            errors.append(f"{label}: missing non-empty string 'title'")
+        if not _nonempty_str(item.get("summary")):
+            errors.append(f"{label}: missing non-empty string 'summary'")
+
+    missing = [ch for ch in expected_chapters if ch not in seen_chapters]
+    if missing:
+        errors.append(f"master_outline batch {start_ch}..{end_ch}: missing chapters {missing}")
+    return errors
+
+
+def _three_act_position(start_ch: int, end_ch: int, total_chapters: int, author_level: str) -> str:
+    if author_level == "lv2_plus":
+        if end_ch <= 10:
+            return "首秀前10章（黄金三章起爆 + 前两万字直签期首轮小高潮）"
+        return "首秀第11~15章（承上启下，兑现首轮战果并抛向百章长线与换地图引子）"
+    ratio = ((start_ch + end_ch) / 2.0) / max(1, total_chapters)
+    if ratio <= 0.28:
+        return f"第一幕·开篇建势（全书共 {total_chapters} 章，黄金三章确立核心矛盾与金手指立威）"
+    if ratio <= 0.78:
+        return f"第二幕·中段升级（全书共 {total_chapters} 章，对手升级、伏笔交织与阶段爽点兑现）"
+    return f"第三幕·终局收官（全书共 {total_chapters} 章，全面清算反派、回收所有伏笔并完成大结局）"
+
+
+def _trailing_suppress_count(scenes: Sequence[Mapping[str, Any]]) -> int:
+    count = 0
+    for sc in reversed(scenes):
+        if sc.get("emotion_polarity") == "suppress":
+            count += 1
+        else:
+            break
+    return count
 
 
 def _invoke_planner(
@@ -542,6 +1300,417 @@ class AutoNovelPlanner:
         }
         return loaded, prepared
 
+    def _plan_bible_stage(
+        self,
+        *,
+        project_id: str,
+        recipe: GenreRecipe,
+        author_level: str,
+        contract_track: str,
+        resolved_chapters: int,
+        suggested_cast: Sequence[str],
+        motif_lines: Sequence[str],
+        hot_keywords: Sequence[str],
+        blueprint_block: str,
+        brief_section: str,
+        on_progress: Optional[PlanProgressCallback] = None,
+    ) -> Tuple[Dict[str, Any], int]:
+        """Stage 1: generate project bible (project/characters/assets/foreshadows/style_profiles/volume_cap_locks)."""
+        track_instruction = (
+            f"账号轨=lv0_1（complete_150k）：全书共 {resolved_chapters} 章紧凑完本（15万~20万字，target_word_count 必须在 150000..200000 之间）。所有伏笔的 plant_chapter 与 due_chapter 必须落在 1..{resolved_chapters} 范围内。"
+            if author_level == "lv0_1"
+            else "账号轨=lv2_plus（serial_20k）：第1卷首秀共 15 章（后续按百章总纲续卷）。跨卷伏笔须显式设 cross_volume=true，且第1卷内伏笔 plant_chapter 必须在 1..15 范围内。"
+        )
+        system_prompt = (
+            "你是番茄爆款总策划师。当前处于【阶段1：设定包 bible】。\n"
+            "请严格输出单个 JSON 对象（不要输出 scenes 或 master_outline，也不要输出 JSON 以外的解释文字）。\n"
+            "硬性约束：\n"
+            "1. project.title 与 5 个 project.alternate_titles 均须为 1~15 个字符，严禁包含书名号《》。\n"
+            "2. project.alternate_blurbs 必须恰好包含 3 版三段式简介；project.tweet_aliases 至少 1 个（建议 3 个）4~8 字纯简体常用汉字别名。\n"
+            "3. 所有角色姓名必须严格取自推荐安全角色名池，严禁黑名单人名、生僻字或同音名；default_pov_character 必须是 characters 中的某个 id。\n"
+            "4. foreshadows 每条必须包含非空 plant_keywords 与 payoff_keywords（具体物理证据词），且 due_chapter >= plant_chapter。\n"
+            "5. volume_cap_locks 必须至少包含一条 volume=1 的数值上限锁。\n"
+            "6. 必须严格遵循以下完整 JSON 格式样例（字段名、数据类型、必填项须完全一致）：\n"
+            f"{json.dumps(_BIBLE_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
+        )
+
+        last_errors: List[str] = []
+        for attempt in range(1, self.max_validation_retries + 1):
+            if on_progress is not None:
+                on_progress({"stage": "bible", "batch": 1, "batches": 1, "attempt": attempt})
+            feedback_section = (
+                "\n[上一次输出存在以下全部问题，必须逐条修正后整份重新输出]：\n"
+                + "\n".join(f"- {err}" for err in last_errors)
+                + "\n"
+                if last_errors
+                else ""
+            )
+            user_prompt = (
+                f"阶段: bible（设定包）\n"
+                f"project_id: {project_id}\n"
+                f"类目: {recipe.genre_id}（{recipe.display_name}，主分类={recipe.tomato_primary_category}，频道={recipe.channel}）\n"
+                f"默认视角: {recipe.pov_mode} | 面板策略: {recipe.panel_policy}\n"
+                f"黄金单章字数: {recipe.min_chapter_words}~{recipe.max_chapter_words}\n"
+                f"样式模板ID（可直接引用）: {recipe.style_profile.id}\n"
+                f"推荐安全角色名池（严禁同音或黑名单名）: {', '.join(suggested_cast)}\n"
+                f"贝叶斯高权重母题候选:\n{chr(10).join(motif_lines) if motif_lines else '无历史样本，按类目最佳实践'}\n"
+                f"热榜风向关键词: {', '.join(hot_keywords) if hot_keywords else '无'}\n"
+                f"对标拆书换皮蓝图:\n{blueprint_block}\n"
+                f"{track_instruction}\n"
+                f"{brief_section}"
+                f"{feedback_section}"
+            )
+            req = LLMRequest(
+                request_id=f"plan-bible-{project_id}-{attempt}-{uuid.uuid4().hex[:6]}",
+                chapter=0,
+                attempt=attempt,
+                purpose="plan",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.5,
+                max_tokens=STAGE_BIBLE_MAX_TOKENS,
+                metadata={
+                    "stage": "bible",
+                    "batch": 1,
+                    "batches": 1,
+                    "project_id": project_id,
+                    "genre_id": recipe.genre_id,
+                    "author_level": author_level,
+                    "contract_track": contract_track,
+                    "target_chapters": resolved_chapters,
+                    "suggested_cast": list(suggested_cast),
+                    "attempt": attempt,
+                },
+            )
+            resp = _invoke_planner(self.provider, req)
+            try:
+                payload = _parse_json_payload(resp.content, "bible")
+            except ProjectValidationError as exc:
+                last_errors = [str(exc)]
+                continue
+
+            errors = _collect_bible_errors(
+                payload,
+                author_level=author_level,
+                target_chapters=resolved_chapters,
+                recipe=recipe,
+            )
+            if not errors:
+                return payload, attempt
+            last_errors = errors
+
+        raise PlanningValidationError(
+            f"Staged planning failed at stage 'bible' (batch 1/1) after {self.max_validation_retries} attempts: "
+            + " | ".join(last_errors)
+        )
+
+    def _plan_scenes_stage(
+        self,
+        *,
+        project_id: str,
+        bible: Mapping[str, Any],
+        recipe: GenreRecipe,
+        author_level: str,
+        resolved_chapters: int,
+        brief_section: str,
+        on_progress: Optional[PlanProgressCallback] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Stage 2: generate vol_01 scenes in sequential batches of SCENE_BATCH_SIZE chapters."""
+        ranges: List[Tuple[int, int]] = []
+        ch = 1
+        while ch <= resolved_chapters:
+            end_ch = min(ch + SCENE_BATCH_SIZE - 1, resolved_chapters)
+            ranges.append((ch, end_ch))
+            ch = end_ch + 1
+        total_batches = len(ranges)
+
+        char_ids = [
+            f"{c['id']}（{c['name']}：{c['role']}）"
+            for c in bible.get("characters", [])
+            if isinstance(c, Mapping)
+        ]
+        asset_ids = [
+            f"{a['id']}（{a['name']}：{a['condition']}）"
+            for a in bible.get("assets", [])
+            if isinstance(a, Mapping)
+        ]
+        style_ids = sorted(
+            {
+                *(
+                    str(sp["id"])
+                    for sp in bible.get("style_profiles", [])
+                    if isinstance(sp, Mapping) and sp.get("id")
+                ),
+                recipe.style_profile.id,
+            }
+        )
+        default_pov = str((bible.get("project") or {}).get("default_pov_character") or "")
+
+        system_prompt = (
+            "你是番茄爆款总策划师。当前处于【阶段2：分批章纲 scenes】。\n"
+            "请严格输出单个 JSON 对象：{\"scenes\": [ ... ]}，仅包含本批要求的章号范围，不要输出 JSON 以外的解释文字。\n"
+            "硬性约束：\n"
+            "1. chapter 必须连续完整覆盖本批指定章号，不得缺章、重章或越界。\n"
+            "2. public_title 严禁带有「第X章」「第X回」「第X节」前缀。\n"
+            "3. pov_character、active_characters、active_assets、style_profile_ids 只能使用设定包给出的已有 id，且 pov_character 必须在 active_characters 中。\n"
+            "4. emotion_polarity 只能取 suppress / burst / neutral / mixed，且全书（含跨批衔接）连续 suppress 绝对不超过 2 章。\n"
+            "5. 本批要求埋设或回收的伏笔，必须在对应章节的 events 中显式体现该伏笔 id 及物理关键词。\n"
+            "6. 必须严格遵循以下完整 JSON 格式样例：\n"
+            f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
+        )
+
+        all_scenes: List[Dict[str, Any]] = []
+        max_attempts_used = 1
+        bible_foreshadows = [
+            fs for fs in (bible.get("foreshadows") or []) if isinstance(fs, Mapping)
+        ]
+
+        for batch_idx, (start_ch, end_ch) in enumerate(ranges, start=1):
+            prior_trailing_suppress = _trailing_suppress_count(all_scenes)
+            prior_summary_lines = [
+                f"- 第{s['chapter']}章《{s.get('public_title') or s.get('internal_title')}》："
+                f"{'；'.join(str(e) for e in (s.get('events') or [])[:2])}"
+                for s in all_scenes
+            ]
+            prior_summary_block = (
+                "\n".join(prior_summary_lines) if prior_summary_lines else "（本批为开篇第1批，尚无前序章节）"
+            )
+
+            batch_fs_lines: List[str] = []
+            for fs in bible_foreshadows:
+                p_ch = fs.get("plant_chapter")
+                d_ch = fs.get("due_chapter")
+                if isinstance(p_ch, int) and start_ch <= p_ch <= end_ch:
+                    batch_fs_lines.append(
+                        f"- [第{p_ch}章必须埋设] {fs['id']}《{fs['title']}》｜关键词={fs.get('plant_keywords', [])}｜指令={fs.get('plant_instruction', '')}"
+                    )
+                if isinstance(d_ch, int) and start_ch <= d_ch <= end_ch:
+                    batch_fs_lines.append(
+                        f"- [第{d_ch}章必须回收] {fs['id']}《{fs['title']}》｜关键词={fs.get('payoff_keywords', [])}｜指令={fs.get('payoff_instruction', '')}"
+                    )
+            batch_fs_block = (
+                "\n".join(batch_fs_lines) if batch_fs_lines else "（本批无强制埋设/回收伏笔，专注主线推进）"
+            )
+            act_pos = _three_act_position(start_ch, end_ch, resolved_chapters, author_level)
+
+            last_errors: List[str] = []
+            batch_result: Optional[List[Dict[str, Any]]] = None
+            for attempt in range(1, self.max_validation_retries + 1):
+                if on_progress is not None:
+                    on_progress(
+                        {
+                            "stage": "scenes",
+                            "batch": batch_idx,
+                            "batches": total_batches,
+                            "chapter_start": start_ch,
+                            "chapter_end": end_ch,
+                            "attempt": attempt,
+                        }
+                    )
+                feedback_section = (
+                    "\n[上一次输出存在以下全部问题，必须逐条修正后整批重新输出]：\n"
+                    + "\n".join(f"- {err}" for err in last_errors)
+                    + "\n"
+                    if last_errors
+                    else ""
+                )
+                user_prompt = (
+                    f"阶段: scenes（章纲第 {batch_idx}/{total_batches} 批）\n"
+                    f"本批章号范围: 第 {start_ch} 章 ~ 第 {end_ch} 章（共 {end_ch - start_ch + 1} 章，全书第1卷共 {resolved_chapters} 章）\n"
+                    f"全书三幕位置: {act_pos}\n"
+                    f"书名: {(bible.get('project') or {}).get('title', '')}\n"
+                    f"简介: {(bible.get('project') or {}).get('synopsis', '')}\n"
+                    f"默认视点角色 id: {default_pov}\n"
+                    f"可用角色 id 列表（严禁编造其他 id）: {'; '.join(char_ids)}\n"
+                    f"可用器物 id 列表（严禁编造其他 id）: {'; '.join(asset_ids)}\n"
+                    f"可用文风 id 列表（严禁编造其他 id）: {', '.join(style_ids)}\n"
+                    f"单章默认字数区间: {recipe.min_chapter_words}~{recipe.max_chapter_words}\n"
+                    f"前批末尾连续 suppress 章数: {prior_trailing_suppress}（与本批衔接后连续 suppress 绝对不超过 2 章）\n"
+                    f"本批必须埋设/回收的伏笔:\n{batch_fs_block}\n"
+                    f"此前各章梗概:\n{prior_summary_block}\n"
+                    f"{brief_section}"
+                    f"{feedback_section}"
+                )
+                req = LLMRequest(
+                    request_id=f"plan-scenes-{project_id}-b{batch_idx}-{attempt}-{uuid.uuid4().hex[:6]}",
+                    chapter=start_ch,
+                    attempt=attempt,
+                    purpose="plan",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.5,
+                    max_tokens=STAGE_SCENES_MAX_TOKENS,
+                    metadata={
+                        "stage": "scenes",
+                        "batch": batch_idx,
+                        "batches": total_batches,
+                        "chapter_start": start_ch,
+                        "chapter_end": end_ch,
+                        "project_id": project_id,
+                        "genre_id": recipe.genre_id,
+                        "author_level": author_level,
+                        "attempt": attempt,
+                    },
+                )
+                resp = _invoke_planner(self.provider, req)
+                try:
+                    payload = _parse_json_payload(resp.content, f"scenes_batch_{batch_idx}")
+                except ProjectValidationError as exc:
+                    last_errors = [str(exc)]
+                    continue
+
+                raw_batch = payload.get("scenes")
+                errors = _collect_scene_batch_errors(
+                    raw_batch,
+                    bible,
+                    (start_ch, end_ch),
+                    recipe=recipe,
+                    prior_trailing_suppress=prior_trailing_suppress,
+                )
+                if not errors:
+                    assert isinstance(raw_batch, list)
+                    batch_result = sorted(
+                        (dict(item) for item in raw_batch),
+                        key=lambda x: int(x["chapter"]),
+                    )
+                    max_attempts_used = max(max_attempts_used, attempt)
+                    break
+                last_errors = errors
+
+            if batch_result is None:
+                raise PlanningValidationError(
+                    f"Staged planning failed at stage 'scenes' (batch {batch_idx}/{total_batches}, "
+                    f"chapters {start_ch}..{end_ch}) after {self.max_validation_retries} attempts: "
+                    + " | ".join(last_errors)
+                )
+            all_scenes.extend(batch_result)
+
+        return all_scenes, max_attempts_used
+
+    def _plan_master_outline_stage(
+        self,
+        *,
+        project_id: str,
+        bible: Mapping[str, Any],
+        scenes: Sequence[Mapping[str, Any]],
+        recipe: GenreRecipe,
+        brief_section: str,
+        on_progress: Optional[PlanProgressCallback] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Stage 3 (lv2_plus only): generate 100-chapter master_outline in 4 batches of 25."""
+        ranges: List[Tuple[int, int]] = []
+        ch = 1
+        while ch <= MASTER_OUTLINE_TOTAL:
+            end_ch = min(ch + MASTER_OUTLINE_BATCH_SIZE - 1, MASTER_OUTLINE_TOTAL)
+            ranges.append((ch, end_ch))
+            ch = end_ch + 1
+        total_batches = len(ranges)
+
+        system_prompt = (
+            "你是番茄爆款总策划师。当前处于【阶段3：百章总纲 master_outline】。\n"
+            "请严格输出单个 JSON 对象：{\"master_outline\": [ ... ]}，仅包含本批要求的章号范围，不要输出 JSON 以外的解释文字。\n"
+            "硬性约束：\n"
+            "1. chapter 必须连续完整覆盖本批指定章号（共 25 条），不得缺章、重章或越界。\n"
+            "2. 每条必须包含 chapter（整数）、title（非空字符串）、summary（非空字符串）。\n"
+            "3. 第 1~15 章须与第1卷首秀细纲一致，第 60~80 章安排换地图与实力跃迁。\n"
+            "4. 必须严格遵循以下完整 JSON 格式样例：\n"
+            f"{json.dumps(_MASTER_OUTLINE_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
+        )
+
+        vol1_lines = [
+            f"- 第{s['chapter']}章《{s.get('public_title') or s.get('internal_title')}》"
+            for s in scenes[:15]
+        ]
+        all_items: List[Dict[str, Any]] = []
+        max_attempts_used = 1
+
+        for batch_idx, (start_ch, end_ch) in enumerate(ranges, start=1):
+            prior_milestones = [
+                f"- 第{m['chapter']}章《{m['title']}》：{m['summary']}"
+                for m in all_items[-10:]
+            ]
+            last_errors: List[str] = []
+            batch_result: Optional[List[Dict[str, Any]]] = None
+
+            for attempt in range(1, self.max_validation_retries + 1):
+                if on_progress is not None:
+                    on_progress(
+                        {
+                            "stage": "master_outline",
+                            "batch": batch_idx,
+                            "batches": total_batches,
+                            "chapter_start": start_ch,
+                            "chapter_end": end_ch,
+                            "attempt": attempt,
+                        }
+                    )
+                feedback_section = (
+                    "\n[上一次输出存在以下全部问题，必须逐条修正后整批重新输出]：\n"
+                    + "\n".join(f"- {err}" for err in last_errors)
+                    + "\n"
+                    if last_errors
+                    else ""
+                )
+                user_prompt = (
+                    f"阶段: master_outline（总纲第 {batch_idx}/{total_batches} 批）\n"
+                    f"本批章号范围: 第 {start_ch} 章 ~ 第 {end_ch} 章（共 {end_ch - start_ch + 1} 条）\n"
+                    f"书名: {(bible.get('project') or {}).get('title', '')}\n"
+                    f"简介: {(bible.get('project') or {}).get('synopsis', '')}\n"
+                    f"第1卷首秀15章标题参考:\n{chr(10).join(vol1_lines)}\n"
+                    f"前序总纲最近节点:\n{chr(10).join(prior_milestones) if prior_milestones else '（本批为第1批）'}\n"
+                    f"{brief_section}"
+                    f"{feedback_section}"
+                )
+                req = LLMRequest(
+                    request_id=f"plan-mo-{project_id}-b{batch_idx}-{attempt}-{uuid.uuid4().hex[:6]}",
+                    chapter=start_ch,
+                    attempt=attempt,
+                    purpose="plan",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.5,
+                    max_tokens=STAGE_MASTER_OUTLINE_MAX_TOKENS,
+                    metadata={
+                        "stage": "master_outline",
+                        "batch": batch_idx,
+                        "batches": total_batches,
+                        "chapter_start": start_ch,
+                        "chapter_end": end_ch,
+                        "project_id": project_id,
+                        "genre_id": recipe.genre_id,
+                        "author_level": "lv2_plus",
+                        "attempt": attempt,
+                    },
+                )
+                resp = _invoke_planner(self.provider, req)
+                try:
+                    payload = _parse_json_payload(resp.content, f"master_outline_batch_{batch_idx}")
+                except ProjectValidationError as exc:
+                    last_errors = [str(exc)]
+                    continue
+
+                raw_batch = payload.get("master_outline")
+                errors = _collect_master_outline_batch_errors(raw_batch, (start_ch, end_ch))
+                if not errors:
+                    assert isinstance(raw_batch, list)
+                    batch_result = sorted(
+                        (dict(item) for item in raw_batch),
+                        key=lambda x: int(x["chapter"]),
+                    )
+                    max_attempts_used = max(max_attempts_used, attempt)
+                    break
+                last_errors = errors
+
+            if batch_result is None:
+                raise PlanningValidationError(
+                    f"Staged planning failed at stage 'master_outline' (batch {batch_idx}/{total_batches}, "
+                    f"chapters {start_ch}..{end_ch}) after {self.max_validation_retries} attempts: "
+                    + " | ".join(last_errors)
+                )
+            all_items.extend(batch_result)
+
+        return all_items, max_attempts_used
+
     def plan_new_project(
         self,
         *,
@@ -559,8 +1728,9 @@ class AutoNovelPlanner:
         target_chapters: Optional[int] = None,
         seed: Optional[int] = None,
         creative_brief: str = "",
+        on_progress: Optional[PlanProgressCallback] = None,
     ) -> PlannedProjectResult:
-        """3-source auto-initiation producing a load_project()-validated dual-track project package."""
+        """3-source auto-initiation via staged planning (bible -> scene batches -> optional master_outline)."""
         if not isinstance(project_id, str) or not project_id.strip():
             raise ProjectValidationError("project_id must be a non-empty string")
         if author_level not in AUTHOR_LEVELS:
@@ -636,186 +1806,172 @@ class AutoNovelPlanner:
             else "无对标拆书蓝图（按本赛道配方与热榜关键词自主立项）"
         )
 
-        track_instruction = (
-            f"账号轨=lv0_1（complete_150k）：请在 scenes 中完整规划 {resolved_chapters} 章三幕紧凑完本大纲（15万~20万字，target_word_count 在 150000..200000 之间）。"
-            if author_level == "lv0_1"
-            else "账号轨=lv2_plus（serial_20k）：请在 scenes 中规划第1卷前 15 章首秀测书细纲（约3.3万字），并额外输出 master_outline（恰好100章总纲数组，每项含 chapter, title, summary）。"
-        )
-
-        system_prompt = (
-            "你是番茄爆款总策划师。请严格输出单个 JSON 对象，生成可直接落盘通过 schema 校验的完整立项包。\n"
-            "硬性约束：\n"
-            "1. project.title 与 5 个 project.alternate_titles 均须为 1~15 个字符，严禁包含书名号《》。\n"
-            "2. project.alternate_blurbs 必须恰好包含 3 版三段式简介；project.tweet_aliases 含 3 个 4~8 字纯简体常用汉字别名。\n"
-            "3. 所有角色姓名必须严格使用推荐的无撞音、非AI黑名单常用简体中文姓名，严禁出现林晚/顾寒洲/陆沉/苏清浅等黑名单人名，严禁同音名。\n"
-            "4. scenes 中连续纯压抑 emotion_polarity='suppress' 绝对不超过 2 章；public_title 不得带 '第X章' 前缀。\n"
-            "5. volume_cap_locks 必须包含第1卷数值上限锁（如 ledger_key, volume: 1, max_value, unit）。\n"
-            "6. JSON 顶层字段：project, characters, assets, foreshadows, style_profiles, volume_cap_locks, scenes"
-            + (", master_outline" if author_level == "lv2_plus" else "")
-            + "。"
-        )
-
         brief_text = (creative_brief or "").strip()
         brief_section = (
-            "[老板在立项向导中逐项选定的要求，必须全部严格落实，不得改动方向、主角设定、笔风与书名]：\n"
+            "[老板在立项向导中逐项选定的要求，必须全部严格落实；向导中出现的人物姓名只是示意，正式姓名必须从推荐安全角色名池中选取，其余主角设定（身份、性格、金手指、代价、成长线）、方向、笔风与书名必须保留]：\n"
             f"{brief_text}\n"
             if brief_text
             else ""
         )
-        feedback = ""
-        last_error: Optional[Exception] = None
+
         target_dir = Path(output_dir).resolve()
         projects_root_path = Path(projects_root).resolve() if projects_root is not None else None
 
-        for attempt in range(1, self.max_validation_retries + 1):
-            feedback_section = (
-                f"\n[第 {attempt - 1} 次校验失败，必须严格修复以下错误，禁止重复犯错]：\n{feedback}\n"
-                if feedback
-                else ""
-            )
-            user_prompt = (
-                f"project_id: {project_id}\n"
-                f"类目: {recipe.genre_id}（{recipe.display_name}，主分类={recipe.tomato_primary_category}，频道={recipe.channel}）\n"
-                f"默认视角: {recipe.pov_mode} | 面板策略: {recipe.panel_policy}\n"
-                f"黄金单章字数: {recipe.min_chapter_words}~{recipe.max_chapter_words}\n"
-                f"样式模板ID（可直接引用）: {recipe.style_profile.id}\n"
-                f"推荐安全角色名池（严禁同音或黑名单名）: {', '.join(suggested_cast)}\n"
-                f"贝叶斯高权重母题候选:\n{chr(10).join(motif_lines) if motif_lines else '无历史样本，按类目最佳实践'}\n"
-                f"热榜风向关键词: {', '.join(hot_keywords) if hot_keywords else '无'}\n"
-                f"对标拆书换皮蓝图:\n{blueprint_block}\n"
-                f"{track_instruction}\n"
-                f"{brief_section}"
-                f"{feedback_section}"
-            )
-            req = LLMRequest(
-                request_id=f"plan-new-{project_id}-{attempt}-{uuid.uuid4().hex[:6]}",
-                chapter=0,
-                attempt=attempt,
-                purpose="plan",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.5,
-                max_tokens=12000,
-                metadata={
-                    "stage": "plan_new_project",
-                    "project_id": project_id,
-                    "genre_id": recipe.genre_id,
-                    "author_level": author_level,
-                    "contract_track": contract_track,
-                    "target_chapters": resolved_chapters,
-                    "suggested_cast": suggested_cast,
-                    "attempt": attempt,
-                },
-            )
-            resp = _invoke_planner(self.provider, req)
-            try:
-                payload = _parse_json_payload(resp.content, "plan_new_project")
-                with tempfile.TemporaryDirectory(prefix="xsb_plan_") as tmpdir:
-                    loaded, prepared = self._validate_and_write_staging(
-                        Path(tmpdir),
-                        payload=payload,
-                        project_id=project_id,
-                        recipe=recipe,
-                        author_level=author_level,
-                        contract_track=contract_track,
-                        pen_name=pen_name,
-                        target_chapters=resolved_chapters,
-                        benchmark_chapters=benchmark_chapters,
-                        projects_root=projects_root_path,
-                        namer=namer,
-                    )
-            except (
-                ProjectValidationError,
-                NamerError,
-                InvalidTweetAliasError,
-                PlagiarismViolationError,
-                CrossBookCollisionError,
-                ValueError,
-                KeyError,
-                TypeError,
-            ) as exc:
-                last_error = exc
-                feedback = str(exc)
-                continue
+        # Stage 1: Bible
+        bible, bible_attempts = self._plan_bible_stage(
+            project_id=project_id,
+            recipe=recipe,
+            author_level=author_level,
+            contract_track=contract_track,
+            resolved_chapters=resolved_chapters,
+            suggested_cast=suggested_cast,
+            motif_lines=motif_lines,
+            hot_keywords=hot_keywords,
+            blueprint_block=blueprint_block,
+            brief_section=brief_section,
+            on_progress=on_progress,
+        )
 
-            # Persist validated project into output_dir (archive any existing files into _archive/)
-            stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%dT%H%M%S_%f")
-            target_dir.mkdir(parents=True, exist_ok=True)
-            _write_text_archived(
-                target_dir / "project.yaml",
-                _dump_yaml(prepared["project_yaml"]),
-                target_dir,
-                stamp,
-            )
-            _write_text_archived(
-                target_dir / "characters.yaml",
-                _dump_yaml(prepared["characters_yaml"]),
-                target_dir,
-                stamp,
-            )
-            _write_text_archived(
-                target_dir / "assets.yaml",
-                _dump_yaml(prepared["assets_yaml"]),
-                target_dir,
-                stamp,
-            )
-            _write_text_archived(
-                target_dir / "foreshadows.yaml",
-                _dump_yaml(prepared["foreshadows_yaml"]),
-                target_dir,
-                stamp,
-            )
-            _write_text_archived(
-                target_dir / "style_profiles.yaml",
-                _dump_yaml(prepared["style_profiles_yaml"]),
-                target_dir,
-                stamp,
-            )
-            _write_text_archived(
-                target_dir / "outline" / "vol_01.yaml",
-                _dump_yaml(prepared["vol_01_yaml"]),
-                target_dir,
-                stamp,
+        # Stage 2: Scene batches (10 chapters per batch)
+        scenes, scene_attempts = self._plan_scenes_stage(
+            project_id=project_id,
+            bible=bible,
+            recipe=recipe,
+            author_level=author_level,
+            resolved_chapters=resolved_chapters,
+            brief_section=brief_section,
+            on_progress=on_progress,
+        )
+
+        # Stage 3: Master outline batches (lv2_plus only, 4 x 25 = 100 items)
+        master_outline: List[Dict[str, Any]] = []
+        mo_attempts = 1
+        if author_level == "lv2_plus":
+            master_outline, mo_attempts = self._plan_master_outline_stage(
+                project_id=project_id,
+                bible=bible,
+                scenes=scenes,
+                recipe=recipe,
+                brief_section=brief_section,
+                on_progress=on_progress,
             )
 
-            master_outline_path: Optional[Path] = None
-            signing_app_path: Optional[Path] = None
-            if author_level == "lv2_plus":
-                master_outline_path = target_dir / "master_outline.yaml"
-                _write_text_archived(
-                    master_outline_path,
-                    _dump_yaml({"master_outline": prepared["master_outline"]}),
-                    target_dir,
-                    stamp,
+        payload: Dict[str, Any] = {
+            "project": bible["project"],
+            "characters": bible["characters"],
+            "assets": bible["assets"],
+            "foreshadows": bible["foreshadows"],
+            "style_profiles": bible["style_profiles"],
+            "volume_cap_locks": bible["volume_cap_locks"],
+            "scenes": scenes,
+        }
+        if author_level == "lv2_plus":
+            payload["master_outline"] = master_outline
+
+        # Final authoritative validation via untouched _validate_and_write_staging() + load_project()
+        try:
+            with tempfile.TemporaryDirectory(prefix="xsb_plan_") as tmpdir:
+                loaded, prepared = self._validate_and_write_staging(
+                    Path(tmpdir),
+                    payload=payload,
+                    project_id=project_id,
+                    recipe=recipe,
+                    author_level=author_level,
+                    contract_track=contract_track,
+                    pen_name=pen_name,
+                    target_chapters=resolved_chapters,
+                    benchmark_chapters=benchmark_chapters,
+                    projects_root=projects_root_path,
+                    namer=namer,
                 )
-                signing_app_path = target_dir / "signing_application.md"
-                signing_md = self._build_signing_application_md(
-                    prepared["project_yaml"],
-                    prepared["characters_yaml"]["characters"],
-                    prepared["vol_01_yaml"]["scenes"],
-                    prepared["master_outline"],
-                    recipe,
-                    prepared["golden_finger_description"],
-                )
-                _write_text_archived(signing_app_path, signing_md, target_dir, stamp)
+        except (PlagiarismViolationError, CrossBookCollisionError):
+            raise
+        except (
+            ProjectValidationError,
+            NamerError,
+            InvalidTweetAliasError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
+            raise PlanningValidationError(
+                f"plan_new_project failed final staging/load_project() validation: {exc}"
+            ) from exc
 
-            final_loaded = load_project(target_dir)
-            return PlannedProjectResult(
-                project_dir=target_dir,
-                project=final_loaded,
-                contract_track=contract_track,
-                author_level=author_level,
-                opening_motif=prepared["project_yaml"]["opening_motif"],
-                golden_finger_type=prepared["project_yaml"]["golden_finger_type"],
-                attempts_used=attempt,
-                signing_application_path=signing_app_path,
-                master_outline_path=master_outline_path,
+        # Persist validated project into output_dir (archive any existing files into _archive/)
+        stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%dT%H%M%S_%f")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        _write_text_archived(
+            target_dir / "project.yaml",
+            _dump_yaml(prepared["project_yaml"]),
+            target_dir,
+            stamp,
+        )
+        _write_text_archived(
+            target_dir / "characters.yaml",
+            _dump_yaml(prepared["characters_yaml"]),
+            target_dir,
+            stamp,
+        )
+        _write_text_archived(
+            target_dir / "assets.yaml",
+            _dump_yaml(prepared["assets_yaml"]),
+            target_dir,
+            stamp,
+        )
+        _write_text_archived(
+            target_dir / "foreshadows.yaml",
+            _dump_yaml(prepared["foreshadows_yaml"]),
+            target_dir,
+            stamp,
+        )
+        _write_text_archived(
+            target_dir / "style_profiles.yaml",
+            _dump_yaml(prepared["style_profiles_yaml"]),
+            target_dir,
+            stamp,
+        )
+        _write_text_archived(
+            target_dir / "outline" / "vol_01.yaml",
+            _dump_yaml(prepared["vol_01_yaml"]),
+            target_dir,
+            stamp,
+        )
+
+        master_outline_path: Optional[Path] = None
+        signing_app_path: Optional[Path] = None
+        if author_level == "lv2_plus":
+            master_outline_path = target_dir / "master_outline.yaml"
+            _write_text_archived(
+                master_outline_path,
+                _dump_yaml({"master_outline": prepared["master_outline"]}),
+                target_dir,
+                stamp,
             )
+            signing_app_path = target_dir / "signing_application.md"
+            signing_md = self._build_signing_application_md(
+                prepared["project_yaml"],
+                prepared["characters_yaml"]["characters"],
+                prepared["vol_01_yaml"]["scenes"],
+                prepared["master_outline"],
+                recipe,
+                prepared["golden_finger_description"],
+            )
+            _write_text_archived(signing_app_path, signing_md, target_dir, stamp)
 
-        raise PlanningValidationError(
-            f"plan_new_project failed load_project() validation after {self.max_validation_retries} attempts: "
-            f"{last_error}"
-        ) from last_error
+        final_loaded = load_project(target_dir)
+        attempts_used = max(bible_attempts, scene_attempts, mo_attempts)
+        return PlannedProjectResult(
+            project_dir=target_dir,
+            project=final_loaded,
+            contract_track=contract_track,
+            author_level=author_level,
+            opening_motif=prepared["project_yaml"]["opening_motif"],
+            golden_finger_type=prepared["project_yaml"]["golden_finger_type"],
+            attempts_used=attempts_used,
+            signing_application_path=signing_app_path,
+            master_outline_path=master_outline_path,
+        )
 
     def extend_volume(
         self,

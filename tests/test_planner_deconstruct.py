@@ -462,6 +462,38 @@ class TestBestsellerDeconstructor(unittest.TestCase):
 
 
 class TestAutoNovelPlanner(unittest.TestCase):
+    @staticmethod
+    def _slice_staged_plan_response(full_payload: Dict[str, Any], user_prompt: str) -> str:
+        import re
+
+        m_range = re.search(r"本批章号范围:\s*第\s*(\d+)\s*章\s*~\s*第\s*(\d+)\s*章", user_prompt)
+        if "阶段: scenes" in user_prompt and m_range:
+            s_ch, e_ch = int(m_range.group(1)), int(m_range.group(2))
+            return json.dumps(
+                {
+                    "scenes": [
+                        sc for sc in full_payload["scenes"] if s_ch <= int(sc["chapter"]) <= e_ch
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "阶段: master_outline" in user_prompt and m_range:
+            s_ch, e_ch = int(m_range.group(1)), int(m_range.group(2))
+            return json.dumps(
+                {
+                    "master_outline": [
+                        mo
+                        for mo in full_payload.get("master_outline", [])
+                        if s_ch <= int(mo["chapter"]) <= e_ch
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {k: v for k, v in full_payload.items() if k not in ("scenes", "master_outline")},
+            ensure_ascii=False,
+        )
+
     def _build_valid_plan_payload(
         self,
         *,
@@ -653,25 +685,25 @@ class TestAutoNovelPlanner(unittest.TestCase):
                     ensure_ascii=False,
                 )
 
-            # plan_new_project
-            if "lv0_1" in user_prompt:
-                return json.dumps(
+            # plan_new_project (staged: bible / scenes / master_outline)
+            if "lv0_1" in user_prompt or "共 80 章" in user_prompt:
+                return self._slice_staged_plan_response(
                     self._build_valid_plan_payload(
                         project_id="auto_lv01_book",
                         num_chapters=80,
                         author_level="lv0_1",
                         safe_names=safe_names,
                     ),
-                    ensure_ascii=False,
+                    user_prompt,
                 )
-            return json.dumps(
+            return self._slice_staged_plan_response(
                 self._build_valid_plan_payload(
                     project_id="auto_lv2_book",
                     num_chapters=15,
                     author_level="lv2_plus",
                     safe_names=safe_names,
                 ),
-                ensure_ascii=False,
+                user_prompt,
             )
 
         server, base_url = _start_mock_sse_server(_handler)
@@ -847,10 +879,11 @@ class TestAutoNovelPlanner(unittest.TestCase):
         calls = {"count": 0}
 
         def _handler_recover_on_3(body: Dict[str, Any]) -> str:
+            user_prompt = body["messages"][-1]["content"]
             calls["count"] += 1
             if calls["count"] == 1:
                 # Attempt 1: >15 char title (fails load_project)
-                return json.dumps(
+                return self._slice_staged_plan_response(
                     self._build_valid_plan_payload(
                         project_id="retry_book",
                         num_chapters=75,
@@ -858,11 +891,11 @@ class TestAutoNovelPlanner(unittest.TestCase):
                         safe_names=safe_names,
                         invalid_title=True,
                     ),
-                    ensure_ascii=False,
+                    user_prompt,
                 )
             if calls["count"] == 2:
                 # Attempt 2: blacklisted AI name "顾寒洲" (fails CharacterNamer)
-                return json.dumps(
+                return self._slice_staged_plan_response(
                     self._build_valid_plan_payload(
                         project_id="retry_book",
                         num_chapters=75,
@@ -870,17 +903,17 @@ class TestAutoNovelPlanner(unittest.TestCase):
                         safe_names=safe_names,
                         blacklisted_name=True,
                     ),
-                    ensure_ascii=False,
+                    user_prompt,
                 )
-            # Attempt 3: valid payload
-            return json.dumps(
+            # Attempt 3+: valid payload sliced by stage
+            return self._slice_staged_plan_response(
                 self._build_valid_plan_payload(
                     project_id="retry_book",
                     num_chapters=75,
                     author_level="lv0_1",
                     safe_names=safe_names,
                 ),
-                ensure_ascii=False,
+                user_prompt,
             )
 
         server, base_url = _start_mock_sse_server(_handler_recover_on_3)
@@ -904,7 +937,8 @@ class TestAutoNovelPlanner(unittest.TestCase):
 
         # Now test permanent failure after 3 attempts -> raises PlanningValidationError and NEVER persists
         def _handler_always_bad(body: Dict[str, Any]) -> str:
-            return json.dumps(
+            user_prompt = body["messages"][-1]["content"]
+            return self._slice_staged_plan_response(
                 self._build_valid_plan_payload(
                     project_id="broken_book",
                     num_chapters=75,
@@ -912,7 +946,7 @@ class TestAutoNovelPlanner(unittest.TestCase):
                     safe_names=safe_names,
                     blacklisted_name=True,
                 ),
-                ensure_ascii=False,
+                user_prompt,
             )
 
         server2, base_url2 = _start_mock_sse_server(_handler_always_bad)
@@ -1189,15 +1223,16 @@ class TestAutoNovelPlanner(unittest.TestCase):
         llm_calls = {"count": 0}
 
         def _handler_plan(body: Dict[str, Any]) -> str:
+            user_prompt = body["messages"][-1]["content"]
             llm_calls["count"] += 1
-            return json.dumps(
+            return self._slice_staged_plan_response(
                 self._build_valid_plan_payload(
                     project_id="bp_validated_book",
                     num_chapters=75,
                     author_level="lv0_1",
                     safe_names=safe_names,
                 ),
-                ensure_ascii=False,
+                user_prompt,
             )
 
         benchmark_chapters = [
@@ -1276,7 +1311,7 @@ class TestAutoNovelPlanner(unittest.TestCase):
                     benchmark_chapters=benchmark_chapters,
                     target_chapters=75,
                 )
-                self.assertEqual(llm_calls["count"], 1)
+                self.assertEqual(llm_calls["count"], 9)
                 self.assertTrue((res.project_dir / "project.yaml").is_file())
         finally:
             server.shutdown()
