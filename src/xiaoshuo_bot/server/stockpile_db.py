@@ -376,6 +376,23 @@ class StockpileDB:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS model_switch_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    book_id TEXT NOT NULL DEFAULT '',
+                    book_title TEXT NOT NULL DEFAULT '',
+                    chapter INTEGER NOT NULL DEFAULT 0,
+                    role TEXT NOT NULL,
+                    from_model TEXT NOT NULL,
+                    to_model TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    status_code INTEGER,
+                    upstream_code TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_model_switch_events_created
+                    ON model_switch_events(id DESC);
                 """
             )
             # Legacy schema migration for existing matrix.db databases created before T5.
@@ -453,6 +470,107 @@ class StockpileDB:
         with self._lock:
             row = self._conn.execute("PRAGMA journal_mode;").fetchone()
             return str(row[0]).lower() if row else ""
+
+    # -----------------------------------------------------------------------
+    # Model Switch Audit Events (WorkBuddy whitelist rotation log)
+    # -----------------------------------------------------------------------
+    def record_model_switch(
+        self,
+        *,
+        role: str,
+        from_model: str,
+        to_model: str,
+        reason: str,
+        book_id: str = "",
+        book_title: str = "",
+        chapter: int = 0,
+        status_code: Optional[int] = None,
+        upstream_code: str = "",
+        created_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ts = (created_at or "").strip() or self._now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO model_switch_events
+                    (book_id, book_title, chapter, role, from_model, to_model, reason, status_code, upstream_code, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(book_id or ""),
+                    str(book_title or ""),
+                    int(chapter or 0),
+                    str(role or ""),
+                    str(from_model or ""),
+                    str(to_model or ""),
+                    str(reason or ""),
+                    int(status_code) if status_code is not None else None,
+                    str(upstream_code or ""),
+                    ts,
+                ),
+            )
+            event_id = int(cur.lastrowid or 0)
+        return {
+            "id": event_id,
+            "book_id": str(book_id or ""),
+            "book_title": str(book_title or ""),
+            "chapter": int(chapter or 0),
+            "role": str(role or ""),
+            "from_model": str(from_model or ""),
+            "to_model": str(to_model or ""),
+            "reason": str(reason or ""),
+            "status_code": int(status_code) if status_code is not None else None,
+            "upstream_code": str(upstream_code or ""),
+            "created_at": ts,
+        }
+
+    def list_model_switch_events(
+        self,
+        *,
+        book_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 200))
+        with self._lock:
+            if book_id:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, book_id, book_title, chapter, role, from_model, to_model,
+                           reason, status_code, upstream_code, created_at
+                    FROM model_switch_events
+                    WHERE book_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (str(book_id), safe_limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, book_id, book_title, chapter, role, from_model, to_model,
+                           reason, status_code, upstream_code, created_at
+                    FROM model_switch_events
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "book_id": str(r["book_id"] or ""),
+                "book_title": str(r["book_title"] or ""),
+                "chapter": int(r["chapter"] or 0),
+                "role": str(r["role"] or ""),
+                "from_model": str(r["from_model"] or ""),
+                "to_model": str(r["to_model"] or ""),
+                "reason": str(r["reason"] or ""),
+                "status_code": int(r["status_code"]) if r["status_code"] is not None else None,
+                "upstream_code": str(r["upstream_code"] or ""),
+                "created_at": str(r["created_at"] or ""),
+            }
+            for r in rows
+        ]
 
     # -----------------------------------------------------------------------
     # Production KPI (写稿耗时 vs 重写率)

@@ -32,6 +32,12 @@ from .base import (
     redact_secrets,
 )
 from .openai_compat import OpenAICompatibleProvider
+from .workbuddy_policy import (
+    ModelSwitchEvent,
+    classify_workbuddy_quota_exhausted,
+    validate_workbuddy_model_allowed,
+    validate_workbuddy_rotation_chain,
+)
 
 VALID_ROLES: Tuple[str, ...] = ("planner", "writer", "critic", "polisher", "image")
 
@@ -72,6 +78,11 @@ class RoleEndpointConfig:
     input_cost_per_1m: float = 0.0
     output_cost_per_1m: float = 0.0
     image_cost_per_call: float = 0.0
+    model_whitelist: Tuple[str, ...] = ()
+    rotation_models: Tuple[str, ...] = ()
+    manual_only_models: Tuple[str, ...] = ()
+    model_cooldown_sec: Optional[float] = None
+    model_labels: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.role = (self.role or "").strip()
@@ -107,6 +118,56 @@ class RoleEndpointConfig:
             raise LLMConfigurationError(f"timeout must be > 0 for role {self.role!r}.")
         if self.cooldown_sec < 0:
             raise LLMConfigurationError(f"cooldown_sec must be >= 0 for role {self.role!r}.")
+        if self.model_cooldown_sec is not None:
+            self.model_cooldown_sec = float(self.model_cooldown_sec)
+            if self.model_cooldown_sec < 0:
+                raise LLMConfigurationError(
+                    f"model_cooldown_sec must be >= 0 for role {self.role!r}."
+                )
+
+        def _normalize_str_tuple(raw_val: Any, field_name: str) -> Tuple[str, ...]:
+            if raw_val is None:
+                return ()
+            if isinstance(raw_val, str) or not isinstance(raw_val, Sequence):
+                raise LLMConfigurationError(
+                    f"{field_name} for role {self.role!r} must be a sequence of model IDs."
+                )
+            return tuple(str(x).strip() for x in raw_val if str(x).strip())
+
+        self.model_whitelist = _normalize_str_tuple(self.model_whitelist, "model_whitelist")
+        self.rotation_models = _normalize_str_tuple(self.rotation_models, "rotation_models")
+        self.manual_only_models = _normalize_str_tuple(self.manual_only_models, "manual_only_models")
+        if self.model_labels:
+            self.model_labels = {
+                str(k).strip(): str(v).strip()
+                for k, v in self.model_labels.items()
+                if str(k).strip() and str(v).strip()
+            }
+        else:
+            self.model_labels = {}
+
+        if self.model_whitelist or self.rotation_models or self.manual_only_models:
+            self.rotation_models = validate_workbuddy_rotation_chain(
+                role=self.role,
+                primary_model=self.model,
+                rotation_models=self.rotation_models,
+                whitelist=self.model_whitelist,
+                manual_only_models=self.manual_only_models,
+            )
+
+    def effective_model_cooldown_sec(self) -> float:
+        return (
+            float(self.model_cooldown_sec)
+            if self.model_cooldown_sec is not None
+            else float(self.cooldown_sec)
+        )
+
+    def format_model_label(self, model_id: str) -> str:
+        cleaned = (model_id or "").strip()
+        label = self.model_labels.get(cleaned, "").strip()
+        if not label or label == cleaned:
+            return cleaned
+        return f"{label} ({cleaned})"
 
     @classmethod
     def from_mapping(cls, role: str, data: Mapping[str, Any]) -> "RoleEndpointConfig":
@@ -124,6 +185,11 @@ class RoleEndpointConfig:
         elif "api_key" in data and data["api_key"] is not None:
             raw_keys = [str(data["api_key"])]
 
+        raw_labels = data.get("model_labels")
+        model_labels: Dict[str, str] = {}
+        if isinstance(raw_labels, Mapping):
+            model_labels = {str(k): str(v) for k, v in raw_labels.items()}
+
         return cls(
             role=role,
             base_url=str(data.get("base_url") or ""),
@@ -138,6 +204,15 @@ class RoleEndpointConfig:
             input_cost_per_1m=float(data.get("input_cost_per_1m", 0.0)),
             output_cost_per_1m=float(data.get("output_cost_per_1m", 0.0)),
             image_cost_per_call=float(data.get("image_cost_per_call", 0.0)),
+            model_whitelist=tuple(data.get("model_whitelist") or ()),
+            rotation_models=tuple(data.get("rotation_models") or ()),
+            manual_only_models=tuple(data.get("manual_only_models") or ()),
+            model_cooldown_sec=(
+                float(data["model_cooldown_sec"])
+                if data.get("model_cooldown_sec") is not None
+                else None
+            ),
+            model_labels=model_labels,
         )
 
 
@@ -381,20 +456,31 @@ class _RoleProviderAdapter(LLMProvider):
 
 
 class RoleModelRouter:
-    """5-role dynamic model router with same-tier 429 key-pool rotation and zero silent downgrade."""
+    """5-role dynamic model router with same-tier 429 key-pool rotation and explicit whitelisted failover."""
 
     def __init__(
         self,
         roles: Mapping[str, RoleEndpointConfig | Mapping[str, Any]],
         ledger: Optional[UsageBudgetLedger] = None,
         monotonic_fn: Optional[Callable[[], float]] = None,
+        on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
+        now_fn: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._lock = threading.Lock()
         self._roles: Dict[str, RoleEndpointConfig] = {}
         self._cursors: Dict[str, int] = {}
         self._cooldowns: Dict[str, Dict[int, float]] = {}
+        self._active_models: Dict[str, str] = {}
+        self._model_cooldowns: Dict[str, Dict[str, float]] = {}
+        self._model_key_cursors: Dict[str, Dict[str, int]] = {}
+        self._model_key_cooldowns: Dict[str, Dict[str, Dict[int, float]]] = {}
+        self._switch_listeners: List[Callable[[ModelSwitchEvent], None]] = []
+        self._switch_history: List[ModelSwitchEvent] = []
         self.ledger = ledger or UsageBudgetLedger()
         self._monotonic = monotonic_fn or time.monotonic
+        self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
+        if on_model_switched is not None:
+            self._switch_listeners.append(on_model_switched)
 
         for role_name, raw_cfg in roles.items():
             cfg = (
@@ -409,17 +495,50 @@ class RoleModelRouter:
             self._roles[cfg.role] = cfg
             self._cursors[cfg.role] = 0
             self._cooldowns[cfg.role] = {}
+            self._active_models[cfg.role] = cfg.model
+            self._model_cooldowns[cfg.role] = {}
+            self._model_key_cursors[cfg.role] = {}
+            self._model_key_cooldowns[cfg.role] = {}
 
     @classmethod
     def from_dict(
         cls,
         config: Mapping[str, Any],
         ledger: Optional[UsageBudgetLedger] = None,
+        on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
     ) -> "RoleModelRouter":
         roles_raw = config.get("roles") if "roles" in config else config
         if not isinstance(roles_raw, Mapping):
             raise LLMConfigurationError("Router config must be a mapping of role -> endpoint config.")
-        return cls(roles=roles_raw, ledger=ledger)
+        return cls(roles=roles_raw, ledger=ledger, on_model_switched=on_model_switched)
+
+    def add_model_switch_listener(self, callback: Callable[[ModelSwitchEvent], None]) -> None:
+        with self._lock:
+            if callback not in self._switch_listeners:
+                self._switch_listeners.append(callback)
+
+    def get_active_model(self, role: str) -> str:
+        cfg = self.get_role_config(role)
+        with self._lock:
+            return self._active_models.get(role, cfg.model)
+
+    def get_model_switch_history(self) -> List[ModelSwitchEvent]:
+        with self._lock:
+            return list(self._switch_history)
+
+    def reset_model_rotation(self, role: Optional[str] = None) -> None:
+        with self._lock:
+            targets = [role] if role is not None else list(self._roles.keys())
+            for r in targets:
+                cfg = self._roles.get(r)
+                if cfg is None:
+                    continue
+                self._active_models[r] = cfg.model
+                self._model_cooldowns[r] = {}
+                self._model_key_cursors[r] = {}
+                self._model_key_cooldowns[r] = {}
+                self._cooldowns[r] = {}
+                self._cursors[r] = 0
 
     def has_role(self, role: str) -> bool:
         with self._lock:
@@ -448,6 +567,10 @@ class RoleModelRouter:
             self._roles[cfg.role] = cfg
             self._cursors[cfg.role] = 0
             self._cooldowns[cfg.role] = {}
+            self._active_models[cfg.role] = cfg.model
+            self._model_cooldowns[cfg.role] = {}
+            self._model_key_cursors[cfg.role] = {}
+            self._model_key_cooldowns[cfg.role] = {}
 
     def as_provider(self, role: str) -> LLMProvider:
         self.get_role_config(role)
@@ -482,18 +605,98 @@ class RoleModelRouter:
             cooldown_map = self._cooldowns.get(role, {})
             cooldown_map.pop(key_idx, None)
 
-    def _build_text_provider(self, cfg: RoleEndpointConfig, api_key: str) -> LLMProvider:
+    def _candidate_key_indices_for_model(
+        self, role: str, model_id: str, cfg: RoleEndpointConfig
+    ) -> List[int]:
+        if not cfg.rotation_models:
+            return self._candidate_key_indices(role, cfg)
+        now = self._monotonic()
+        with self._lock:
+            total = len(cfg.api_keys)
+            cursors_by_model = self._model_key_cursors.setdefault(role, {})
+            start = cursors_by_model.get(model_id, 0) % total
+            cooldowns_by_model = self._model_key_cooldowns.setdefault(role, {})
+            cooldown_map = cooldowns_by_model.setdefault(model_id, {})
+            candidates: List[int] = []
+            for offset in range(total):
+                idx = (start + offset) % total
+                until = cooldown_map.get(idx, 0.0)
+                if until <= now:
+                    if idx in cooldown_map:
+                        del cooldown_map[idx]
+                    candidates.append(idx)
+            return candidates
+
+    def _mark_key_quota_for_model(
+        self, role: str, model_id: str, key_idx: int, cfg: RoleEndpointConfig
+    ) -> None:
+        if not cfg.rotation_models:
+            self._mark_key_429(role, key_idx, cfg)
+            return
+        now = self._monotonic()
+        with self._lock:
+            cooldowns_by_model = self._model_key_cooldowns.setdefault(role, {})
+            cooldown_map = cooldowns_by_model.setdefault(model_id, {})
+            cooldown_map[key_idx] = now + cfg.cooldown_sec
+            cursors_by_model = self._model_key_cursors.setdefault(role, {})
+            cursors_by_model[model_id] = (key_idx + 1) % len(cfg.api_keys)
+
+    def _mark_key_success_for_model(
+        self, role: str, model_id: str, key_idx: int, cfg: RoleEndpointConfig
+    ) -> None:
+        if not cfg.rotation_models:
+            self._mark_key_success(role, key_idx, cfg)
+            return
+        with self._lock:
+            cursors_by_model = self._model_key_cursors.setdefault(role, {})
+            cursors_by_model[model_id] = (key_idx + 1) % len(cfg.api_keys)
+            cooldown_map = self._model_key_cooldowns.get(role, {}).get(model_id, {})
+            cooldown_map.pop(key_idx, None)
+
+    def _is_model_in_cooldown(self, role: str, model_id: str) -> bool:
+        now = self._monotonic()
+        with self._lock:
+            model_map = self._model_cooldowns.setdefault(role, {})
+            until = model_map.get(model_id, 0.0)
+            if until <= now:
+                model_map.pop(model_id, None)
+                return False
+            return True
+
+    def _mark_model_quota_exhausted(
+        self, role: str, model_id: str, cfg: RoleEndpointConfig
+    ) -> None:
+        now = self._monotonic()
+        with self._lock:
+            model_map = self._model_cooldowns.setdefault(role, {})
+            model_map[model_id] = now + cfg.effective_model_cooldown_sec()
+
+    def _emit_model_switch(self, event: ModelSwitchEvent) -> None:
+        with self._lock:
+            self._switch_history.append(event)
+            listeners = list(self._switch_listeners)
+        for listener in listeners:
+            listener(event)
+
+    def _build_text_provider(
+        self,
+        cfg: RoleEndpointConfig,
+        api_key: str,
+        *,
+        model: Optional[str] = None,
+    ) -> LLMProvider:
+        effective_model = (model or cfg.model).strip()
         if cfg.provider_type == "anthropic":
             return AnthropicProvider(
                 api_key=api_key,
                 base_url=cfg.base_url,
-                model=cfg.model,
+                model=effective_model,
                 timeout=cfg.timeout,
             )
         return OpenAICompatibleProvider(
             api_key=api_key,
             base_url=cfg.base_url,
-            model=cfg.model,
+            model=effective_model,
             timeout=cfg.timeout,
             stream=cfg.stream,
             reasoning_effort=cfg.reasoning_effort,
@@ -528,6 +731,9 @@ class RoleModelRouter:
                 raise LLMRequestError(
                     redact_secrets(str(exc), cfg.api_keys),
                     status_code=exc.status_code,
+                    error_code=exc.error_code,
+                    upstream_code=exc.upstream_code,
+                    response_body=redact_secrets(exc.response_body, cfg.api_keys),
                 ) from None
         raise QuotaExhaustedError(
             f"All {len(cfg.api_keys)} credentials for role '{role}' (model '{cfg.model}') "
@@ -544,56 +750,149 @@ class RoleModelRouter:
         chapter_no = request.chapter if request.chapter > 0 else None
         self.ledger.check_can_proceed(chapter=chapter_no)
 
-        candidates = self._candidate_key_indices(role, cfg)
-        if not candidates:
-            raise QuotaExhaustedError(
-                f"All {len(cfg.api_keys)} credentials for role '{role}' (model '{cfg.model}') "
-                "are currently in 429 cooldown. Refusing to downgrade model."
+        explicit_req_model = str(request.metadata.get("model") or "").strip()
+        if explicit_req_model and cfg.model_whitelist:
+            validate_workbuddy_model_allowed(
+                explicit_req_model,
+                cfg.model_whitelist,
+                context=f"role={role} request.metadata.model",
             )
 
-        for key_idx in candidates:
-            api_key = cfg.api_keys[key_idx]
-            provider = self._build_text_provider(cfg, api_key)
+        if cfg.rotation_models:
+            with self._lock:
+                active_model = self._active_models.get(role, cfg.rotation_models[0])
             try:
-                resp = provider.generate(request)
-                self._mark_key_success(role, key_idx, cfg)
-                in_tok, out_tok = _extract_tokens(resp.usage)
-                self.ledger.record_usage(
-                    role=role,
-                    model=resp.model or cfg.model,
-                    input_tokens=in_tok,
-                    output_tokens=out_tok,
-                    chapter=chapter_no,
-                    input_cost_per_1m=cfg.input_cost_per_1m,
-                    output_cost_per_1m=cfg.output_cost_per_1m,
+                start_idx = cfg.rotation_models.index(active_model)
+            except ValueError:
+                start_idx = 0
+                active_model = cfg.rotation_models[0]
+            model_chain: Tuple[str, ...] = cfg.rotation_models[start_idx:]
+        else:
+            model_chain = (cfg.model,)
+
+        policy_active = bool(cfg.rotation_models or cfg.model_whitelist)
+        last_quota_reason = "HTTP 429"
+        last_status_code: Optional[int] = None
+        last_upstream_code = ""
+
+        for chain_pos, current_model in enumerate(model_chain):
+            if cfg.rotation_models and self._is_model_in_cooldown(role, current_model):
+                last_quota_reason = f"模型 {current_model} 仍在额度冷却期内"
+                continue
+
+            candidates = self._candidate_key_indices_for_model(role, current_model, cfg)
+            model_exhausted = not candidates
+            if model_exhausted and not cfg.rotation_models:
+                raise QuotaExhaustedError(
+                    f"All {len(cfg.api_keys)} credentials for role '{role}' (model '{current_model}') "
+                    "are currently in 429 cooldown. Refusing to downgrade model."
                 )
-                return resp
-            except LLMStreamTruncatedError as exc:
-                # Upstream already generated (and billed) tokens; record them before re-raising.
-                self._mark_key_success(role, key_idx, cfg)
-                in_tok, out_tok = _extract_tokens(getattr(exc, "usage", None) or {})
-                self.ledger.record_usage(
-                    role=role,
-                    model=getattr(exc, "model", "") or cfg.model,
-                    input_tokens=in_tok,
-                    output_tokens=out_tok,
-                    chapter=chapter_no,
-                    input_cost_per_1m=cfg.input_cost_per_1m,
-                    output_cost_per_1m=cfg.output_cost_per_1m,
+
+            req_for_model = request
+            if explicit_req_model and explicit_req_model != current_model:
+                cleaned_meta = {k: v for k, v in request.metadata.items() if k != "model"}
+                req_for_model = LLMRequest(
+                    request_id=request.request_id,
+                    chapter=request.chapter,
+                    attempt=request.attempt,
+                    purpose=request.purpose,
+                    system_prompt=request.system_prompt,
+                    user_prompt=request.user_prompt,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    metadata=cleaned_meta,
                 )
-                raise
-            except LLMRequestError as exc:
-                if exc.status_code == 429:
-                    self._mark_key_429(role, key_idx, cfg)
+
+            for key_idx in candidates:
+                api_key = cfg.api_keys[key_idx]
+                provider = self._build_text_provider(cfg, api_key, model=current_model)
+                try:
+                    resp = provider.generate(req_for_model)
+                    self._mark_key_success_for_model(role, current_model, key_idx, cfg)
+                    resolved_model = (resp.model or current_model).strip()
+                    in_tok, out_tok = _extract_tokens(resp.usage)
+                    self.ledger.record_usage(
+                        role=role,
+                        model=resolved_model,
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        chapter=chapter_no,
+                        input_cost_per_1m=cfg.input_cost_per_1m,
+                        output_cost_per_1m=cfg.output_cost_per_1m,
+                    )
+                    return resp
+                except LLMStreamTruncatedError as exc:
+                    # Upstream already generated (and billed) tokens; record them and NEVER switch models.
+                    self._mark_key_success_for_model(role, current_model, key_idx, cfg)
+                    in_tok, out_tok = _extract_tokens(getattr(exc, "usage", None) or {})
+                    self.ledger.record_usage(
+                        role=role,
+                        model=getattr(exc, "model", "") or current_model,
+                        input_tokens=in_tok,
+                        output_tokens=out_tok,
+                        chapter=chapter_no,
+                        input_cost_per_1m=cfg.input_cost_per_1m,
+                        output_cost_per_1m=cfg.output_cost_per_1m,
+                    )
+                    raise
+                except LLMRequestError as exc:
+                    if policy_active:
+                        is_quota, quota_reason = classify_workbuddy_quota_exhausted(exc)
+                    else:
+                        is_quota = exc.status_code == 429
+                        quota_reason = "HTTP 429"
+                    if is_quota:
+                        self._mark_key_quota_for_model(role, current_model, key_idx, cfg)
+                        last_quota_reason = quota_reason
+                        last_status_code = exc.status_code
+                        last_upstream_code = exc.upstream_code or ""
+                        continue
+                    raise LLMRequestError(
+                        redact_secrets(str(exc), cfg.api_keys),
+                        status_code=exc.status_code,
+                        error_code=exc.error_code,
+                        upstream_code=exc.upstream_code,
+                        response_body=redact_secrets(exc.response_body, cfg.api_keys),
+                    ) from None
+
+            # All candidate keys for current_model exhausted quota.
+            if cfg.rotation_models:
+                self._mark_model_quota_exhausted(role, current_model, cfg)
+                next_model: Optional[str] = None
+                for upcoming in model_chain[chain_pos + 1 :]:
+                    if not self._is_model_in_cooldown(role, upcoming):
+                        next_model = upcoming
+                        break
+                if next_model is not None:
+                    with self._lock:
+                        self._active_models[role] = next_model
+                    event = ModelSwitchEvent(
+                        role=role,
+                        from_model=current_model,
+                        to_model=next_model,
+                        from_label=cfg.format_model_label(current_model),
+                        to_label=cfg.format_model_label(next_model),
+                        reason=last_quota_reason,
+                        timestamp=self._now_fn().isoformat(),
+                        book_id=str(request.metadata.get("book_id") or ""),
+                        chapter=int(request.chapter or 0),
+                        status_code=last_status_code,
+                        upstream_code=last_upstream_code,
+                    )
+                    self._emit_model_switch(event)
                     continue
-                raise LLMRequestError(
-                    redact_secrets(str(exc), cfg.api_keys),
-                    status_code=exc.status_code,
-                ) from None
+                break
+
+        if cfg.rotation_models:
+            chain_display = " → ".join(cfg.format_model_label(m) for m in cfg.rotation_models)
+            raise QuotaExhaustedError(
+                f"角色 '{role}' 白名单轮换链全部模型（{chain_display}）均已耗尽额度"
+                f"（最后原因：{last_quota_reason}），已触发熔断停机，不准再切换其他模型。"
+            )
 
         raise QuotaExhaustedError(
             f"All {len(cfg.api_keys)} credentials for role '{role}' (model '{cfg.model}') "
-            "exhausted quota (HTTP 429). Refusing to downgrade model."
+            f"exhausted quota ({last_quota_reason}). Refusing to downgrade model."
         )
 
     def _resolve_image_protocol(self, cfg: RoleEndpointConfig, model: str) -> str:

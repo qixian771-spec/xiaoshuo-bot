@@ -3,9 +3,10 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import socket
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -157,11 +158,47 @@ class OpenAICompatibleProvider(LLMProvider):
         raw = ""
         if exc.fp is not None:
             try:
-                raw = exc.fp.read(1024).decode("utf-8", errors="replace")
+                raw = exc.fp.read(4096).decode("utf-8", errors="replace")
             except (OSError, ValueError):
                 raw = ""
         text = raw.strip() or str(exc.reason or exc)
         return self._redact(text)[:500]
+
+    @staticmethod
+    def _extract_error_metadata(text: str) -> Tuple[Optional[str], Optional[str]]:
+        """Extract (error_code, upstream_code) from CPA / cpa-workbuddy / OpenAI error payloads."""
+        error_code: Optional[str] = None
+        upstream_code: Optional[str] = None
+        cleaned = (text or "").strip()
+        if cleaned.startswith("{"):
+            try:
+                payload = json.loads(cleaned)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                err_obj = payload.get("error")
+                if isinstance(err_obj, dict):
+                    raw_code = err_obj.get("code") or err_obj.get("type")
+                    if isinstance(raw_code, (str, int)) and not isinstance(raw_code, bool):
+                        error_code = str(raw_code).strip() or None
+                    raw_up = err_obj.get("upstream_code")
+                    if raw_up is None and isinstance(err_obj.get("data"), dict):
+                        raw_up = err_obj["data"].get("code")
+                    if isinstance(raw_up, (str, int)) and not isinstance(raw_up, bool):
+                        upstream_code = str(raw_up).strip() or None
+                if error_code is None:
+                    raw_top = payload.get("code")
+                    if isinstance(raw_top, (str, int)) and not isinstance(raw_top, bool):
+                        error_code = str(raw_top).strip() or None
+                if upstream_code is None:
+                    raw_top_up = payload.get("upstream_code")
+                    if isinstance(raw_top_up, (str, int)) and not isinstance(raw_top_up, bool):
+                        upstream_code = str(raw_top_up).strip() or None
+        if upstream_code is None:
+            match = re.search(r"upstream\s+code\s+(\d{1,9})(?!\d)", cleaned, re.IGNORECASE)
+            if match:
+                upstream_code = match.group(1)
+        return error_code, upstream_code
 
     def _build_payload(self, request: LLMRequest, use_stream: bool) -> Dict[str, Any]:
         requested_model = str(request.metadata.get("model") or self.model).strip()
@@ -251,9 +288,14 @@ class OpenAICompatibleProvider(LLMProvider):
                     err_msg = err_obj.get("message", str(err_obj)) if isinstance(err_obj, dict) else str(err_obj)
                     err_code = err_obj.get("code") if isinstance(err_obj, dict) else None
                     status_code = err_code if isinstance(err_code, int) else None
+                    redacted_chunk = self._redact(data_str)[:500]
+                    extracted_code, extracted_upstream = self._extract_error_metadata(redacted_chunk)
                     raise LLMRequestError(
                         f"Upstream SSE error: {self._redact(str(err_msg))}",
                         status_code=status_code,
+                        error_code=extracted_code,
+                        upstream_code=extracted_upstream,
+                        response_body=redacted_chunk,
                     )
 
                 if chunk.get("model"):
@@ -398,11 +440,15 @@ class OpenAICompatibleProvider(LLMProvider):
                 raise
             except urllib.error.HTTPError as exc:
                 err_msg = self._read_http_error(exc)
+                error_code, upstream_code = self._extract_error_metadata(err_msg)
                 err = LLMRequestError(
                     f"OpenAI-compatible HTTP {exc.code}: {err_msg}",
                     status_code=exc.code,
+                    error_code=error_code,
+                    upstream_code=upstream_code,
+                    response_body=err_msg,
                 )
-                # Do not retry 4xx (including 429 so caller/router rotates keys immediately)
+                # Do not retry 4xx (including 429 and 400 credit_package_exhausted so router rotates immediately)
                 if exc.code < 500 or exc.code not in {500, 502, 503, 504}:
                     raise err from None
                 last_err = err

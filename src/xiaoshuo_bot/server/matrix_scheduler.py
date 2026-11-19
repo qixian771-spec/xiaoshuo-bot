@@ -48,6 +48,7 @@ from ..llm.base import (
 )
 from ..llm.cpa_manager import CPAManagementClient
 from ..llm.router import RoleEndpointConfig, RoleModelRouter, VALID_ROLES
+from ..llm.workbuddy_policy import ModelSwitchEvent
 from ..loader import load_project
 from ..models import (
     ChapterArtifact,
@@ -247,6 +248,53 @@ class MatrixScheduler:
         self._prod_lock = threading.Lock()
         self._bg_stop = threading.Event()
         self._bg_thread: Optional[threading.Thread] = None
+        self._thread_ctx = threading.local()
+
+        if isinstance(self.provider, RoleModelRouter):
+            self.provider.add_model_switch_listener(self._handle_model_switched)
+
+    def _handle_model_switched(self, event: ModelSwitchEvent) -> None:
+        book_id = event.book_id or str(getattr(self._thread_ctx, "book_id", "") or "")
+        chapter = int(event.chapter or getattr(self._thread_ctx, "chapter", 0) or 0)
+        book_title = str(getattr(self._thread_ctx, "book_title", "") or "")
+        if book_id and not book_title:
+            book_rec = self.db.get_book(book_id)
+            if book_rec:
+                book_title = str(book_rec.get("title") or "")
+
+        from_display = event.from_label or event.from_model
+        to_display = event.to_label or event.to_model
+        saved = self.db.record_model_switch(
+            role=event.role,
+            from_model=from_display,
+            to_model=to_display,
+            reason=event.reason,
+            book_id=book_id,
+            book_title=book_title,
+            chapter=chapter,
+            status_code=event.status_code,
+            upstream_code=event.upstream_code,
+            created_at=event.timestamp,
+        )
+        self._emit(
+            SSE_CPA_QUOTA_ALERT,
+            book_id=book_id,
+            chapter=chapter,
+            message=f"角色 {event.role} 模型已从 {from_display} 切到 {to_display}（原因：{event.reason}）",
+            data={
+                "kind": "model_switched",
+                "event_id": saved["id"],
+                "role": event.role,
+                "from_model": from_display,
+                "to_model": to_display,
+                "from_model_id": event.from_model,
+                "to_model_id": event.to_model,
+                "reason": event.reason,
+                "book_title": book_title,
+                "status_code": event.status_code,
+                "upstream_code": event.upstream_code,
+            },
+        )
 
     def _emit(
         self,
@@ -704,6 +752,14 @@ class MatrixScheduler:
             )
 
         started_monotonic = time.monotonic()
+        prev_ctx = (
+            getattr(self._thread_ctx, "book_id", ""),
+            getattr(self._thread_ctx, "book_title", ""),
+            getattr(self._thread_ctx, "chapter", 0),
+        )
+        self._thread_ctx.book_id = book_id
+        self._thread_ctx.book_title = str(book.get("title") or "")
+        self._thread_ctx.chapter = int(next_scene.chapter)
         try:
             manifest = engine.run(target_chapters=[next_scene.chapter], resume=False, on_progress=_forward_progress)
         except ProductionGateFailure as exc:
@@ -742,6 +798,8 @@ class MatrixScheduler:
                 },
             )
             return {"book_id": book_id, "status": BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value, "error": str(exc)}
+        finally:
+            self._thread_ctx.book_id, self._thread_ctx.book_title, self._thread_ctx.chapter = prev_ctx
 
         chapters_dir = output_dir / "chapters"
         ch_path = resolve_chapter_path(chapters_dir, next_scene.chapter)
@@ -1052,6 +1110,15 @@ class MatrixScheduler:
                         f"({existing.base_url!r} -> {binding.base_url!r}) requires re-provisioning "
                         "credentials; existing API keys are not reused across origins."
                     )
+                next_rotation: Tuple[str, ...] = existing.rotation_models
+                if existing.model_whitelist:
+                    if binding.model in existing.manual_only_models:
+                        next_rotation = ()
+                    elif binding.model in existing.rotation_models:
+                        idx = existing.rotation_models.index(binding.model)
+                        next_rotation = existing.rotation_models[idx:]
+                    else:
+                        next_rotation = ()
                 new_cfg = RoleEndpointConfig(
                     role=binding.role,
                     base_url=binding.base_url,
@@ -1066,6 +1133,11 @@ class MatrixScheduler:
                     input_cost_per_1m=existing.input_cost_per_1m,
                     output_cost_per_1m=existing.output_cost_per_1m,
                     image_cost_per_call=existing.image_cost_per_call,
+                    model_whitelist=existing.model_whitelist,
+                    rotation_models=next_rotation,
+                    manual_only_models=existing.manual_only_models,
+                    model_cooldown_sec=existing.model_cooldown_sec,
+                    model_labels=dict(existing.model_labels),
                 )
                 router.update_role(new_cfg)
             else:

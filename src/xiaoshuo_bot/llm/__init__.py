@@ -22,6 +22,22 @@ from .cpa_manager import CPAManagementClient
 from .mock_fault import FaultInjectionProvider
 from .openai_compat import OpenAICompatibleProvider
 from .router import RoleEndpointConfig, RoleModelRouter, UsageBudgetLedger, VALID_ROLES
+from .workbuddy_policy import (
+    ModelSwitchEvent,
+    WORKBUDDY_MANUAL_ONLY_SLOTS,
+    WORKBUDDY_PLANNER_ROTATION_SLOTS,
+    WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
+    WORKBUDDY_SLOT_DISPLAY_NAMES,
+    WORKBUDDY_SLOT_HY4,
+    WORKBUDDY_SLOT_HY4_FLASH,
+    WORKBUDDY_SLOT_MIMO_V2_6_PRO,
+    WORKBUDDY_WHITELIST_SLOTS,
+    WORKBUDDY_WRITER_ROTATION_SLOTS,
+    classify_workbuddy_quota_exhausted,
+    find_forbidden_model_reason,
+    validate_workbuddy_model_allowed,
+    validate_workbuddy_rotation_chain,
+)
 
 __all__ = [
     "AnthropicProvider",
@@ -40,6 +56,7 @@ __all__ = [
     "LLMRequestError",
     "LLMResponse",
     "LLMStreamTruncatedError",
+    "ModelSwitchEvent",
     "OpenAICompatibleProvider",
     "QuotaExhaustedError",
     "RoleEndpointConfig",
@@ -47,6 +64,19 @@ __all__ = [
     "SHANGHAI_TZ",
     "UsageBudgetLedger",
     "VALID_ROLES",
+    "WORKBUDDY_MANUAL_ONLY_SLOTS",
+    "WORKBUDDY_PLANNER_ROTATION_SLOTS",
+    "WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH",
+    "WORKBUDDY_SLOT_DISPLAY_NAMES",
+    "WORKBUDDY_SLOT_HY4",
+    "WORKBUDDY_SLOT_HY4_FLASH",
+    "WORKBUDDY_SLOT_MIMO_V2_6_PRO",
+    "WORKBUDDY_WHITELIST_SLOTS",
+    "WORKBUDDY_WRITER_ROTATION_SLOTS",
+    "classify_workbuddy_quota_exhausted",
+    "find_forbidden_model_reason",
     "parse_model_reasoning_suffix",
     "redact_secrets",
+    "validate_workbuddy_model_allowed",
+    "validate_workbuddy_rotation_chain",
 ]

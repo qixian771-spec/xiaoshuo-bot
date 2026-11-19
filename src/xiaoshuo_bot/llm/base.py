@@ -67,9 +67,20 @@ def estimate_usage_from_text(
 class LLMRequestError(LLMError):
     """Raised on upstream HTTP/network errors with secrets redacted."""
 
-    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        error_code: Optional[str] = None,
+        upstream_code: Optional[str] = None,
+        response_body: str = "",
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.error_code = (str(error_code).strip() if error_code is not None else "") or None
+        self.upstream_code = (str(upstream_code).strip() if upstream_code is not None else "") or None
+        self.response_body = str(response_body or "")
 
 
 class QuotaExhaustedError(LLMError):
