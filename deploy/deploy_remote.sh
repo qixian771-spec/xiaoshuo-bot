@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Zero-Fallback Remote Deployment Script for Korea Cloud Server
+# Safe Wheel Release Script for Korea Cloud Server (aligned with wheel-only release method).
+# Strictly deploys xiaoshuo-bot wheel into /opt/xiaoshuo-bot/.venv ONLY:
+#   - Creates pre-change backup under /root/backup-<timestamp>/ (data, /etc/xiaoshuo-bot, previous release)
+#   - Installs wheel via: /opt/xiaoshuo-bot/.venv/bin/pip install --force-reinstall --no-deps <wheel>
+#   - Restarts ONLY xiaoshuo-bot.service and verifies is-active + http://127.0.0.1:8080/api/health == 200
+#   - Automatically rolls back to the previous release wheel on verification failure
+#
+# HARD PROHIBITIONS (enforced by tests/test_deploy_configs.py):
+#   - NEVER touches, overwrites, enables, or restarts CPA service or /opt/cli-proxy-api/config.yaml
+#   - NEVER installs or touches any reverse proxy or TLS port (leaves existing proxy/VPN untouched)
+#
 # Usage:
-#   ./deploy/deploy_remote.sh --host <SERVER_IP> --key <SSH_PRIVATE_KEY> --wheel <PATH_TO_WHL> [options]
+#   ./deploy/deploy_remote.sh --host <SSH_HOST_OR_ALIAS> --wheel <PATH_TO_WHL> [--key <SSH_KEY>] [options]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -14,25 +24,21 @@ SSH_PORT="22"
 SSH_KEY=""
 WHEEL_PATH=""
 TESTS_DIR="${REPO_ROOT}/tests"
-CADDYFILE_PATH="${SCRIPT_DIR}/Caddyfile.example"
-CPA_UNIT_PATH="${SCRIPT_DIR}/cpa.service"
-BOT_UNIT_PATH="${SCRIPT_DIR}/xiaoshuo-bot.service"
 MIN_DISK_GB="5"
 
 usage() {
   cat <<'EOF'
-Usage: deploy_remote.sh --host <SERVER_IP> --key <SSH_KEY> --wheel <WHEEL_FILE> [options]
+Usage: deploy_remote.sh --host <HOST_OR_ALIAS> --wheel <WHEEL_FILE> [options]
 
 Required:
-  --host <ip>          Target Korea server IP or hostname (no hardcoded default)
-  --key <path>         Path to SSH private key
-  --wheel <path>       Path to built xiaoshuo_bot-*.whl release package
+  --host <host>        Target server IP, hostname, or SSH config alias (no hardcoded default)
+  --wheel <path>       Path to built xiaoshuo_bot-*.whl package (built with: pip wheel --no-deps)
 
 Optional:
+  --key <path>         Path to SSH private key (optional when using SSH config host alias)
   --user <name>        Remote SSH user (default: root)
   --port <num>         Remote SSH port (default: 22)
   --tests-dir <dir>    Local tests directory to run in remote venv (default: <repo>/tests)
-  --caddyfile <path>   Caddyfile to install (default: deploy/Caddyfile.example)
   --min-disk-gb <num>  Minimum free GiB required on /opt (default: 5)
 EOF
 }
@@ -63,10 +69,6 @@ while [[ $# -gt 0 ]]; do
       TESTS_DIR="${2:?Missing value for --tests-dir}"
       shift 2
       ;;
-    --caddyfile)
-      CADDYFILE_PATH="${2:?Missing value for --caddyfile}"
-      shift 2
-      ;;
     --min-disk-gb)
       MIN_DISK_GB="${2:?Missing value for --min-disk-gb}"
       shift 2
@@ -83,13 +85,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${REMOTE_HOST}" || -z "${SSH_KEY}" || -z "${WHEEL_PATH}" ]]; then
-  echo "ERROR: --host, --key, and --wheel are strictly required." >&2
+if [[ -z "${REMOTE_HOST}" || -z "${WHEEL_PATH}" ]]; then
+  echo "ERROR: --host and --wheel are strictly required." >&2
   usage >&2
   exit 1
 fi
 
-if [[ ! -f "${SSH_KEY}" ]]; then
+if [[ -n "${SSH_KEY}" && ! -f "${SSH_KEY}" ]]; then
   echo "ERROR: SSH key file not found: ${SSH_KEY}" >&2
   exit 1
 fi
@@ -104,43 +106,33 @@ if [[ ! -d "${TESTS_DIR}" ]]; then
   exit 1
 fi
 
-for required_file in "${CPA_UNIT_PATH}" "${BOT_UNIT_PATH}" "${CADDYFILE_PATH}"; do
-  if [[ ! -f "${required_file}" ]]; then
-    echo "ERROR: Required deploy artifact not found: ${required_file}" >&2
-    exit 1
-  fi
-done
-
 SSH_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 SSH_OPTS=(
-  -i "${SSH_KEY}"
   -p "${SSH_PORT}"
   -o BatchMode=yes
   -o StrictHostKeyChecking=accept-new
   -o ConnectTimeout=15
 )
 SCP_OPTS=(
-  -i "${SSH_KEY}"
   -P "${SSH_PORT}"
   -o BatchMode=yes
   -o StrictHostKeyChecking=accept-new
   -o ConnectTimeout=15
 )
+if [[ -n "${SSH_KEY}" ]]; then
+  SSH_OPTS+=(-i "${SSH_KEY}")
+  SCP_OPTS+=(-i "${SSH_KEY}")
+fi
 
-RELEASE_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+RELEASE_ID="$(date +%Y%m%d-%H%M%S)"
 REMOTE_STAGE="/opt/xiaoshuo-bot/_releases/${RELEASE_ID}"
+BACKUP_DIR="/root/backup-${RELEASE_ID}"
 WHEEL_BASENAME="$(basename "${WHEEL_PATH}")"
 
-echo "[1/7] Running remote pre-flight checks (disk >= ${MIN_DISK_GB}G, python3 >= 3.10, permissions 0600/0700)..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${MIN_DISK_GB}" "${REMOTE_STAGE}" <<'REMOTE_PREFLIGHT'
+echo "[1/7] Running remote read-only pre-flight checks (disk >= ${MIN_DISK_GB}G, python3 >= 3.10, permissions 0600/0700)..."
+ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${MIN_DISK_GB}" <<'REMOTE_PREFLIGHT'
 set -euo pipefail
 min_gb="$1"
-stage_dir="$2"
-
-mkdir -p /opt/xiaoshuo-bot /opt/xiaoshuo-bot/data /opt/xiaoshuo-bot/projects /opt/xiaoshuo-bot/_releases /opt/xiaoshuo-bot/_archive
-mkdir -p /opt/cli-proxy-api /opt/cli-proxy-api/auth-files
-mkdir -p /var/log/xiaoshuo-bot /var/log/cli-proxy-api
-mkdir -p "${stage_dir}"
 
 avail_kb="$(df -Pk /opt | awk 'NR==2 {print $4}')"
 min_kb="$((min_gb * 1024 * 1024))"
@@ -157,7 +149,8 @@ fi
 python3 -c 'import sys; assert sys.version_info >= (3, 10), f"Need Python >= 3.10, got {sys.version}"'
 
 if ! getent passwd xiaoshuo >/dev/null; then
-  useradd --system --home-dir /opt/xiaoshuo-bot --shell /usr/sbin/nologin xiaoshuo
+  echo "ERROR: System user xiaoshuo does not exist on target server." >&2
+  exit 1
 fi
 
 if [[ ! -f /etc/xiaoshuo-bot/xiaoshuo.env ]]; then
@@ -170,8 +163,6 @@ if grep -q '__REPLACE_WITH_' /etc/xiaoshuo-bot/xiaoshuo.env; then
   exit 1
 fi
 
-# The admin API is reachable through Caddy even though it binds 127.0.0.1, so a strong
-# XIAOSHUO_ADMIN_TOKEN is mandatory (server/auth.py refuses to start without one as well).
 admin_token_line="$(grep -E '^[[:space:]]*XIAOSHUO_ADMIN_TOKEN=' /etc/xiaoshuo-bot/xiaoshuo.env | tail -n 1 || echo '')"
 admin_token_val="$(printf '%s' "${admin_token_line#*=}" | tr -d "[:space:]\"'")"
 if [[ -z "${admin_token_line}" || "${#admin_token_val}" -lt 24 ]]; then
@@ -183,18 +174,25 @@ if [[ "${admin_token_val^^}" == *REPLACE* ]]; then
   exit 1
 fi
 
+env_mode="$(stat -c '%a' /etc/xiaoshuo-bot/xiaoshuo.env)"
+if [[ "${env_mode}" != "600" ]]; then
+  echo "ERROR: /etc/xiaoshuo-bot/xiaoshuo.env mode is ${env_mode}, expected 0600." >&2
+  exit 1
+fi
+
+# Read-only CPA safety checks (NEVER modify CPA binary, config, or service unit here)
+if [[ ! -x /opt/cli-proxy-api/cli-proxy-api ]]; then
+  echo "ERROR: Missing or non-executable CPA binary at /opt/cli-proxy-api/cli-proxy-api." >&2
+  exit 1
+fi
+
 if [[ ! -f /opt/cli-proxy-api/config.yaml ]]; then
-  echo "ERROR: Missing /opt/cli-proxy-api/config.yaml; install CPA config before deploying." >&2
+  echo "ERROR: Missing /opt/cli-proxy-api/config.yaml." >&2
   exit 1
 fi
 
 if grep -q '__REPLACE_WITH_' /opt/cli-proxy-api/config.yaml; then
   echo "ERROR: /opt/cli-proxy-api/config.yaml still contains unreplaced __REPLACE_WITH_ placeholders." >&2
-  exit 1
-fi
-
-if [[ ! -x /opt/cli-proxy-api/cli-proxy-api ]]; then
-  echo "ERROR: Missing or non-executable CPA binary at /opt/cli-proxy-api/cli-proxy-api." >&2
   exit 1
 fi
 
@@ -218,28 +216,43 @@ if ! grep -Eq '^[[:space:]]*disable-image-generation:[[:space:]]*false([[:space:
   exit 1
 fi
 
-chown root:root /etc/xiaoshuo-bot/xiaoshuo.env
-chmod 0600 /etc/xiaoshuo-bot/xiaoshuo.env
-env_mode="$(stat -c '%a' /etc/xiaoshuo-bot/xiaoshuo.env)"
-if [[ "${env_mode}" != "600" ]]; then
-  echo "ERROR: /etc/xiaoshuo-bot/xiaoshuo.env mode is ${env_mode}, expected 600." >&2
-  exit 1
-fi
-
-chown xiaoshuo:xiaoshuo /opt/cli-proxy-api/auth-files
-chmod 0700 /opt/cli-proxy-api/auth-files
 auth_mode="$(stat -c '%a' /opt/cli-proxy-api/auth-files)"
 if [[ "${auth_mode}" != "700" ]]; then
-  echo "ERROR: /opt/cli-proxy-api/auth-files mode is ${auth_mode}, expected 700." >&2
+  echo "ERROR: /opt/cli-proxy-api/auth-files mode is ${auth_mode}, expected 0700." >&2
   exit 1
 fi
 
-chmod 0600 /opt/cli-proxy-api/config.yaml
-chown xiaoshuo:xiaoshuo /opt/cli-proxy-api/config.yaml /var/log/cli-proxy-api
-chown -R xiaoshuo:xiaoshuo /opt/xiaoshuo-bot/data /opt/xiaoshuo-bot/projects /var/log/xiaoshuo-bot
+if [[ ! -x /opt/xiaoshuo-bot/.venv/bin/pip || ! -x /opt/xiaoshuo-bot/.venv/bin/python ]]; then
+  echo "ERROR: Missing isolated venv at /opt/xiaoshuo-bot/.venv." >&2
+  exit 1
+fi
 REMOTE_PREFLIGHT
 
-echo "[2/7] Syncing release wheel, systemd units, Caddyfile, tests, and read-only test fixtures to ${REMOTE_STAGE}..."
+echo "[2/7] Creating mandatory pre-change server backup at ${BACKUP_DIR}..."
+ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${BACKUP_DIR}" "${REMOTE_STAGE}" <<'REMOTE_BACKUP'
+set -euo pipefail
+backup_dir="$1"
+stage_dir="$2"
+
+mkdir -p "${backup_dir}"
+cp -a /opt/xiaoshuo-bot/data "${backup_dir}/data"
+cp -a /etc/xiaoshuo-bot "${backup_dir}/etc-xiaoshuo-bot"
+
+prev_rel=""
+prev_whl=""
+if [[ -d /opt/xiaoshuo-bot/_releases ]]; then
+  prev_rel="$(ls -1 /opt/xiaoshuo-bot/_releases | sort | tail -n 1 || echo '')"
+  if [[ -n "${prev_rel}" ]]; then
+    prev_whl="$(ls -1 /opt/xiaoshuo-bot/_releases/"${prev_rel}"/xiaoshuo_bot-*.whl | head -n 1 || echo '')"
+  fi
+fi
+printf '%s\n' "${prev_rel}" > "${backup_dir}/previous_release.txt"
+printf '%s\n' "${prev_whl}" > "${backup_dir}/previous_wheel.txt"
+
+mkdir -p "${stage_dir}"
+REMOTE_BACKUP
+
+echo "[3/7] Uploading wheel ${WHEEL_BASENAME}, tests, and read-only test fixtures to ${REMOTE_STAGE}..."
 for required_fixture in \
   "${REPO_ROOT}/deploy" \
   "${REPO_ROOT}/projects/baiwu_dukou" \
@@ -253,12 +266,7 @@ do
   fi
 done
 
-scp "${SCP_OPTS[@]}" \
-  "${WHEEL_PATH}" \
-  "${CPA_UNIT_PATH}" \
-  "${BOT_UNIT_PATH}" \
-  "${CADDYFILE_PATH}" \
-  "${SSH_TARGET}:${REMOTE_STAGE}/"
+scp "${SCP_OPTS[@]}" "${WHEEL_PATH}" "${SSH_TARGET}:${REMOTE_STAGE}/"
 
 tar --exclude='__pycache__' --exclude='*.pyc' \
   -C "$(dirname "${TESTS_DIR}")" -cf - "$(basename "${TESTS_DIR}")" \
@@ -268,18 +276,30 @@ tar --exclude='__pycache__' --exclude='*.pyc' \
   -C "${REPO_ROOT}" -cf - deploy projects/baiwu_dukou pyproject.toml .gitignore src \
   | ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "tar -C '${REMOTE_STAGE}' -xf -"
 
-echo "[3/7] Installing ${WHEEL_BASENAME} into isolated /opt/xiaoshuo-bot/.venv..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${REMOTE_STAGE}" "${WHEEL_BASENAME}" <<'REMOTE_INSTALL'
+rollback_previous_wheel() {
+  echo "ERROR: Deployment failed; attempting automatic rollback to previous release wheel..." >&2
+  ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${BACKUP_DIR}" <<'REMOTE_ROLLBACK'
+set -euo pipefail
+backup_dir="$1"
+prev_whl="$(cat "${backup_dir}/previous_wheel.txt")"
+if [[ -z "${prev_whl}" || ! -f "${prev_whl}" ]]; then
+  echo "ERROR: No previous wheel found in ${backup_dir}/previous_wheel.txt for rollback." >&2
+  exit 1
+fi
+/opt/xiaoshuo-bot/.venv/bin/pip install --force-reinstall --no-deps "${prev_whl}"
+systemctl restart xiaoshuo-bot.service
+systemctl is-active --quiet xiaoshuo-bot.service
+echo "ROLLBACK_OK: restored ${prev_whl}" >&2
+REMOTE_ROLLBACK
+}
+
+echo "[4/7] Installing ${WHEEL_BASENAME} into /opt/xiaoshuo-bot/.venv (--force-reinstall --no-deps)..."
+if ! ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${REMOTE_STAGE}" "${WHEEL_BASENAME}" <<'REMOTE_INSTALL'
 set -euo pipefail
 stage_dir="$1"
 wheel_name="$2"
 
-if [[ ! -x /opt/xiaoshuo-bot/.venv/bin/python ]]; then
-  python3 -m venv /opt/xiaoshuo-bot/.venv
-fi
-
-/opt/xiaoshuo-bot/.venv/bin/python -m pip install --upgrade pip
-/opt/xiaoshuo-bot/.venv/bin/python -m pip install --upgrade --force-reinstall "${stage_dir}/${wheel_name}"
+/opt/xiaoshuo-bot/.venv/bin/pip install --force-reinstall --no-deps "${stage_dir}/${wheel_name}"
 /opt/xiaoshuo-bot/.venv/bin/xiaoshuo-bot --help >/dev/null
 
 (
@@ -304,9 +324,13 @@ assert font_files, f"No bundled font files in {fonts_dir}"
 '
 )
 REMOTE_INSTALL
+then
+  rollback_previous_wheel
+  exit 1
+fi
 
-echo "[4/7] Running cloud-compatible test suite inside isolated remote venv before switching services..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${REMOTE_STAGE}" <<'REMOTE_TESTS'
+echo "[5/7] Running cloud-compatible test suite inside isolated remote venv before restarting xiaoshuo-bot..."
+if ! ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${REMOTE_STAGE}" <<'REMOTE_TESTS'
 set -euo pipefail
 stage_dir="$1"
 
@@ -359,56 +383,26 @@ done
     /opt/xiaoshuo-bot/.venv/bin/python -m unittest -v "${cloud_tests[@]}"
 )
 REMOTE_TESTS
-
-echo "[5/7] Validating Caddyfile, installing systemd units & Caddyfile, and reloading systemd..."
-CADDY_BASENAME="$(basename "${CADDYFILE_PATH}")"
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s -- "${REMOTE_STAGE}" "${CADDY_BASENAME}" "${RELEASE_ID}" <<'REMOTE_UNITS'
-set -euo pipefail
-stage_dir="$1"
-caddy_name="$2"
-rel_id="$3"
-
-# Substitute the HTTPS site address from the env file (Caddy's systemd unit does not load it).
-domain_line="$(grep -E '^[[:space:]]*XIAOSHUO_DOMAIN=' /etc/xiaoshuo-bot/xiaoshuo.env | tail -n 1 || echo '')"
-xiaoshuo_domain="$(printf '%s' "${domain_line#*=}" | tr -d "[:space:]\"'")"
-if grep -q '{\$XIAOSHUO_DOMAIN}' "${stage_dir}/${caddy_name}"; then
-  if [[ ! "${xiaoshuo_domain}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
-    echo "ERROR: XIAOSHUO_DOMAIN in /etc/xiaoshuo-bot/xiaoshuo.env must be a valid DNS name for Caddy auto-HTTPS." >&2
-    exit 1
-  fi
-  sed -i "s/{\\\$XIAOSHUO_DOMAIN}/${xiaoshuo_domain}/g" "${stage_dir}/${caddy_name}"
+then
+  rollback_previous_wheel
+  exit 1
 fi
 
-caddy validate --config "${stage_dir}/${caddy_name}" --adapter caddyfile
-
-install -m 0644 -o root -g root "${stage_dir}/cpa.service" /etc/systemd/system/cpa.service
-install -m 0644 -o root -g root "${stage_dir}/xiaoshuo-bot.service" /etc/systemd/system/xiaoshuo-bot.service
-
-if [[ -f /etc/caddy/Caddyfile ]]; then
-  cp /etc/caddy/Caddyfile "/opt/xiaoshuo-bot/_archive/Caddyfile.${rel_id}.bak"
-fi
-mkdir -p /etc/caddy
-install -m 0644 -o root -g root "${stage_dir}/${caddy_name}" /etc/caddy/Caddyfile
-
-systemctl daemon-reload
-systemctl enable cpa.service xiaoshuo-bot.service caddy.service
-REMOTE_UNITS
-
-echo "[6/7] Atomically restarting cpa, xiaoshuo-bot, and caddy..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s <<'REMOTE_RESTART'
+echo "[6/7] Restarting ONLY xiaoshuo-bot.service (leaving CPA, proxy, and VPN untouched)..."
+if ! ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s <<'REMOTE_RESTART'
 set -euo pipefail
-systemctl restart cpa.service
 systemctl restart xiaoshuo-bot.service
-systemctl restart caddy.service
 REMOTE_RESTART
+then
+  rollback_previous_wheel
+  exit 1
+fi
 
-echo "[7/7] Verifying /api/health, systemd active status, 0600/0700 perms, and 127.0.0.1:8317 loopback lock..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s <<'REMOTE_VERIFY'
+echo "[7/7] Verifying xiaoshuo-bot active status, /api/health HTTP 200, loopback 127.0.0.1:8317, and 0600/0700 perms..."
+if ! ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" bash -s <<'REMOTE_VERIFY'
 set -euo pipefail
 
-systemctl is-active --quiet cpa.service
 systemctl is-active --quiet xiaoshuo-bot.service
-systemctl is-active --quiet caddy.service
 
 health_ok=0
 for attempt in $(seq 1 20); do
@@ -427,7 +421,7 @@ done
 
 if [[ "${health_ok}" -ne 1 ]]; then
   echo "ERROR: /api/health failed to report status=ok within 20 seconds." >&2
-  systemctl status cpa.service xiaoshuo-bot.service --no-pager >&2
+  systemctl status xiaoshuo-bot.service --no-pager >&2
   exit 1
 fi
 
@@ -449,6 +443,10 @@ if [[ "${env_mode}" != "600" || "${auth_mode}" != "700" ]]; then
   echo "ERROR: Permission check failed (xiaoshuo.env=${env_mode}, auth-files=${auth_mode})." >&2
   exit 1
 fi
-
-echo "SUCCESS: Deployment verified. /api/health=ok, 8317 loopback-only, perms 0600/0700."
 REMOTE_VERIFY
+then
+  rollback_previous_wheel
+  exit 1
+fi
+
+echo "[OK] Wheel release ${RELEASE_ID} deployed cleanly to ${REMOTE_HOST} (backup: ${BACKUP_DIR})."

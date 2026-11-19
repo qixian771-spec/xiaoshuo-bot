@@ -224,12 +224,6 @@ class TestDeployConfigs(unittest.TestCase):
         self.assertIn('Strict-Transport-Security "max-age=31536000"', active)
         self.assertIn("Content-Security-Policy", active)
         self.assertIn("frame-ancestors 'none'", active)
-        # deploy script must substitute XIAOSHUO_DOMAIN before caddy validate
-        script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-        subst_idx = script.find("XIAOSHUO_DOMAIN}/${xiaoshuo_domain}/g")
-        validate_idx = script.find('caddy validate --config "${stage_dir}/${caddy_name}"')
-        self.assertNotEqual(subst_idx, -1)
-        self.assertLess(subst_idx, validate_idx)
         env_text = ENV_EXAMPLE.read_text(encoding="utf-8")
         self.assertIn("XIAOSHUO_DOMAIN=__REPLACE_WITH_", env_text)
 
@@ -316,17 +310,79 @@ class TestDeployConfigs(unittest.TestCase):
         self.assertIn("(3, 10)", text)
         self.assertIn("df -Pk", text)
 
-        # Caddyfile must be validated from staging BEFORE overwriting /etc/caddy/Caddyfile
-        validate_idx = text.find('caddy validate --config "${stage_dir}/${caddy_name}"')
-        install_caddy_idx = text.find('install -m 0644 -o root -g root "${stage_dir}/${caddy_name}" /etc/caddy/Caddyfile')
-        self.assertNotEqual(validate_idx, -1, "Missing pre-install caddy validate on staged Caddyfile")
-        self.assertNotEqual(install_caddy_idx, -1, "Missing /etc/caddy/Caddyfile install command")
-        self.assertLess(validate_idx, install_caddy_idx, "caddy validate must run BEFORE overwriting /etc/caddy/Caddyfile")
-
         # Required fixtures synced to stage
         for fixture_rel in ("deploy", "projects/baiwu_dukou", "pyproject.toml", ".gitignore", "src"):
             self.assertIn(fixture_rel, text, f"deploy_remote.sh must stage {fixture_rel}")
             self.assertTrue((REPO_ROOT / fixture_rel).exists(), f"Missing repo fixture {fixture_rel}")
+
+    @staticmethod
+    def _validate_deploy_remote_safety(script_text: str) -> list[str]:
+        """Return list of safety violations if deploy_remote.sh touches cpa.service, Caddy, trojan, nginx, or port 443."""
+        active_lines = [
+            ln for ln in script_text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        active = "\n".join(active_lines)
+        violations: list[str] = []
+        forbidden_patterns = (
+            (r"\bcpa\.service\b", "must not reference or touch cpa.service"),
+            (r"cpa-workbuddy\.service", "must not touch cpa-workbuddy.service"),
+            (r"/etc/systemd/system/", "must not overwrite systemd unit files"),
+            (r"\bcaddy\b", "must not install, validate, enable, or restart Caddy"),
+            (r"Caddyfile", "must not install or touch Caddyfile"),
+            (r"\b443\b", "must not touch or bind port 443 (reserved for trojan)"),
+            (r"\btrojan\b", "must not touch trojan"),
+            (r"\bnginx\b", "must not touch nginx"),
+            (r"(?:install|cp|mv|tee|sed\s+-i|chmod|chown)\b[^\n]*/opt/cli-proxy-api/config\.yaml", "must not modify CPA config.yaml"),
+        )
+        for pat, desc in forbidden_patterns:
+            if re.search(pat, active, re.IGNORECASE):
+                violations.append(f"Forbidden pattern {pat!r}: {desc}")
+        required_snippets = (
+            "/root/backup-",
+            "cp -a /opt/xiaoshuo-bot/data",
+            "cp -a /etc/xiaoshuo-bot",
+            "previous_release.txt",
+            "previous_wheel.txt",
+            "/opt/xiaoshuo-bot/.venv/bin/pip install --force-reinstall --no-deps",
+            "systemctl restart xiaoshuo-bot.service",
+            "systemctl is-active --quiet xiaoshuo-bot.service",
+            "rollback_previous_wheel",
+        )
+        for req in required_snippets:
+            if req not in active:
+                violations.append(f"Missing required release-method step: {req!r}")
+        return violations
+
+    def test_task3_deploy_remote_sh_matches_wheel_release_method_and_never_touches_cpa_or_443(self) -> None:
+        text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        self.assertEqual(self._validate_deploy_remote_safety(text), [])
+
+        # Backup must occur BEFORE wheel installation and service restart (non-comment execution order)
+        active = "\n".join(
+            ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+        )
+        backup_idx = active.find("cp -a /opt/xiaoshuo-bot/data")
+        install_idx = active.find('/opt/xiaoshuo-bot/.venv/bin/pip install --force-reinstall --no-deps "${stage_dir}/${wheel_name}"')
+        restart_idx = active.find("echo \"[6/7]")
+        self.assertNotEqual(backup_idx, -1)
+        self.assertNotEqual(install_idx, -1)
+        self.assertNotEqual(restart_idx, -1)
+        self.assertLess(backup_idx, install_idx)
+        self.assertLess(install_idx, restart_idx)
+
+        # Negative tamper tests: mutating the script to touch cpa.service, Caddy, or port 443 MUST fail
+        tamper_cases = (
+            ("overwrite_cpa_unit", "\ninstall -m 0644 cpa.service /etc/systemd/system/cpa.service\n"),
+            ("restart_cpa_service", "\nsystemctl restart cpa.service\n"),
+            ("install_caddy", "\ncaddy validate --config /etc/caddy/Caddyfile\n"),
+            ("touch_port_443", "\nss -tlnp | grep :443\n"),
+            ("touch_trojan", "\nsystemctl restart trojan\n"),
+            ("touch_nginx", "\nnginx -t\n"),
+        )
+        for name, injected in tamper_cases:
+            with self.subTest(tamper=name):
+                errs = self._validate_deploy_remote_safety(text + injected)
+                self.assertTrue(errs, f"Tamper mutation {name!r} should have been caught")
 
     def test_deploy_remote_sh_cloud_test_list_matches_repo_tests(self) -> None:
         text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
