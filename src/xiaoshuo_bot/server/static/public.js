@@ -49,9 +49,67 @@
     elapsedTimerId: 0,
     dotRafId: 0,
     dotPaths: [],
+    viewportScale: 1,
+    layoutMode: "landscape",
+    fitRafId: 0,
+    lastTermScrollTop: 0,
   };
 
   const $ = (id) => document.getElementById(id);
+
+  function applyViewportFit() {
+    const shell = $("cmd-shell");
+    if (!shell) return;
+    const vv = window.visualViewport;
+    const vw = Math.max(320, Math.round((vv && vv.width) || window.innerWidth || 1280));
+    const vh = Math.max(420, Math.round((vv && vv.height) || window.innerHeight || 760));
+    const isPortrait = vw < 820 && (vw / vh) < 0.92;
+    const nextLayout = isPortrait ? "portrait" : "landscape";
+    document.documentElement.dataset.layout = nextLayout;
+    state.layoutMode = nextLayout;
+
+    const designW = isPortrait ? 540 : 1320;
+    const designH = isPortrait ? 900 : 760;
+    const scale = Math.min(1, vw / designW, vh / designH);
+    const logicalW = Math.ceil(vw / scale);
+    const logicalH = Math.ceil(vh / scale);
+
+    shell.style.width = logicalW + "px";
+    shell.style.height = logicalH + "px";
+    shell.style.transform = scale < 0.999 ? ("scale(" + scale.toFixed(4) + ")") : "none";
+    state.viewportScale = scale;
+
+    if (state.pipeline) {
+      window.requestAnimationFrame(() => {
+        if (state.pipeline) drawWorkflowEdges(state.pipeline);
+      });
+    }
+  }
+
+  function scheduleViewportFit() {
+    if (state.fitRafId) return;
+    state.fitRafId = window.requestAnimationFrame(() => {
+      state.fitRafId = 0;
+      applyViewportFit();
+    });
+  }
+
+  function openWorksDrawer(showReader) {
+    const drawer = $("works-drawer");
+    if (!drawer) return;
+    drawer.hidden = false;
+    if (!showReader) {
+      $("reader").hidden = true;
+      if (state.book) $("book-panel").hidden = false;
+    }
+    drawer.scrollTop = 0;
+  }
+
+  function closeWorksDrawer() {
+    const drawer = $("works-drawer");
+    if (!drawer) return;
+    drawer.hidden = true;
+  }
 
   function route(tpl, params) {
     let out = tpl;
@@ -194,11 +252,13 @@
       wrap.appendChild(center);
 
       card.appendChild(wrap);
-      card.appendChild(el("div", "quota-ring-name", item.label || item.model || "模型"));
+      const metaBox = el("div", "quota-ring-meta");
+      metaBox.appendChild(el("div", "quota-ring-name", item.label || item.model || "模型"));
       const subText = item.manual_only
         ? "仅手动指定"
         : (hasQuota && item.reset_at ? ("重置 " + formatShanghaiTime(item.reset_at, { year: undefined, second: undefined })) : "暂未上报");
-      card.appendChild(el("div", "quota-ring-sub mono", subText));
+      metaBox.appendChild(el("div", "quota-ring-sub mono", subText));
+      card.appendChild(metaBox);
       container.appendChild(card);
     });
   }
@@ -280,6 +340,19 @@
     banner.appendChild(left);
     if (alert.timestamp) {
       banner.appendChild(el("span", "meb-time mono", formatShanghaiTime(alert.timestamp, { year: undefined })));
+    }
+    if (state.autoScroll) {
+      const tb = $("terminal-body");
+      if (tb) {
+        window.requestAnimationFrame(() => {
+          if (state.autoScroll) {
+            tb.scrollTop = tb.scrollHeight;
+            state.lastTermScrollTop = tb.scrollTop;
+            const jb = $("btn-term-bottom");
+            if (jb) jb.hidden = true;
+          }
+        });
+      }
     }
   }
 
@@ -529,10 +602,15 @@
     const svg = $("workflow-svg");
     if (!stageEl || !svg) return;
     const stageRect = stageEl.getBoundingClientRect();
-    if (stageRect.width <= 0 || stageRect.height <= 0) return;
+    const stageW = stageEl.offsetWidth;
+    const stageH = stageEl.offsetHeight;
+    if (stageRect.width <= 0 || stageRect.height <= 0 || stageW <= 0 || stageH <= 0) return;
+
+    const scaleX = stageRect.width / stageW;
+    const scaleY = stageRect.height / stageH;
 
     const svgNS = "http://www.w3.org/2000/svg";
-    svg.setAttribute("viewBox", "0 0 " + stageRect.width + " " + stageRect.height);
+    svg.setAttribute("viewBox", "0 0 " + stageW + " " + stageH);
     while (svg.firstChild) svg.removeChild(svg.firstChild);
 
     const defs = document.createElementNS(svgNS, "defs");
@@ -561,15 +639,21 @@
       const n = $("node-" + stageKey);
       if (!n) return null;
       const r = n.getBoundingClientRect();
+      const left = (r.left - stageRect.left) / scaleX;
+      const right = (r.right - stageRect.left) / scaleX;
+      const top = (r.top - stageRect.top) / scaleY;
+      const bottom = (r.bottom - stageRect.top) / scaleY;
+      const w = right - left;
+      const h = bottom - top;
       return {
-        left: r.left - stageRect.left,
-        right: r.right - stageRect.left,
-        top: r.top - stageRect.top,
-        bottom: r.bottom - stageRect.top,
-        cx: r.left - stageRect.left + r.width / 2,
-        cy: r.top - stageRect.top + r.height / 2,
-        w: r.width,
-        h: r.height,
+        left: left,
+        right: right,
+        top: top,
+        bottom: bottom,
+        cx: left + w / 2,
+        cy: top + h / 2,
+        w: w,
+        h: h,
       };
     }
 
@@ -577,7 +661,6 @@
     const pState = p ? String(p.state || "idle") : "idle";
     const isRunningOrRewriting = pState === "running" || pState === "rewriting";
     const activeStage = p ? String(p.active_stage || "") : "";
-    const isMobile = window.innerWidth <= 760;
 
     state.dotPaths = [];
 
@@ -589,19 +672,20 @@
       if (!a || !b) return;
 
       let d = "";
-      if (isMobile) {
-        d = "M " + a.cx + " " + a.bottom + " L " + b.cx + " " + (b.top - 4);
-      } else if (Math.abs(a.cy - b.cy) < 20) {
-        // Horizontal connection (Row 1 L->R or Row 2 R->L)
+      if (Math.abs(a.cy - b.cy) < 20) {
+        // Horizontal connection (L->R or R->L in both landscape 4x2 and portrait 2x4 snake)
         if (b.cx > a.cx) {
           d = "M " + a.right + " " + a.cy + " L " + (b.left - 4) + " " + b.cy;
         } else {
           d = "M " + a.left + " " + a.cy + " L " + (b.right + 4) + " " + b.cy;
         }
-      } else {
-        // Vertical turn draft -> gate on column 4
-        const xOff = a.cx - 18;
+      } else if (fromKey === "draft" && toKey === "gate") {
+        // Vertical turn draft -> gate leaves room on the right for the amber rewrite return arc
+        const xOff = a.cx - 22;
         d = "M " + xOff + " " + a.bottom + " L " + xOff + " " + (b.top - 4);
+      } else {
+        // Vertical snake turns (outline -> compile, polish -> lock in portrait mode)
+        d = "M " + a.cx + " " + a.bottom + " L " + b.cx + " " + (b.top - 4);
       }
 
       const fromSt = (stagesMap[fromKey] && stagesMap[fromKey].status) || "idle";
@@ -632,24 +716,16 @@
       }
     });
 
-    // Curved Rewrite Return Edge: gate -> draft (backward light-dot loop!)
+    // Curved Rewrite Return Edge: gate -> draft (backward light-dot loop in both 4x2 & 2x4!)
     const gateR = nodeRect("gate");
     const draftR = nodeRect("draft");
     if (gateR && draftR) {
       const isRewriteEdgeActive = pState === "rewriting" || (p && p.from_stage === "gate" && activeStage === "draft");
-      let dBack = "";
-      if (isMobile) {
-        const rightX = Math.min(stageRect.width - 6, Math.max(gateR.right, draftR.right) + 12);
-        dBack =
-          "M " + gateR.right + " " + gateR.cy +
-          " C " + rightX + " " + gateR.cy + ", " + rightX + " " + draftR.cy + ", " + (draftR.right + 4) + " " + draftR.cy;
-      } else {
-        const xLoop = gateR.cx + 26;
-        const bulge = Math.min(stageRect.width - 6, gateR.right + 22);
-        dBack =
-          "M " + xLoop + " " + gateR.top +
-          " C " + bulge + " " + (gateR.top - 10) + ", " + bulge + " " + (draftR.bottom + 10) + ", " + xLoop + " " + (draftR.bottom + 4);
-      }
+      const xLoop = gateR.cx + 22;
+      const bulge = Math.min(stageW - 6, gateR.right + 16);
+      const dBack =
+        "M " + xLoop + " " + gateR.top +
+        " C " + bulge + " " + (gateR.top - 8) + ", " + bulge + " " + (draftR.bottom + 8) + ", " + xLoop + " " + (draftR.bottom + 4);
 
       const backBase = document.createElementNS(svgNS, "path");
       backBase.setAttribute("d", dBack);
@@ -658,13 +734,16 @@
       svg.appendChild(backBase);
 
       const rewriteBadge = $("rewrite-loop-badge");
-      if (rewriteBadge && !isMobile) {
+      if (rewriteBadge) {
         const gapMidY = (draftR.bottom + gateR.top) / 2;
         rewriteBadge.style.top = gapMidY + "px";
-        rewriteBadge.style.right = Math.max(8, stageRect.width - gateR.right) + "px";
-      } else if (rewriteBadge && isMobile) {
-        rewriteBadge.style.top = "";
-        rewriteBadge.style.right = "";
+        if (state.layoutMode === "portrait") {
+          rewriteBadge.style.right = "auto";
+          rewriteBadge.style.left = Math.max(8, gateR.left + 8) + "px";
+        } else {
+          rewriteBadge.style.left = "auto";
+          rewriteBadge.style.right = Math.max(8, stageW - gateR.right) + "px";
+        }
       }
 
       if (isRewriteEdgeActive) {
@@ -745,6 +824,7 @@
     });
     if (state.autoScroll) {
       body.scrollTop = body.scrollHeight;
+      state.lastTermScrollTop = body.scrollTop;
       $("btn-term-bottom").hidden = true;
     }
   }
@@ -1048,6 +1128,53 @@
       card.appendChild(el("p", "", s.notes));
       styles.appendChild(card);
     });
+
+    renderWorksDock(b);
+  }
+
+  function renderWorksDock(b) {
+    const titleEl = $("dock-book-title");
+    const metaEl = $("dock-book-meta");
+    const hookEl = $("dock-hook");
+    const chBox = $("dock-chapters");
+    const headerBtn = $("btn-open-works");
+    if (!titleEl || !chBox) return;
+
+    if (!b) {
+      titleEl.textContent = "暂无已过审作品";
+      if (metaEl) metaEl.textContent = "";
+      if (hookEl) hookEl.hidden = true;
+      chBox.textContent = "";
+      return;
+    }
+
+    titleEl.textContent = "《" + b.title + "》";
+    const written = Number(b.written_chapters || (b.chapters ? b.chapters.length : 0));
+    const total = Number(b.total_chapters || 0);
+    if (metaEl) metaEl.textContent = written + "/" + total + " 章";
+    if (headerBtn) headerBtn.textContent = "作品阅读 · " + written + "章";
+
+    const hookText = b.current_plan ? String(b.current_plan.hook || "").trim() : "";
+    if (hookEl) {
+      hookEl.hidden = !hookText;
+      hookEl.textContent = hookText ? ("章末钩子：" + hookText) : "";
+    }
+
+    chBox.textContent = "";
+    const recent = (b.chapters || []).slice(-4).reverse();
+    const isPortrait = state.layoutMode === "portrait";
+    const limit = isPortrait ? 3 : 4;
+    recent.slice(0, limit).forEach((c) => {
+      const label = isPortrait ? ("第" + c.chapter + "章") : ("第" + c.chapter + "章 · " + c.title);
+      const btn = el("button", "dock-ch-btn", label);
+      btn.type = "button";
+      btn.title = "第 " + c.chapter + " 章 " + c.title;
+      btn.addEventListener("click", () => {
+        openWorksDrawer(true);
+        openChapter(c.chapter);
+      });
+      chBox.appendChild(btn);
+    });
   }
 
   async function loadShelf() {
@@ -1090,7 +1217,11 @@
     const idx = nums.indexOf(n);
     $("reader-prev").disabled = idx <= 0;
     $("reader-next").disabled = idx < 0 || idx >= nums.length - 1;
-    $("reader").scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+    const drawer = $("works-drawer");
+    if (drawer) {
+      drawer.hidden = false;
+      drawer.scrollTop = 0;
+    }
   }
 
   function stepChapter(delta) {
@@ -1238,14 +1369,21 @@
     }
     if (termBody && jumpBtn) {
       termBody.addEventListener("scroll", () => {
-        const nearBottom = (termBody.scrollHeight - termBody.scrollTop - termBody.clientHeight) < 28;
-        jumpBtn.hidden = nearBottom;
-        if (!nearBottom && state.autoScroll) {
+        const curTop = termBody.scrollTop;
+        const nearBottom = (termBody.scrollHeight - curTop - termBody.clientHeight) < 28;
+        const scrolledUp = curTop < state.lastTermScrollTop - 4;
+        state.lastTermScrollTop = curTop;
+        if (nearBottom) {
+          jumpBtn.hidden = true;
+        } else if (scrolledUp && state.autoScroll) {
           state.autoScroll = false;
+          jumpBtn.hidden = false;
           if (autoBtn) {
             autoBtn.classList.remove("is-on");
             autoBtn.textContent = "已暂停滚屏";
           }
+        } else if (!state.autoScroll) {
+          jumpBtn.hidden = false;
         }
       });
       jumpBtn.addEventListener("click", () => {
@@ -1255,6 +1393,7 @@
           autoBtn.textContent = "锁定滚屏";
         }
         termBody.scrollTop = termBody.scrollHeight;
+        state.lastTermScrollTop = termBody.scrollTop;
         jumpBtn.hidden = true;
       });
     }
@@ -1284,19 +1423,37 @@
     $("reader-prev").addEventListener("click", () => stepChapter(-1));
     $("reader-next").addEventListener("click", () => stepChapter(1));
 
+    const openHeaderBtn = $("btn-open-works");
+    const openDockBtn = $("btn-dock-open");
+    const closeDrawerBtn = $("btn-close-works");
+    if (openHeaderBtn) openHeaderBtn.addEventListener("click", () => openWorksDrawer(false));
+    if (openDockBtn) openDockBtn.addEventListener("click", () => openWorksDrawer(false));
+    if (closeDrawerBtn) closeDrawerBtn.addEventListener("click", () => closeWorksDrawer());
+    window.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") closeWorksDrawer();
+    });
+
+    window.addEventListener("resize", () => {
+      scheduleViewportFit();
+      if (state.book) renderWorksDock(state.book);
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", scheduleViewportFit);
+    }
+
     const stageEl = $("workflow-stage");
     if (typeof ResizeObserver !== "undefined" && stageEl) {
       const ro = new ResizeObserver(() => {
         if (state.pipeline) drawWorkflowEdges(state.pipeline);
       });
       ro.observe(stageEl);
-    } else {
-      window.addEventListener("resize", () => {
-        if (state.pipeline) drawWorkflowEdges(state.pipeline);
-      });
     }
   }
 
+  applyViewportFit();
   bindControls();
-  syncFullState().then(() => connectEvents());
+  syncFullState().then(() => {
+    applyViewportFit();
+    connectEvents();
+  });
 })();
