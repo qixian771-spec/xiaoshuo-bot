@@ -224,6 +224,11 @@ class _E2ECpaSimState:
                 names.extend(["陈牧野", "周成", "赵明"])
             self.pov_name, self.ally_name, self.rival_name = names[0], names[1], names[2]
         pov_name, ally_name, rival_name = self.pov_name, self.ally_name, self.rival_name
+        golden_beats = {
+            1: "破局激活与首笔立威",
+            2: "升级验证与规则边界试探",
+            3: "人前显圣与新地图铺路",
+        }
         scenes = []
         for ch in range(1, 16):
             scenes.append(
@@ -242,7 +247,7 @@ class _E2ECpaSimState:
                     "stop_condition": "反派吃瘪退场并引出下一环",
                     "min_chars": 1500,
                     "max_chars": 4500,
-                    "beat_type": "打脸反转" if ch % 2 == 1 else "危机加码",
+                    "beat_type": golden_beats.get(ch, "打脸反转" if ch % 2 == 1 else "危机加码"),
                     "emotion_polarity": "burst" if ch % 2 == 1 else "suppress",
                     "cliffhanger_hook": "更高层审计电话打进办公室",
                     "segment_comment_cue": "系统余额暴涨瞬间",

@@ -50,6 +50,11 @@ def _build_scene_dict(
     expectation_directives: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     polarity = emotion_polarity or ("burst" if chapter % 3 == 0 else ("suppress" if chapter % 3 == 1 else "mixed"))
+    beat_type = {
+        1: "破局激活与首笔立威",
+        2: "升级验证与规则边界试探",
+        3: "人前显圣与新地图铺路",
+    }.get(chapter, "escalate")
     return {
         "chapter": chapter,
         "scene_id": f"ch{chapter:04d}_scene",
@@ -65,7 +70,7 @@ def _build_scene_dict(
         "stop_condition": f"完成第{chapter}章悬念断章停笔",
         "min_chars": 2050,
         "max_chars": 2300,
-        "beat_type": "escalate",
+        "beat_type": beat_type,
         "emotion_polarity": polarity,
         "cliffhanger_hook": f"第{chapter}章末神秘指令弹出",
         "segment_comment_cue": "这波反杀太解气",

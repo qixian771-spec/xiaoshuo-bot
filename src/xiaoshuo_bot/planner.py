@@ -814,6 +814,32 @@ def _collect_scene_batch_errors(
             consecutive_suppress = 0
             suppress_run.clear()
 
+    # Golden-three-chapter beat alignment check (chapters 1..3 must match genre recipe beats)
+    if recipe is not None and recipe.golden_three_beats:
+        golden_beats_by_ch = {b.chapter: b for b in recipe.golden_three_beats}
+        for ch in (1, 2, 3):
+            if ch not in valid_scenes_by_ch or ch not in golden_beats_by_ch:
+                continue
+            sc = valid_scenes_by_ch[ch]
+            beat = golden_beats_by_ch[ch]
+            beat_type_val = _nonempty_str(sc.get("beat_type"))
+            if not beat_type_val:
+                errors.append(
+                    f"Chapter {ch}: missing 'beat_type' matching golden-three beat role {beat.role!r} "
+                    f"(genre={recipe.genre_id})"
+                )
+            elif beat.role not in beat_type_val:
+                errors.append(
+                    f"Chapter {ch}: beat_type {beat_type_val!r} does not match golden-three beat role "
+                    f"{beat.role!r} for genre {recipe.genre_id!r} "
+                    f"(expected beat_type to include {beat.role!r})"
+                )
+            if not _nonempty_str(sc.get("cliffhanger_hook")):
+                errors.append(
+                    f"Chapter {ch}: missing non-empty 'cliffhanger_hook' required by golden-three beat "
+                    f"{beat.role!r} (expected hook direction: {beat.chapter_end_hook})"
+                )
+
     return errors
 
 
@@ -857,6 +883,47 @@ def _collect_master_outline_batch_errors(
     if missing:
         errors.append(f"master_outline batch {start_ch}..{end_ch}: missing chapters {missing}")
     return errors
+
+
+def _format_recipe_title_and_blurb_block(recipe: GenreRecipe) -> str:
+    """Format genre title_templates, title_examples, and blurb_templates for bible planning."""
+    lines: List[str] = ["### 题材书名与简介模板参考（参考结构，严禁照抄范例人物与情节）"]
+    if recipe.title_templates:
+        lines.append("- 爆款书名句式模板：" + " ｜ ".join(recipe.title_templates))
+    if recipe.title_examples:
+        lines.append("- 同赛道书名范例（仅作结构参考，严禁照抄）：" + " / ".join(recipe.title_examples))
+    if recipe.blurb_templates:
+        lines.append("- 三段式简介范本（主简介与 3 版备选简介均须参照其冲突-金手指-推进结构，严禁照抄）：")
+        for idx, tmpl in enumerate(recipe.blurb_templates, start=1):
+            indented = "\n    ".join(tmpl.strip().splitlines())
+            lines.append(f"  范本{idx}:\n    {indented}")
+    return "\n".join(lines)
+
+
+def _format_recipe_golden_three_block(
+    recipe: GenreRecipe,
+    *,
+    chapter_range: Optional[Tuple[int, int]] = None,
+) -> str:
+    """Format genre opening_300w_directive and golden_three_beats for bible & scenes planning."""
+    lines: List[str] = [f"### 题材黄金三章节拍 blueprints（{recipe.display_name} / {recipe.genre_id}）"]
+    include_ch1 = chapter_range is None or (chapter_range[0] <= 1 <= chapter_range[1])
+    if include_ch1 and recipe.opening_300w_directive:
+        lines.append(f"- 第 1 章首屏黄金 300 字开局指令：{recipe.opening_300w_directive}")
+    beats = [
+        b
+        for b in recipe.golden_three_beats
+        if chapter_range is None or (chapter_range[0] <= b.chapter <= chapter_range[1])
+    ]
+    for b in beats:
+        lines.append(
+            f"- 第 {b.chapter} 章｜必填节拍定位（beat_type 必须包含此词）：「{b.role}」\n"
+            f"  - 开篇钩子：{b.opening_hook}\n"
+            f"  - 核心冲突：{b.core_conflict}\n"
+            f"  - 爽点/反转：{b.payoff_or_twist}\n"
+            f"  - 章末断章（cliffhanger_hook 方向）：{b.chapter_end_hook}"
+        )
+    return "\n".join(lines)
 
 
 def _three_act_position(start_ch: int, end_ch: int, total_chapters: int, author_level: str) -> str:
@@ -1577,14 +1644,19 @@ class AutoNovelPlanner:
             "你是番茄爆款总策划师。当前处于【阶段1：设定包 bible】。\n"
             "请严格输出单个 JSON 对象（不要输出 scenes 或 master_outline，也不要输出 JSON 以外的解释文字）。\n"
             "硬性约束：\n"
-            "1. project.title 与 5 个 project.alternate_titles 均须为 1~15 个字符，严禁包含书名号《》。\n"
-            "2. project.alternate_blurbs 必须恰好包含 3 版三段式简介；project.tweet_aliases 至少 1 个（建议 3 个）4~8 字纯简体常用汉字别名。\n"
+            "1. project.title 与 5 个 project.alternate_titles 均须为 1~15 个字符，严禁包含书名号《》，并参考下方赛道书名模板结构（严禁照抄范例）。\n"
+            "2. project.synopsis 与 3 版 project.alternate_blurbs（三段式简介）须参考下方赛道三段式简介范本结构（严禁照抄范本人物与情节）；project.tweet_aliases 至少 1 个（建议 3 个）4~8 字纯简体常用汉字别名。\n"
             "3. 所有角色姓名必须严格取自推荐安全角色名池，严禁黑名单人名、生僻字或同音名；default_pov_character 必须是 characters 中的某个 id。\n"
             "4. foreshadows 每条必须包含非空 plant_keywords 与 payoff_keywords（具体物理证据词），且 due_chapter >= plant_chapter。\n"
             "5. volume_cap_locks 必须至少包含一条 volume=1 的数值上限锁。\n"
-            "6. 必须严格遵循以下完整 JSON 格式样例（字段名、数据类型、必填项须完全一致）：\n"
+            "6. 所有角色身份、器物设定、初始余额、伏笔与世界观必须严格遵守下方【题材硬常识防穿帮卡】，严禁触发严禁穿帮项；人物与开局设定须预先支撑下方【题材黄金三章节拍】。\n"
+            "7. 必须严格遵循以下完整 JSON 格式样例（字段名、数据类型、必填项须完全一致）：\n"
             f"{json.dumps(_BIBLE_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
+
+        title_blurb_block = _format_recipe_title_and_blurb_block(recipe)
+        common_sense_block = recipe.common_sense_card.format_prompt_block()
+        golden_three_block = _format_recipe_golden_three_block(recipe)
 
         last_errors: List[str] = []
         for attempt in range(1, self.max_validation_retries + 1):
@@ -1608,6 +1680,9 @@ class AutoNovelPlanner:
                 f"贝叶斯高权重母题候选:\n{chr(10).join(motif_lines) if motif_lines else '无历史样本，按类目最佳实践'}\n"
                 f"热榜风向关键词: {', '.join(hot_keywords) if hot_keywords else '无'}\n"
                 f"对标拆书换皮蓝图:\n{blueprint_block}\n"
+                f"{title_blurb_block}\n\n"
+                f"{common_sense_block}\n\n"
+                f"{golden_three_block}\n\n"
                 f"{track_instruction}\n"
                 f"{brief_section}"
                 f"{feedback_section}"
@@ -1707,10 +1782,13 @@ class AutoNovelPlanner:
             "3. pov_character、active_characters、active_assets、style_profile_ids 只能使用设定包给出的已有 id，且 pov_character 必须在 active_characters 中。\n"
             "4. emotion_polarity 只能取 suppress / burst / neutral / mixed，且全书（含跨批衔接）连续 suppress 绝对不超过 2 章。\n"
             "5. 本批要求埋设或回收的伏笔，必须在对应章节的 events 中显式体现该伏笔 id 及物理关键词。\n"
-            "6. 四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；有变化时每一项都必须照样例的字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。\n"
-            "7. 必须严格遵循以下完整 JSON 格式样例：\n"
+            "6. 若本批包含第 1~3 章，必须严格对齐下方【题材黄金三章节拍】：第 1、2、3 章的 beat_type 必须包含对应章节的必填节拍定位名称，cliffhanger_hook 必须非空并贴合章末断章方向，events 必须落实开篇钩子、核心冲突与爽点/反转；所有章节情节须遵守下方【题材硬常识防穿帮卡】。\n"
+            "7. 四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；有变化时每一项都必须照样例的字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。\n"
+            "8. 必须严格遵循以下完整 JSON 格式样例：\n"
             f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
+
+        common_sense_block = recipe.common_sense_card.format_prompt_block()
 
         all_scenes: List[Dict[str, Any]] = []
         max_attempts_used = 1
@@ -1745,6 +1823,11 @@ class AutoNovelPlanner:
                 "\n".join(batch_fs_lines) if batch_fs_lines else "（本批无强制埋设/回收伏笔，专注主线推进）"
             )
             act_pos = _three_act_position(start_ch, end_ch, resolved_chapters, author_level)
+            golden_three_section = (
+                f"{_format_recipe_golden_three_block(recipe, chapter_range=(start_ch, end_ch))}\n\n"
+                if start_ch <= 3 and recipe.golden_three_beats
+                else ""
+            )
 
             last_errors: List[str] = []
             batch_result: Optional[List[Dict[str, Any]]] = None
@@ -1779,6 +1862,8 @@ class AutoNovelPlanner:
                     f"可用文风 id 列表（严禁编造其他 id）: {', '.join(style_ids)}\n"
                     f"单章默认字数区间: {recipe.min_chapter_words}~{recipe.max_chapter_words}\n"
                     f"前批末尾连续 suppress 章数: {prior_trailing_suppress}（与本批衔接后连续 suppress 绝对不超过 2 章）\n"
+                    f"{golden_three_section}"
+                    f"{common_sense_block}\n\n"
                     f"本批必须埋设/回收的伏笔:\n{batch_fs_block}\n"
                     f"此前各章梗概:\n{prior_summary_block}\n"
                     f"{brief_section}"

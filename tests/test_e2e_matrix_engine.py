@@ -257,6 +257,11 @@ class _MatrixSimState:
         ally_name = names[1]
         rival_name = names[2]
 
+        golden_beats = {
+            1: "破局激活与首笔立威",
+            2: "升级验证与规则边界试探",
+            3: "人前显圣与新地图铺路",
+        }
         scenes = []
         for ch in range(1, 16):
             pol = "burst" if ch % 2 == 1 else "suppress"
@@ -276,7 +281,7 @@ class _MatrixSimState:
                     "stop_condition": "反派吃瘪退场并引出下一环",
                     "min_chars": 1500,
                     "max_chars": 4500,
-                    "beat_type": "打脸反转" if ch % 2 == 1 else "危机加码",
+                    "beat_type": golden_beats.get(ch, "打脸反转" if ch % 2 == 1 else "危机加码"),
                     "emotion_polarity": pol,
                     "cliffhanger_hook": "更高层审计电话打进办公室",
                     "segment_comment_cue": "系统余额暴涨瞬间",

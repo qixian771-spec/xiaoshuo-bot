@@ -195,8 +195,15 @@ def _make_valid_bible(
     }
 
 
-def _make_valid_scene(chapter: int) -> Dict[str, Any]:
+def _make_valid_scene(chapter: int, *, genre_id: str = "urban_brainhole") -> Dict[str, Any]:
     polarity = "burst" if chapter % 3 == 0 else ("suppress" if chapter % 3 == 1 else "mixed")
+    beat_type = "反转打脸" if chapter % 2 == 0 else "危机铺垫"
+    if chapter in (1, 2, 3):
+        recipe = get_genre(genre_id)
+        for gb in recipe.golden_three_beats:
+            if gb.chapter == chapter:
+                beat_type = gb.role
+                break
     return {
         "chapter": chapter,
         "scene_id": f"ch{chapter:04d}_scene",
@@ -215,7 +222,7 @@ def _make_valid_scene(chapter: int) -> Dict[str, Any]:
         "stop_condition": f"第{chapter}章反派当场失算且新推送弹出时停笔",
         "min_chars": 2050,
         "max_chars": 2300,
-        "beat_type": "反转打脸" if chapter % 2 == 0 else "危机铺垫",
+        "beat_type": beat_type,
         "emotion_polarity": polarity,
         "cliffhanger_hook": f"旧手机屏幕亮起第{chapter + 1}条明日快讯",
         "segment_comment_cue": "这波提前预判太解气",
@@ -1405,6 +1412,153 @@ class TestStagedExtendAndFinalePlanner(unittest.TestCase):
             self.assertIn("ghost_asset", str(ctx.exception))
             self.assertFalse(load_project(proj_dir2).meta.is_final_volume)
             self.assertFalse((proj_dir2 / "outline" / "vol_02.yaml").exists())
+        finally:
+            shutil.rmtree(tmp)
+
+
+class TestTask2PlanningGenreBlueprintsAndGoldenThree(unittest.TestCase):
+    def setUp(self) -> None:
+        self.safe_names = CharacterNamer().generate_cast(
+            count=6, era="urban_brainhole", channel="male", seed=91
+        )
+
+    def test_bible_and_scenes_prompts_inject_all_genre_recipe_blueprints(self) -> None:
+        recipe = get_genre("literary_suspense")
+
+        class _SuspensePlannerLLM(LLMProvider):
+            def __init__(self, safe_names: List[str]) -> None:
+                self.safe_names = safe_names
+                self.requests: List[LLMRequest] = []
+
+            def generate(self, request: LLMRequest) -> LLMResponse:
+                self.requests.append(request)
+                stage = str(request.metadata.get("stage") or "")
+                if stage == "bible":
+                    bible = _make_valid_bible(self.safe_names, author_level="lv0_1", target_chapters=72)
+                    bible["project"]["pov_mode"] = recipe.pov_mode
+                    bible["project"]["panel_policy"] = recipe.panel_policy
+                    bible["style_profiles"][0]["id"] = recipe.style_profile.id
+                    return LLMResponse(
+                        request_id=request.request_id,
+                        content=json.dumps(bible, ensure_ascii=False),
+                        model="fake-planner",
+                        provider="fake",
+                    )
+                start_ch = int(request.metadata["chapter_start"])
+                end_ch = int(request.metadata["chapter_end"])
+                scenes = []
+                for ch in range(start_ch, end_ch + 1):
+                    sc = _make_valid_scene(ch, genre_id="literary_suspense")
+                    sc["style_profile_ids"] = [recipe.style_profile.id]
+                    scenes.append(sc)
+                return LLMResponse(
+                    request_id=request.request_id,
+                    content=json.dumps({"scenes": scenes}, ensure_ascii=False),
+                    model="fake-planner",
+                    provider="fake",
+                )
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_task2_"))
+        try:
+            llm = _SuspensePlannerLLM(self.safe_names)
+            planner = AutoNovelPlanner(llm)
+            planner.plan_new_project(
+                project_id="task2_suspense",
+                genre_id="literary_suspense",
+                output_dir=tmp / "task2_suspense",
+                author_level="lv0_1",
+                target_chapters=72,
+            )
+
+            # 1. Bible prompt must include title_templates, blurb_templates, common_sense_card, and golden_three_beats
+            bible_req = llm.requests[0]
+            self.assertEqual(bible_req.metadata.get("stage"), "bible")
+            for tmpl in recipe.title_templates:
+                self.assertIn(tmpl, bible_req.user_prompt)
+            for blurb in recipe.blurb_templates:
+                self.assertIn(blurb.splitlines()[0], bible_req.user_prompt)
+            self.assertIn(recipe.common_sense_card.domain, bible_req.user_prompt)
+            for rule in recipe.common_sense_card.rules:
+                self.assertIn(rule, bible_req.user_prompt)
+            self.assertIn(recipe.opening_300w_directive, bible_req.user_prompt)
+            for beat in recipe.golden_three_beats:
+                self.assertIn(beat.role, bible_req.user_prompt)
+                self.assertIn(beat.opening_hook, bible_req.user_prompt)
+
+            # 2. Scenes batch 1 (ch 1..10) must include golden_three_beats + opening_300w + common_sense_card
+            scenes_b1_req = llm.requests[1]
+            self.assertEqual(scenes_b1_req.metadata.get("stage"), "scenes")
+            self.assertEqual(scenes_b1_req.metadata.get("chapter_start"), 1)
+            self.assertIn(recipe.common_sense_card.domain, scenes_b1_req.user_prompt)
+            self.assertIn(recipe.opening_300w_directive, scenes_b1_req.user_prompt)
+            for beat in recipe.golden_three_beats:
+                self.assertIn(beat.role, scenes_b1_req.user_prompt)
+                self.assertIn(beat.chapter_end_hook, scenes_b1_req.user_prompt)
+
+            # 3. Later scenes batch (ch 11..20) still gets common_sense_card, without ch1..3 beats
+            scenes_b2_req = llm.requests[2]
+            self.assertEqual(scenes_b2_req.metadata.get("chapter_start"), 11)
+            self.assertIn(recipe.common_sense_card.domain, scenes_b2_req.user_prompt)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_scenes_collector_enforces_golden_three_beats_and_feeds_back_on_retry(self) -> None:
+        recipe = get_genre("urban_brainhole")
+        other_recipe = get_genre("literary_suspense")
+        bible = _make_valid_bible(self.safe_names, author_level="lv0_1", target_chapters=72)
+
+        # Valid ch 1..3 matching urban_brainhole beats (exact or prefixed with beat role) passes
+        ok_batch = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(1, 11)]
+        ok_batch[0]["beat_type"] = f"黄金第1章：{recipe.golden_three_beats[0].role}"
+        self.assertEqual(_collect_scene_batch_errors(ok_batch, bible, (1, 10), recipe=recipe), [])
+
+        # Missing beat_type, wrong genre beat, swapped beat, and empty cliffhanger_hook are ALL caught
+        bad_batch = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(1, 11)]
+        bad_batch[0]["beat_type"] = other_recipe.golden_three_beats[0].role  # wrong genre beat
+        bad_batch[1]["beat_type"] = recipe.golden_three_beats[2].role        # ch3 beat put on ch2
+        bad_batch[2]["beat_type"] = ""                                       # missing beat_type
+        bad_batch[2]["cliffhanger_hook"] = ""                                # missing cliffhanger
+        errs = _collect_scene_batch_errors(bad_batch, bible, (1, 10), recipe=recipe)
+        joined = "\n".join(errs)
+        self.assertIn("Chapter 1", joined)
+        self.assertIn(recipe.golden_three_beats[0].role, joined)
+        self.assertIn("Chapter 2", joined)
+        self.assertIn(recipe.golden_three_beats[1].role, joined)
+        self.assertIn("Chapter 3", joined)
+        self.assertIn(recipe.golden_three_beats[2].role, joined)
+        self.assertIn("cliffhanger_hook", joined)
+
+        # End-to-end staged planner retries when batch 1 misses golden-three beats, feeds errors back, then passes
+        def inject_golden_miss(req: LLMRequest) -> Optional[Dict[str, Any]]:
+            meta = dict(req.metadata or {})
+            if meta.get("stage") == "scenes" and meta.get("batch") == 1 and meta.get("attempt") == 1:
+                scenes = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(1, 11)]
+                scenes[0]["beat_type"] = "普通日常"
+                scenes[1]["beat_type"] = "普通日常"
+                return {"scenes": scenes}
+            return None
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_task2_retry_"))
+        try:
+            llm = ScriptedStagedPlannerLLM(
+                safe_names=self.safe_names,
+                author_level="lv0_1",
+                target_chapters=72,
+                fault_injector=inject_golden_miss,
+            )
+            planner = AutoNovelPlanner(llm)
+            res = planner.plan_new_project(
+                project_id="task2_retry_book",
+                genre_id="urban_brainhole",
+                output_dir=tmp / "task2_retry_book",
+                author_level="lv0_1",
+                target_chapters=72,
+            )
+            self.assertEqual(len(res.project.scenes), 72)
+            # Request 0=bible, Request 1=scenes b1 attempt 1 (failed), Request 2=scenes b1 attempt 2 (feedback!)
+            retry_prompt = llm.requests[2].user_prompt
+            self.assertIn(recipe.golden_three_beats[0].role, retry_prompt)
+            self.assertIn(recipe.golden_three_beats[1].role, retry_prompt)
         finally:
             shutil.rmtree(tmp)
 
