@@ -1,0 +1,56 @@
+# CLIProxyAPI (CPA) v8.0.69 + cpa-workbuddy Production Configuration Template
+# Rendered to /opt/cli-proxy-api/config.yaml by deploy/install_cpa_workbuddy.sh.
+#
+# Security & Owner Invariants (DO NOT RELAX):
+# 1. CPA MUST bind exclusively to 127.0.0.1:8317 (never 0.0.0.0 or public IP).
+# 2. remote-management.allow-remote MUST be false; access from Mac via SSH tunnel only.
+# 3. secret-key and api-keys MUST be generated on-server at install time (never committed).
+# 4. auto_checkin_enabled MUST be false (owner claims credits manually on Mac only).
+# 5. Zero silent downgrade: switch-preview-model: false, antigravity-credits: false.
+
+host: "127.0.0.1"
+port: 8317
+
+# Directory storing OAuth credential JSON files (chmod 0700, owned by xiaoshuo:xiaoshuo).
+auth-dir: "/opt/cli-proxy-api/auth-files"
+
+# Local gateway client API keys for xiaoshuo-bot (generated on-server via openssl rand -hex 32).
+api-keys:
+  - "__REPLACE_WITH_64_HEX_CPA_LOCAL_GATEWAY_KEY__"
+
+# Keep image generation flag explicit for cover pipeline compatibility.
+disable-image-generation: false
+
+# Strict anti-silent-downgrade quota policy:
+# - Never silently switch preview models or deduct credits silently in CPA layer.
+# - Model rotation across the 4-model WorkBuddy whitelist is owned explicitly by xiaoshuo-bot.
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: false
+  antigravity-credits: false
+
+# Long-form SSE streaming keepalive settings (prevents proxy/socket idle drops).
+streaming:
+  keepalive-seconds: 15
+  send-keepalive-before-ft: true
+
+# Remote management API MUST remain loopback-only (access via: ssh -N -L 8317:127.0.0.1:8317 kr).
+remote-management:
+  allow-remote: false
+  secret-key: "__REPLACE_WITH_64_HEX_CPA_MANAGEMENT_SECRET_KEY__"
+
+# Native dynamic library plugin host (CPA v8.0.69+, ABI 1 / JSON schema 10).
+# Plugin binary is compiled strictly from source at commit 2a1a608fb0ff28c51996393822a7f36df4367d5b.
+plugins:
+  enabled: true
+  dir: "/opt/cli-proxy-api/plugins"
+  configs:
+    cpa-workbuddy:
+      enabled: true
+      cn_model_prefix: true
+      intl_model_prefix: true
+      # Owner rule: server MUST NOT auto check-in; credits are claimed manually on Mac only.
+      auto_checkin_enabled: false
+
+debug: false
+logging-to-file: false

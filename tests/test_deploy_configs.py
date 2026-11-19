@@ -16,23 +16,31 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_DIR = REPO_ROOT / "deploy"
 
 CPA_CONFIG = DEPLOY_DIR / "cpa.config.example.yaml"
+CPA_WORKBUDDY_CONFIG = DEPLOY_DIR / "cpa.workbuddy.config.example.yaml"
 CPA_SERVICE = DEPLOY_DIR / "cpa.service"
+CPA_WORKBUDDY_SERVICE = DEPLOY_DIR / "cpa-workbuddy.service"
 BOT_SERVICE = DEPLOY_DIR / "xiaoshuo-bot.service"
 CADDYFILE = DEPLOY_DIR / "Caddyfile.example"
 NGINX_SITE_CONF = DEPLOY_DIR / "nginx-baogongtou.vip.conf"
 ENV_EXAMPLE = DEPLOY_DIR / "env.example"
 DEPLOY_SCRIPT = DEPLOY_DIR / "deploy_remote.sh"
+INSTALL_CPA_WORKBUDDY_SCRIPT = DEPLOY_DIR / "install_cpa_workbuddy.sh"
 TUNNEL_SCRIPT = DEPLOY_DIR / "ssh_cpa_tunnel.ps1"
+WORKBUDDY_LOGIN_GUIDE = DEPLOY_DIR / "WORKBUDDY_LOGIN_GUIDE.md"
 
 ALL_DEPLOY_FILES = (
     CPA_CONFIG,
+    CPA_WORKBUDDY_CONFIG,
     CPA_SERVICE,
+    CPA_WORKBUDDY_SERVICE,
     BOT_SERVICE,
     CADDYFILE,
     NGINX_SITE_CONF,
     ENV_EXAMPLE,
     DEPLOY_SCRIPT,
+    INSTALL_CPA_WORKBUDDY_SCRIPT,
     TUNNEL_SCRIPT,
+    WORKBUDDY_LOGIN_GUIDE,
 )
 
 _REAL_SECRET_PATTERNS = (

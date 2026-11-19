@@ -339,6 +339,7 @@ cloud_tests=(
   tests/test_staged_planner.py
   tests/test_workbuddy_routing.py
   tests/test_workbuddy_config_and_tracking.py
+  tests/test_workbuddy_deploy.py
 )
 
 for tf in "${cloud_tests[@]}"; do
