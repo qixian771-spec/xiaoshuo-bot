@@ -19,7 +19,7 @@ from .evolution import (
     OutlineAdjustmentDirective,
     assert_chapter_mutable,
 )
-from .genres import GenreRecipe, get_genre
+from .genres import GenreRecipe, get_genre, get_genre_ids
 from .llm.base import LLMConfigurationError, LLMProvider, LLMRequest, LLMResponse
 from .llm.router import RoleModelRouter
 from .loader import load_project
@@ -230,6 +230,27 @@ _MASTER_OUTLINE_BATCH_JSON_EXAMPLE: Dict[str, Any] = {
             "summary": "<本章核心冲突、爽点兑现或地图推进一句话梗概>",
         }
     ]
+}
+
+_EXTEND_VOLUME_JSON_EXAMPLE: Dict[str, Any] = {
+    "map_name": "<本卷主地图名称>",
+    "location_id": "<全新英文地图坐标id，换地图时严禁与旧地图重名>",
+    "soft_identity_reboot": "<换地图时主角身份软重启/新身份切入说明>",
+    "volume_cap_locks": [
+        {
+            "ledger_key": "<账本键名，如 cash>",
+            "volume": 2,
+            "max_value": 10000000.0,
+            "unit": "<单位，如 元>",
+        }
+    ],
+    "scenes": _SCENES_BATCH_JSON_EXAMPLE["scenes"],
+}
+
+_FINALE_VOLUME_JSON_EXAMPLE: Dict[str, Any] = {
+    "foreshadow_resolutions": {"<未收伏笔id>": 76},
+    "expectation_fulfillments": {"<未兑现期待感id>": 77},
+    "scenes": _SCENES_BATCH_JSON_EXAMPLE["scenes"],
 }
 
 
@@ -539,7 +560,7 @@ def _collect_scene_batch_errors(
     bible: Mapping[str, Any],
     chapter_range: Tuple[int, int],
     *,
-    recipe: GenreRecipe,
+    recipe: Optional[GenreRecipe] = None,
     prior_trailing_suppress: int = 0,
 ) -> List[str]:
     """Collect ALL validation errors for a Stage 2 scene batch without stopping at the first error."""
@@ -563,7 +584,8 @@ def _collect_scene_batch_errors(
         for sp in (bible.get("style_profiles") or [])
         if isinstance(sp, Mapping) and _nonempty_str(sp.get("id"))
     }
-    valid_style_ids.add(recipe.style_profile.id)
+    if recipe is not None:
+        valid_style_ids.add(recipe.style_profile.id)
     default_pov = str((bible.get("project") or {}).get("default_pov_character") or "").strip()
 
     errors: List[str] = []
@@ -830,6 +852,208 @@ def _trailing_suppress_count(scenes: Sequence[Mapping[str, Any]]) -> int:
         else:
             break
     return count
+
+
+def _make_chapter_batches(
+    start_chapter: int, end_chapter: int, batch_size: int = SCENE_BATCH_SIZE
+) -> List[Tuple[int, int]]:
+    batches: List[Tuple[int, int]] = []
+    cur = start_chapter
+    while cur <= end_chapter:
+        b_end = min(end_chapter, cur + batch_size - 1)
+        batches.append((cur, b_end))
+        cur = b_end + 1
+    return batches
+
+
+def _project_to_bible_view(project: NovelProject) -> Dict[str, Any]:
+    return {
+        "project": {
+            "title": project.meta.title,
+            "default_pov_character": project.meta.default_pov_character,
+        },
+        "characters": [
+            {"id": c.id, "name": c.name, "role": c.role}
+            for c in project.characters.values()
+        ],
+        "assets": [
+            {"id": a.id, "name": a.name}
+            for a in project.assets.values()
+        ],
+        "style_profiles": [
+            {"id": sp.id, "name": sp.name}
+            for sp in project.style_profiles.values()
+        ],
+    }
+
+
+def _project_valid_ids_block(project: NovelProject) -> str:
+    char_items = [f"{c.id}({c.name})" for c in project.characters.values()]
+    asset_items = [f"{a.id}({a.name})" for a in project.assets.values()]
+    style_items = [sp.id for sp in project.style_profiles.values()]
+    return (
+        f"可用人物 id（严禁编造新 id）: {char_items}\n"
+        f"可用器物 id（严禁编造新 id）: {asset_items}\n"
+        f"可用文风 id（严禁编造新 id）: {style_items}\n"
+        f"默认 POV 人物 id: {project.meta.default_pov_character}"
+    )
+
+
+def _format_prior_scene_summaries(
+    existing_scenes: Sequence[Any],
+    generated_scenes: Sequence[Mapping[str, Any]],
+    *,
+    max_items: int = 12,
+) -> str:
+    combined: List[str] = []
+    for sc in existing_scenes:
+        ev = "；".join(str(e) for e in (getattr(sc, "events", None) or [])[:2])
+        title = getattr(sc, "public_title", "") or getattr(sc, "internal_title", "")
+        combined.append(f"- 第 {sc.chapter} 章《{title}》({sc.emotion_polarity}): {ev}")
+    for sd in generated_scenes:
+        ev = "；".join(str(e) for e in (sd.get("events") or [])[:2])
+        title = str(sd.get("public_title") or sd.get("internal_title") or "")
+        pol = str(sd.get("emotion_polarity") or "mixed")
+        combined.append(f"- 第 {sd.get('chapter')} 章《{title}》({pol}): {ev}")
+    tail = combined[-max_items:]
+    return "\n".join(tail) if tail else "无"
+
+
+def _collect_extend_volume_meta_errors(
+    payload: Mapping[str, Any],
+    *,
+    target_vol: int,
+    trigger_map_change: bool,
+    old_locations: set[str],
+    prev_locks: Mapping[str, VolumeCapLock],
+) -> Tuple[List[str], str, str, str, List[VolumeCapLock]]:
+    """Collect ALL volume-level metadata errors for extend_volume Batch 1 without stopping early."""
+    errors: List[str] = []
+    new_map_name = str(payload.get("map_name") or "").strip()
+    new_loc_id = str(payload.get("location_id") or "").strip()
+    soft_reboot = str(payload.get("soft_identity_reboot") or "").strip()
+
+    new_locks_raw = payload.get("volume_cap_locks")
+    new_locks: List[VolumeCapLock] = []
+    if new_locks_raw is not None:
+        if not isinstance(new_locks_raw, list):
+            errors.append("volume_cap_locks must be a list of VolumeCapLock objects")
+        else:
+            for idx, lk_raw in enumerate(new_locks_raw):
+                if not isinstance(lk_raw, Mapping):
+                    errors.append(f"volume_cap_locks[{idx}] must be an object")
+                    continue
+                try:
+                    new_locks.append(VolumeCapLock.from_dict(lk_raw))
+                except (ValueError, KeyError, TypeError) as exc:
+                    errors.append(f"volume_cap_locks[{idx}] invalid: {exc}")
+
+    if trigger_map_change:
+        if not new_map_name:
+            errors.append("Map-change volume extension requires non-empty map_name")
+        if not new_loc_id:
+            errors.append("Map-change volume extension requires non-empty location_id")
+        elif new_loc_id in old_locations:
+            errors.append(
+                f"New map location_id {new_loc_id!r} collides with prior map locations {sorted(old_locations)}"
+            )
+        if not soft_reboot:
+            errors.append("Map-change volume extension requires non-empty soft_identity_reboot")
+        if not new_locks:
+            errors.append("Map-change volume extension requires higher-tier volume_cap_locks")
+        for lk in new_locks:
+            if lk.volume != target_vol:
+                errors.append(
+                    f"New VolumeCapLock for '{lk.ledger_key}' must have volume={target_vol}, got {lk.volume}"
+                )
+            if lk.ledger_key in prev_locks and lk.max_value <= prev_locks[lk.ledger_key].max_value:
+                errors.append(
+                    f"New VolumeCapLock '{lk.ledger_key}' max_value ({lk.max_value}) must exceed "
+                    f"previous volume cap ({prev_locks[lk.ledger_key].max_value})"
+                )
+        for prev_key in prev_locks:
+            if not any(lk.ledger_key == prev_key for lk in new_locks):
+                errors.append(f"Missing upgraded VolumeCapLock for existing ledger_key '{prev_key}'")
+
+    return errors, new_map_name, new_loc_id, soft_reboot, new_locks
+
+
+def _collect_finale_resolution_errors(
+    payload: Mapping[str, Any],
+    *,
+    start_chapter: int,
+    end_chapter: int,
+    unresolved_fs: Mapping[str, Any],
+    active_exps: Mapping[str, Any],
+    raw_scenes: Any,
+    is_single_batch: bool,
+) -> Tuple[List[str], Dict[str, int], Dict[str, int]]:
+    """Collect ALL foreshadow/expectation resolution errors for plan_finale_volume Batch 1."""
+    errors: List[str] = []
+    finale_chapters = set(range(start_chapter, end_chapter + 1))
+
+    raw_fs_res = payload.get("foreshadow_resolutions")
+    fs_resolutions: Dict[str, int] = {}
+    if raw_fs_res is None:
+        raw_fs_res = {}
+    if not isinstance(raw_fs_res, Mapping):
+        errors.append("foreshadow_resolutions must be an object mapping foreshadow_id -> payoff_chapter")
+    else:
+        for fid in unresolved_fs:
+            if fid not in raw_fs_res:
+                errors.append(f"Finale missing foreshadow_resolutions mapping for '{fid}'")
+                continue
+            raw_val = raw_fs_res[fid]
+            try:
+                ch_val = int(raw_val)
+            except (ValueError, TypeError):
+                errors.append(f"Finale foreshadow '{fid}' due_chapter must be integer, got {raw_val!r}")
+                continue
+            if ch_val not in finale_chapters:
+                errors.append(
+                    f"Finale foreshadow '{fid}' due_chapter {ch_val} outside finale range "
+                    f"{start_chapter}..{end_chapter}"
+                )
+            else:
+                fs_resolutions[fid] = ch_val
+
+    fulfilled_in_batch1: set[str] = set()
+    if is_single_batch and isinstance(raw_scenes, list):
+        for sc in raw_scenes:
+            if isinstance(sc, Mapping):
+                for ed in sc.get("expectation_directives") or []:
+                    if isinstance(ed, Mapping) and ed.get("action") == "fulfill" and ed.get("id"):
+                        fulfilled_in_batch1.add(str(ed["id"]))
+
+    raw_exp_res = payload.get("expectation_fulfillments")
+    exp_fulfillments: Dict[str, int] = {}
+    if raw_exp_res is None:
+        raw_exp_res = {}
+    if not isinstance(raw_exp_res, Mapping):
+        errors.append("expectation_fulfillments must be an object mapping expectation_id -> fulfill_chapter")
+    else:
+        for eid in active_exps:
+            if eid not in raw_exp_res and eid not in fulfilled_in_batch1:
+                errors.append(f"Finale missing fulfillment for active expectation '{eid}'")
+                continue
+            if eid in raw_exp_res:
+                raw_val = raw_exp_res[eid]
+                try:
+                    f_ch = int(raw_val)
+                except (ValueError, TypeError):
+                    errors.append(
+                        f"Expectation '{eid}' fulfill_chapter must be integer, got {raw_val!r}"
+                    )
+                    continue
+                if f_ch not in finale_chapters:
+                    errors.append(
+                        f"Expectation '{eid}' fulfill_chapter {f_ch} outside finale range "
+                        f"{start_chapter}..{end_chapter}"
+                    )
+                else:
+                    exp_fulfillments[eid] = f_ch
+
+    return errors, fs_resolutions, exp_fulfillments
 
 
 def _invoke_planner(
@@ -1983,8 +2207,9 @@ class AutoNovelPlanner:
         directives: Optional[Sequence[OutlineAdjustmentDirective]] = None,
         batch_size: int = 15,
         map_change_interval: int = 60,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> VolumeExtensionResult:
-        """Rolling continuation reading WorldStateSnapshot & ReviewFeedbackOptimizer directives, enforcing 60-80ch map-change soft-reboot."""
+        """Staged rolling continuation (<=10 chapters/batch) with full error collection & retry."""
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
         if map_change_interval < 10:
@@ -2061,216 +2286,284 @@ class AutoNovelPlanner:
             for d in all_directives
         )
 
-        system_prompt = (
-            "你是番茄长篇滚动续纲策划师。请严格输出单个 JSON 对象：\n"
+        bible_view = _project_to_bible_view(project)
+        valid_ids_block = _project_valid_ids_block(project)
+        recipe: Optional[GenreRecipe] = (
+            get_genre(project.meta.genre_id)
+            if project.meta.genre_id and project.meta.genre_id in get_genre_ids()
+            else None
+        )
+        chapter_batches = _make_chapter_batches(start_chapter, end_chapter, SCENE_BATCH_SIZE)
+        total_batches = len(chapter_batches)
+
+        first_batch_sys = (
+            "你是番茄长篇滚动续纲策划师。请严格输出单个 JSON 对象（严禁 Markdown 以外多余文字）：\n"
             "- map_name: 本批次主地图名称\n"
             "- location_id: 本批次地图标识（换地图时必须不同于旧地图）\n"
             "- soft_identity_reboot: 身份软重启/新马甲切入说明（换地图时必须非空）\n"
             "- volume_cap_locks: 数组（包含本卷更高阶数值上限锁：{ledger_key, volume, max_value, unit}）\n"
-            "- scenes: 数组（连续章节大纲，符合 SceneOutline 结构，public_title 不带 '第X章' 前缀，连续纯压抑<=2章）"
+            "- scenes: 数组（仅输出本批章号范围的连续章节大纲，符合 SceneOutline 结构，"
+            "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
+            f"JSON 模板示例（所有尖括号为占位说明）：\n"
+            f"{json.dumps(_EXTEND_VOLUME_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
+        )
+        later_batch_sys = (
+            "你是番茄长篇滚动续纲策划师。本阶段仅生成后续批次的连续章纲，请严格输出单个 JSON 对象：\n"
+            "- scenes: 数组（仅输出本批章号范围的连续章节大纲，承接已锁定的本卷地图与前序章节，"
+            "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
+            f"JSON 模板示例（所有尖括号为占位说明）：\n"
+            f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
 
-        feedback = ""
-        last_error: Optional[Exception] = None
-        for attempt in range(1, self.max_validation_retries + 1):
-            feedback_section = (
-                f"\n[上一轮校验失败，必须修复]：\n{feedback}\n" if feedback else ""
-            )
-            map_instruction = (
-                f"【强制触发 60~80 章换地图与身份软重启】进入第 {target_vol} 卷！\n"
-                f"必须切换全新地图（location_id 禁止复用旧地图：{sorted(old_locations)}），"
-                f"必须设计主角身份软重启（soft_identity_reboot），并全面抬升 volume_cap_locks（"
-                f"前卷上限：{ {k: v.max_value for k, v in prev_locks.items()} }，新卷必须严格更高）。"
-                if trigger_map_change
-                else f"继续第 {target_vol} 卷连载节奏。"
-            )
-            user_prompt = (
-                f"项目: {project.meta.project_id}《{project.meta.title}》（genre_id={project.meta.genre_id}）\n"
-                f"续写范围: 第 {start_chapter} 章 ～ 第 {end_chapter} 章（共 {batch_size} 章，target_volume={target_vol}）\n"
-                f"最新世界状态: current_chapter={snap_ch}, balances={effective_snapshot.numeric_balances if effective_snapshot else {}}, "
-                f"deceased_characters={deceased_ids}, forbidden_titles={effective_snapshot.get_all_forbidden_titles() if effective_snapshot else []}\n"
-                f"章评舆情调优指令（必须严格注入第 {start_chapter} 章及之后，严禁触碰 <={project.meta.max_published_chapter} 的已发章节）:\n"
-                f"{directives_text or '无'}\n"
-                f"{map_instruction}\n"
-                f"{feedback_section}"
-            )
-            req = LLMRequest(
-                request_id=f"extend-{project.meta.project_id}-v{target_vol}-{attempt}-{uuid.uuid4().hex[:6]}",
-                chapter=start_chapter,
-                attempt=attempt,
-                purpose="plan",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.5,
-                max_tokens=10000,
-                metadata={
-                    "stage": "extend_volume",
-                    "project_id": project.meta.project_id,
-                    "target_volume": target_vol,
-                    "start_chapter": start_chapter,
-                    "end_chapter": end_chapter,
-                    "trigger_map_change": trigger_map_change,
-                    "attempt": attempt,
-                },
-            )
-            resp = _invoke_planner(self.provider, req)
-            try:
-                payload = _parse_json_payload(resp.content, "extend_volume")
-                new_map_name = str(payload.get("map_name") or "").strip()
-                new_loc_id = str(payload.get("location_id") or "").strip()
-                soft_reboot = str(payload.get("soft_identity_reboot") or "").strip()
-                raw_scenes = payload.get("scenes")
-                if not isinstance(raw_scenes, list) or len(raw_scenes) != batch_size:
-                    got_n = len(raw_scenes) if isinstance(raw_scenes, list) else 0
-                    raise ProjectValidationError(
-                        f"extend_volume expected {batch_size} scenes, got {got_n}"
-                    )
+        new_map_name = ""
+        new_loc_id = ""
+        soft_reboot = ""
+        new_locks: List[VolumeCapLock] = []
+        normalized_new_scenes: List[Dict[str, Any]] = []
+        max_attempts_used = 1
 
-                new_locks_raw = payload.get("volume_cap_locks") or []
-                new_locks = [VolumeCapLock.from_dict(lk) for lk in new_locks_raw]
+        existing_ordered = sorted(project.scenes, key=lambda sc: sc.chapter)
+        trailing_suppress = _trailing_suppress_count(
+            [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
+        )
 
-                if trigger_map_change:
-                    if not new_map_name or not new_loc_id:
-                        raise ProjectValidationError(
-                            "Map-change volume extension requires non-empty map_name and location_id"
-                        )
-                    if new_loc_id in old_locations:
-                        raise ProjectValidationError(
-                            f"New map location_id {new_loc_id!r} collides with prior map locations {sorted(old_locations)}"
-                        )
-                    if not soft_reboot:
-                        raise ProjectValidationError(
-                            "Map-change volume extension requires non-empty soft_identity_reboot"
-                        )
-                    if not new_locks:
-                        raise ProjectValidationError(
-                            "Map-change volume extension requires higher-tier volume_cap_locks"
-                        )
-                    for lk in new_locks:
-                        if lk.volume != target_vol:
-                            raise ProjectValidationError(
-                                f"New VolumeCapLock for '{lk.ledger_key}' must have volume={target_vol}, got {lk.volume}"
-                            )
-                        if lk.ledger_key in prev_locks and lk.max_value <= prev_locks[lk.ledger_key].max_value:
-                            raise ProjectValidationError(
-                                f"New VolumeCapLock '{lk.ledger_key}' max_value ({lk.max_value}) must exceed "
-                                f"previous volume cap ({prev_locks[lk.ledger_key].max_value})"
-                            )
-                    for prev_key, prev_lk in prev_locks.items():
-                        if not any(lk.ledger_key == prev_key for lk in new_locks):
-                            raise ProjectValidationError(
-                                f"Missing upgraded VolumeCapLock for existing ledger_key '{prev_key}'"
-                            )
+        for batch_idx, (b_start, b_end) in enumerate(chapter_batches, start=1):
+            b_count = b_end - b_start + 1
+            is_first_batch = batch_idx == 1
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "stage": "extend_volume",
+                        "batch": batch_idx,
+                        "total_batches": total_batches,
+                        "start_chapter": b_start,
+                        "end_chapter": b_end,
+                    }
+                )
 
-                normalized_new_scenes: List[Dict[str, Any]] = []
-                for offset, item in enumerate(raw_scenes):
-                    s_dict = dict(item)
-                    expected_ch = start_chapter + offset
-                    if int(s_dict.get("chapter", 0)) != expected_ch:
-                        raise ProjectValidationError(
-                            f"Expected scene chapter {expected_ch}, got {s_dict.get('chapter')!r}"
-                        )
-                    if int(s_dict["chapter"]) <= project.meta.max_published_chapter:
-                        raise ProjectValidationError(
-                            f"Cannot overwrite published chapter {s_dict['chapter']} <= {project.meta.max_published_chapter}"
-                        )
-                    if s_dict.get("public_title"):
-                        s_dict["public_title"] = _strip_chapter_prefix(str(s_dict["public_title"]))
-                    s_dict["volume"] = target_vol
-                    if trigger_map_change and not s_dict.get("location_id"):
-                        s_dict["location_id"] = new_loc_id
-                    normalized_new_scenes.append(s_dict)
-
-                # Stage full project copy to validate with load_project()
-                with tempfile.TemporaryDirectory(prefix="xsb_ext_") as tmpdir:
-                    staging = Path(tmpdir)
-                    shutil.copytree(root, staging, dirs_exist_ok=True, ignore=shutil.ignore_patterns("_archive", "*.tmp"))
-                    self._prepare_multi_volume_dir(staging)
-
-                    meta_raw = yaml.safe_load((staging / "project.yaml").read_text(encoding="utf-8"))
-                    meta_raw["volume_index"] = target_vol
-                    (staging / "project.yaml").write_text(
-                        _dump_yaml(meta_raw), encoding="utf-8", newline="\n"
-                    )
-
-                    vol_path = staging / "outline" / f"vol_{target_vol:02d}.yaml"
-                    if target_vol == current_vol and vol_path.exists():
-                        vol_raw = yaml.safe_load(vol_path.read_text(encoding="utf-8")) or {}
-                        existing_scenes = list(vol_raw.get("scenes", []))
-                        existing_scenes.extend(normalized_new_scenes)
-                        vol_raw["scenes"] = existing_scenes
-                        if new_locks:
-                            vol_raw["volume_cap_locks"] = [lk.to_dict() for lk in new_locks]
-                    else:
-                        vol_raw = {
-                            "volume": target_vol,
-                            "is_final_volume": False,
-                            "map_name": new_map_name,
-                            "location_id": new_loc_id,
-                            "soft_identity_reboot": soft_reboot,
-                            "volume_cap_locks": [lk.to_dict() for lk in new_locks],
-                            "scenes": normalized_new_scenes,
-                        }
-                    vol_path.write_text(_dump_yaml(vol_raw), encoding="utf-8", newline="\n")
-                    load_project(staging)
-
-            except (
-                ProjectValidationError,
-                ValueError,
-                KeyError,
-                TypeError,
-            ) as exc:
-                last_error = exc
-                feedback = str(exc)
-                continue
-
-            # Persist validated extension into project_dir (archiving overwritten files into _archive/)
-            stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%dT%H%M%S_%f")
-            self._migrate_single_outline_if_needed(root, stamp)
-
-            meta_raw = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
-            meta_raw["volume_index"] = target_vol
-            _write_text_archived(root / "project.yaml", _dump_yaml(meta_raw), root, stamp)
-
-            target_vol_path = root / "outline" / f"vol_{target_vol:02d}.yaml"
-            if target_vol == current_vol and target_vol_path.exists():
-                vol_raw = yaml.safe_load(target_vol_path.read_text(encoding="utf-8")) or {}
-                existing_scenes = list(vol_raw.get("scenes", []))
-                existing_scenes.extend(normalized_new_scenes)
-                vol_raw["scenes"] = existing_scenes
-                if new_locks:
-                    vol_raw["volume_cap_locks"] = [lk.to_dict() for lk in new_locks]
+            prior_summary = _format_prior_scene_summaries(existing_ordered, normalized_new_scenes)
+            if is_first_batch:
+                map_instruction = (
+                    f"【强制触发 60~80 章换地图与身份软重启】进入第 {target_vol} 卷！\n"
+                    f"必须切换全新地图（location_id 禁止复用旧地图：{sorted(old_locations)}），"
+                    f"必须设计主角身份软重启（soft_identity_reboot），并全面抬升 volume_cap_locks（"
+                    f"前卷上限：{ {k: v.max_value for k, v in prev_locks.items()} }，新卷必须严格更高）。"
+                    if trigger_map_change
+                    else f"继续第 {target_vol} 卷连载节奏。"
+                )
             else:
-                vol_raw = {
-                    "volume": target_vol,
-                    "is_final_volume": False,
-                    "map_name": new_map_name,
-                    "location_id": new_loc_id,
-                    "soft_identity_reboot": soft_reboot,
-                    "volume_cap_locks": [lk.to_dict() for lk in new_locks],
-                    "scenes": normalized_new_scenes,
-                }
-            _write_text_archived(target_vol_path, _dump_yaml(vol_raw), root, stamp)
+                map_instruction = (
+                    f"沿用第 1 批已锁定本卷设定：map_name={new_map_name!r}, "
+                    f"location_id={new_loc_id!r}, soft_identity_reboot={soft_reboot!r}。"
+                )
 
-            final_project = load_project(root)
-            return VolumeExtensionResult(
-                project_dir=root,
-                project=final_project,
-                volume_index=target_vol,
-                start_chapter=start_chapter,
-                end_chapter=end_chapter,
-                triggered_map_change=trigger_map_change,
-                new_map_name=new_map_name,
-                new_map_location_id=new_loc_id,
-                soft_identity_reboot=soft_reboot,
-                new_volume_cap_locks=new_locks,
-                volume_file_path=target_vol_path,
-                attempts_used=attempt,
-            )
+            feedback = ""
+            batch_passed = False
+            last_error: Optional[Exception] = None
+            for attempt in range(1, self.max_validation_retries + 1):
+                max_attempts_used = max(max_attempts_used, attempt)
+                feedback_section = (
+                    f"\n[上一轮校验失败（请逐条全部修复）]：\n{feedback}\n" if feedback else ""
+                )
+                user_prompt = (
+                    f"阶段: extend_volume（批次 {batch_idx}/{total_batches}）\n"
+                    f"项目: {project.meta.project_id}《{project.meta.title}》（genre_id={project.meta.genre_id}）\n"
+                    f"续写范围: 第 {b_start} 章 ～ 第 {b_end} 章（本批共 {b_count} 章，总范围 第 {start_chapter}～{end_chapter} 章，target_volume={target_vol}）\n"
+                    f"{valid_ids_block}\n"
+                    f"最新世界状态: current_chapter={snap_ch}, balances={effective_snapshot.numeric_balances if effective_snapshot else {}}, "
+                    f"deceased_characters={deceased_ids}, forbidden_titles={effective_snapshot.get_all_forbidden_titles() if effective_snapshot else []}\n"
+                    f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
+                    f"前序章节梗概:\n{prior_summary}\n"
+                    f"章评舆情调优指令（必须严格注入第 {start_chapter} 章及之后，严禁触碰 <={project.meta.max_published_chapter} 的已发章节）:\n"
+                    f"{directives_text or '无'}\n"
+                    f"{map_instruction}\n"
+                    f"{feedback_section}"
+                )
+                req = LLMRequest(
+                    request_id=f"extend-{project.meta.project_id}-v{target_vol}-b{batch_idx}-{attempt}-{uuid.uuid4().hex[:6]}",
+                    chapter=b_start,
+                    attempt=attempt,
+                    purpose="plan",
+                    system_prompt=first_batch_sys if is_first_batch else later_batch_sys,
+                    user_prompt=user_prompt,
+                    temperature=0.5,
+                    max_tokens=STAGE_SCENES_MAX_TOKENS,
+                    metadata={
+                        "stage": "extend_volume",
+                        "project_id": project.meta.project_id,
+                        "target_volume": target_vol,
+                        "start_chapter": b_start,
+                        "end_chapter": b_end,
+                        "total_start_chapter": start_chapter,
+                        "total_end_chapter": end_chapter,
+                        "batch_index": batch_idx,
+                        "total_batches": total_batches,
+                        "trigger_map_change": trigger_map_change,
+                        "attempt": attempt,
+                    },
+                )
+                resp = _invoke_planner(self.provider, req)
+                try:
+                    payload = _parse_json_payload(resp.content, f"extend_volume[{batch_idx}/{total_batches}]")
+                except (ProjectValidationError, ValueError, TypeError) as exc:
+                    last_error = exc
+                    feedback = f"1. {exc}"
+                    continue
 
-        raise PlanningValidationError(
-            f"extend_volume failed validation after {self.max_validation_retries} attempts: {last_error}"
-        ) from last_error
+                batch_errors: List[str] = []
+                cand_map_name = new_map_name
+                cand_loc_id = new_loc_id
+                cand_soft_reboot = soft_reboot
+                cand_locks = new_locks
+                if is_first_batch:
+                    meta_errs, cand_map_name, cand_loc_id, cand_soft_reboot, cand_locks = (
+                        _collect_extend_volume_meta_errors(
+                            payload,
+                            target_vol=target_vol,
+                            trigger_map_change=trigger_map_change,
+                            old_locations=old_locations,
+                            prev_locks=prev_locks,
+                        )
+                    )
+                    batch_errors.extend(meta_errs)
+
+                raw_scenes = payload.get("scenes")
+                scene_errs = _collect_scene_batch_errors(
+                    raw_scenes,
+                    bible_view,
+                    (b_start, b_end),
+                    recipe=recipe,
+                    prior_trailing_suppress=trailing_suppress,
+                )
+                batch_errors.extend(scene_errs)
+
+                if isinstance(raw_scenes, list):
+                    for sc in raw_scenes:
+                        if isinstance(sc, Mapping) and _is_strict_int(sc.get("chapter")):
+                            ch_num = int(sc["chapter"])
+                            if ch_num <= project.meta.max_published_chapter:
+                                batch_errors.append(
+                                    f"Cannot overwrite published chapter {ch_num} <= {project.meta.max_published_chapter}"
+                                )
+
+                if batch_errors:
+                    feedback = "\n".join(f"{i}. {err}" for i, err in enumerate(batch_errors, start=1))
+                    last_error = ProjectValidationError(feedback)
+                    continue
+
+                # Batch passed full validation; normalize scenes sorted by chapter
+                if is_first_batch:
+                    new_map_name = cand_map_name
+                    new_loc_id = cand_loc_id
+                    soft_reboot = cand_soft_reboot
+                    new_locks = cand_locks
+
+                sorted_batch = sorted(raw_scenes, key=lambda sc: int(sc["chapter"]))
+                batch_normalized: List[Dict[str, Any]] = []
+                for item in sorted_batch:
+                    s_dict = dict(item)
+                    s_dict["volume"] = target_vol
+                    if trigger_map_change and not s_dict.get("location_id") and new_loc_id:
+                        s_dict["location_id"] = new_loc_id
+                    batch_normalized.append(s_dict)
+
+                normalized_new_scenes.extend(batch_normalized)
+                trailing_suppress = _trailing_suppress_count(
+                    [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
+                    + normalized_new_scenes
+                )
+                batch_passed = True
+                break
+
+            if not batch_passed:
+                raise PlanningValidationError(
+                    f"extend_volume batch {batch_idx}/{total_batches} (chapters {b_start}..{b_end}) "
+                    f"failed validation after {self.max_validation_retries} attempts:\n{feedback or last_error}"
+                ) from last_error
+
+        # Final authoritative staging validation via untouched load_project()
+        try:
+            with tempfile.TemporaryDirectory(prefix="xsb_ext_") as tmpdir:
+                staging = Path(tmpdir)
+                shutil.copytree(
+                    root, staging, dirs_exist_ok=True, ignore=shutil.ignore_patterns("_archive", "*.tmp")
+                )
+                self._prepare_multi_volume_dir(staging)
+
+                meta_raw = yaml.safe_load((staging / "project.yaml").read_text(encoding="utf-8"))
+                meta_raw["volume_index"] = target_vol
+                (staging / "project.yaml").write_text(
+                    _dump_yaml(meta_raw), encoding="utf-8", newline="\n"
+                )
+
+                vol_path = staging / "outline" / f"vol_{target_vol:02d}.yaml"
+                if target_vol == current_vol and vol_path.exists():
+                    vol_raw = yaml.safe_load(vol_path.read_text(encoding="utf-8")) or {}
+                    existing_scenes = list(vol_raw.get("scenes", []))
+                    existing_scenes.extend(normalized_new_scenes)
+                    vol_raw["scenes"] = existing_scenes
+                    if new_locks:
+                        vol_raw["volume_cap_locks"] = [lk.to_dict() for lk in new_locks]
+                else:
+                    vol_raw = {
+                        "volume": target_vol,
+                        "is_final_volume": False,
+                        "map_name": new_map_name,
+                        "location_id": new_loc_id,
+                        "soft_identity_reboot": soft_reboot,
+                        "volume_cap_locks": [lk.to_dict() for lk in new_locks],
+                        "scenes": normalized_new_scenes,
+                    }
+                vol_path.write_text(_dump_yaml(vol_raw), encoding="utf-8", newline="\n")
+                load_project(staging)
+        except (ProjectValidationError, ValueError, KeyError, TypeError) as exc:
+            raise PlanningValidationError(
+                f"extend_volume final staging validation failed: {exc}"
+            ) from exc
+
+        # Persist validated extension into project_dir (archiving overwritten files into _archive/)
+        stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%dT%H%M%S_%f")
+        self._migrate_single_outline_if_needed(root, stamp)
+
+        meta_raw = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+        meta_raw["volume_index"] = target_vol
+        _write_text_archived(root / "project.yaml", _dump_yaml(meta_raw), root, stamp)
+
+        target_vol_path = root / "outline" / f"vol_{target_vol:02d}.yaml"
+        if target_vol == current_vol and target_vol_path.exists():
+            vol_raw = yaml.safe_load(target_vol_path.read_text(encoding="utf-8")) or {}
+            existing_scenes = list(vol_raw.get("scenes", []))
+            existing_scenes.extend(normalized_new_scenes)
+            vol_raw["scenes"] = existing_scenes
+            if new_locks:
+                vol_raw["volume_cap_locks"] = [lk.to_dict() for lk in new_locks]
+        else:
+            vol_raw = {
+                "volume": target_vol,
+                "is_final_volume": False,
+                "map_name": new_map_name,
+                "location_id": new_loc_id,
+                "soft_identity_reboot": soft_reboot,
+                "volume_cap_locks": [lk.to_dict() for lk in new_locks],
+                "scenes": normalized_new_scenes,
+            }
+        _write_text_archived(target_vol_path, _dump_yaml(vol_raw), root, stamp)
+
+        final_project = load_project(root)
+        return VolumeExtensionResult(
+            project_dir=root,
+            project=final_project,
+            volume_index=target_vol,
+            start_chapter=start_chapter,
+            end_chapter=end_chapter,
+            triggered_map_change=trigger_map_change,
+            new_map_name=new_map_name,
+            new_map_location_id=new_loc_id,
+            soft_identity_reboot=soft_reboot,
+            new_volume_cap_locks=new_locks,
+            volume_file_path=target_vol_path,
+            attempts_used=max_attempts_used,
+        )
 
     @staticmethod
     def _prepare_multi_volume_dir(root: Path) -> None:
@@ -2334,8 +2627,9 @@ class AutoNovelPlanner:
         snapshot: Optional[WorldStateSnapshot] = None,
         snapshot_path: Optional[str | Path] = None,
         num_chapters: int = 8,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> FinaleVolumeResult:
-        """Inventory all unresolved foreshadows & active expectations and generate is_final_volume=True closing outline."""
+        """Staged finale planning (<=10 chapters/batch) with full error collection & retry."""
         if num_chapters < 1:
             raise ValueError(f"num_chapters must be >= 1, got {num_chapters}")
 
@@ -2402,214 +2696,301 @@ class AutoNovelPlanner:
             for exp in active_exps.values()
         ]
 
-        system_prompt = (
+        bible_view = _project_to_bible_view(project)
+        valid_ids_block = _project_valid_ids_block(project)
+        recipe: Optional[GenreRecipe] = (
+            get_genre(project.meta.genre_id)
+            if project.meta.genre_id and project.meta.genre_id in get_genre_ids()
+            else None
+        )
+        chapter_batches = _make_chapter_batches(start_chapter, end_chapter, SCENE_BATCH_SIZE)
+        total_batches = len(chapter_batches)
+        is_single_batch = total_batches == 1
+
+        first_batch_sys = (
             "你是番茄长篇完结总收官策划师。请将全部未收伏笔与未兑现期待感承诺全部清账收官。\n"
-            "必须严格输出单个 JSON 对象：\n"
-            "- foreshadow_resolutions: 对象 {foreshadow_id: payoff_chapter}（全部未收伏笔必须落入本终卷章号范围内）\n"
-            "- expectation_fulfillments: 对象 {expectation_id: fulfill_chapter}\n"
-            "- scenes: 数组（共 num_chapters 章终卷大纲，对应章必须包含兑现对应伏笔关键词的事件及 expectation_directives action='fulfill'）"
+            "必须严格输出单个 JSON 对象（严禁 Markdown 以外多余文字）：\n"
+            "- foreshadow_resolutions: 对象 {foreshadow_id: payoff_chapter}（全部未收伏笔必须落入本终卷总章号范围内）\n"
+            "- expectation_fulfillments: 对象 {expectation_id: fulfill_chapter}（全部未兑现期待感必须落入本终卷总章号范围内）\n"
+            "- scenes: 数组（仅输出本批章号范围的连续终卷大纲，所有角色/器物/文风 id 必须来自项目既有 id，"
+            "public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章，对应章包含兑现伏笔关键词事件及 expectation_directives action='fulfill'）\n\n"
+            f"JSON 模板示例（所有尖括号为占位说明）：\n"
+            f"{json.dumps(_FINALE_VOLUME_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
+        )
+        later_batch_sys = (
+            "你是番茄长篇完结总收官策划师。本阶段仅生成终卷后续批次的连续章纲，请严格输出单个 JSON 对象：\n"
+            "- scenes: 数组（仅输出本批章号范围的连续终卷大纲，按已锁定的伏笔与期待感清账排期落地对应章事件，"
+            "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
+            f"JSON 模板示例（所有尖括号为占位说明）：\n"
+            f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
 
-        feedback = ""
-        last_error: Optional[Exception] = None
-        for attempt in range(1, self.max_validation_retries + 1):
-            feedback_section = (
-                f"\n[上一轮校验失败，必须修复]：\n{feedback}\n" if feedback else ""
-            )
-            user_prompt = (
-                f"项目: {project.meta.project_id}《{project.meta.title}》\n"
-                f"终卷编号: 第 {finale_vol} 卷 (is_final_volume=True)\n"
-                f"终卷章号范围: 第 {start_chapter} 章 ～ 第 {end_chapter} 章（共 {num_chapters} 章）\n"
-                f"待清账未收伏笔清单:\n{json.dumps(fs_summary, ensure_ascii=False, indent=2)}\n"
-                f"待兑现期待感承诺清单:\n{json.dumps(exp_summary, ensure_ascii=False, indent=2)}\n"
-                f"{feedback_section}"
-            )
-            req = LLMRequest(
-                request_id=f"finale-{project.meta.project_id}-v{finale_vol}-{attempt}-{uuid.uuid4().hex[:6]}",
-                chapter=start_chapter,
-                attempt=attempt,
-                purpose="plan",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.4,
-                max_tokens=10000,
-                metadata={
-                    "stage": "plan_finale_volume",
-                    "project_id": project.meta.project_id,
-                    "finale_volume": finale_vol,
-                    "start_chapter": start_chapter,
-                    "end_chapter": end_chapter,
-                    "unresolved_foreshadow_ids": list(unresolved_fs.keys()),
-                    "active_expectation_ids": list(active_exps.keys()),
-                    "attempt": attempt,
-                },
-            )
-            resp = _invoke_planner(self.provider, req)
-            try:
-                payload = _parse_json_payload(resp.content, "plan_finale_volume")
-                raw_scenes = payload.get("scenes")
-                if not isinstance(raw_scenes, list) or len(raw_scenes) != num_chapters:
-                    got_n = len(raw_scenes) if isinstance(raw_scenes, list) else 0
-                    raise ProjectValidationError(
-                        f"plan_finale_volume expected {num_chapters} scenes, got {got_n}"
+        fs_resolutions: Dict[str, int] = {}
+        exp_fulfillments: Dict[str, int] = {}
+        normalized_scenes: List[Dict[str, Any]] = []
+        fulfilled_exp_in_scenes: set[str] = set()
+        max_attempts_used = 1
+
+        existing_ordered = sorted(project.scenes, key=lambda sc: sc.chapter)
+        trailing_suppress = _trailing_suppress_count(
+            [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
+        )
+
+        for batch_idx, (b_start, b_end) in enumerate(chapter_batches, start=1):
+            b_count = b_end - b_start + 1
+            is_first_batch = batch_idx == 1
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "stage": "plan_finale_volume",
+                        "batch": batch_idx,
+                        "total_batches": total_batches,
+                        "start_chapter": b_start,
+                        "end_chapter": b_end,
+                    }
+                )
+
+            prior_summary = _format_prior_scene_summaries(existing_ordered, normalized_scenes)
+            if is_first_batch:
+                schedule_block = (
+                    f"待清账未收伏笔清单:\n{json.dumps(fs_summary, ensure_ascii=False, indent=2)}\n"
+                    f"待兑现期待感承诺清单:\n{json.dumps(exp_summary, ensure_ascii=False, indent=2)}"
+                )
+            else:
+                batch_fs = [
+                    {"id": fid, "payoff_chapter": ch, "title": unresolved_fs[fid].title}
+                    for fid, ch in fs_resolutions.items()
+                    if b_start <= ch <= b_end and fid in unresolved_fs
+                ]
+                batch_exp = [
+                    {"id": eid, "fulfill_chapter": ch, "title": active_exps[eid].title}
+                    for eid, ch in exp_fulfillments.items()
+                    if b_start <= ch <= b_end and eid in active_exps
+                ]
+                schedule_block = (
+                    f"已锁定本批回收伏笔: {json.dumps(batch_fs, ensure_ascii=False)}\n"
+                    f"已锁定本批兑现期待感: {json.dumps(batch_exp, ensure_ascii=False)}"
+                )
+
+            feedback = ""
+            batch_passed = False
+            last_error: Optional[Exception] = None
+            for attempt in range(1, self.max_validation_retries + 1):
+                max_attempts_used = max(max_attempts_used, attempt)
+                feedback_section = (
+                    f"\n[上一轮校验失败（请逐条全部修复）]：\n{feedback}\n" if feedback else ""
+                )
+                user_prompt = (
+                    f"阶段: plan_finale_volume（批次 {batch_idx}/{total_batches}）\n"
+                    f"项目: {project.meta.project_id}《{project.meta.title}》\n"
+                    f"终卷编号: 第 {finale_vol} 卷 (is_final_volume=True)\n"
+                    f"终卷章号范围: 第 {start_chapter} 章 ～ 第 {end_chapter} 章（共 {num_chapters} 章）\n"
+                    f"本批章号范围: 第 {b_start} 章 ～ 第 {b_end} 章（本批共 {b_count} 章）\n"
+                    f"{valid_ids_block}\n"
+                    f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
+                    f"前序章节梗概:\n{prior_summary}\n"
+                    f"{schedule_block}\n"
+                    f"{feedback_section}"
+                )
+                req = LLMRequest(
+                    request_id=f"finale-{project.meta.project_id}-v{finale_vol}-b{batch_idx}-{attempt}-{uuid.uuid4().hex[:6]}",
+                    chapter=b_start,
+                    attempt=attempt,
+                    purpose="plan",
+                    system_prompt=first_batch_sys if is_first_batch else later_batch_sys,
+                    user_prompt=user_prompt,
+                    temperature=0.4,
+                    max_tokens=STAGE_SCENES_MAX_TOKENS,
+                    metadata={
+                        "stage": "plan_finale_volume",
+                        "project_id": project.meta.project_id,
+                        "finale_volume": finale_vol,
+                        "start_chapter": b_start,
+                        "end_chapter": b_end,
+                        "total_start_chapter": start_chapter,
+                        "total_end_chapter": end_chapter,
+                        "batch_index": batch_idx,
+                        "total_batches": total_batches,
+                        "unresolved_foreshadow_ids": list(unresolved_fs.keys()),
+                        "active_expectation_ids": list(active_exps.keys()),
+                        "attempt": attempt,
+                    },
+                )
+                resp = _invoke_planner(self.provider, req)
+                try:
+                    payload = _parse_json_payload(
+                        resp.content, f"plan_finale_volume[{batch_idx}/{total_batches}]"
                     )
+                except (ProjectValidationError, ValueError, TypeError) as exc:
+                    last_error = exc
+                    feedback = f"1. {exc}"
+                    continue
 
-                fs_resolutions = dict(payload.get("foreshadow_resolutions") or {})
-                exp_fulfillments = dict(payload.get("expectation_fulfillments") or {})
+                batch_errors: List[str] = []
+                raw_scenes = payload.get("scenes")
+                cand_fs_res = fs_resolutions
+                cand_exp_res = exp_fulfillments
+                if is_first_batch:
+                    res_errs, cand_fs_res, cand_exp_res = _collect_finale_resolution_errors(
+                        payload,
+                        start_chapter=start_chapter,
+                        end_chapter=end_chapter,
+                        unresolved_fs=unresolved_fs,
+                        active_exps=active_exps,
+                        raw_scenes=raw_scenes,
+                        is_single_batch=is_single_batch,
+                    )
+                    batch_errors.extend(res_errs)
 
-                finale_chapters = set(range(start_chapter, end_chapter + 1))
-                for fid in unresolved_fs:
-                    if fid not in fs_resolutions:
-                        raise ProjectValidationError(
-                            f"Finale missing foreshadow_resolutions mapping for '{fid}'"
-                        )
-                    ch_val = int(fs_resolutions[fid])
-                    if ch_val not in finale_chapters:
-                        raise ProjectValidationError(
-                            f"Finale foreshadow '{fid}' due_chapter {ch_val} outside finale range "
-                            f"{start_chapter}..{end_chapter}"
-                        )
+                scene_errs = _collect_scene_batch_errors(
+                    raw_scenes,
+                    bible_view,
+                    (b_start, b_end),
+                    recipe=recipe,
+                    prior_trailing_suppress=trailing_suppress,
+                )
+                batch_errors.extend(scene_errs)
 
-                normalized_scenes: List[Dict[str, Any]] = []
-                fulfilled_exp_in_scenes: set[str] = set()
-                for offset, item in enumerate(raw_scenes):
+                if batch_errors:
+                    feedback = "\n".join(f"{i}. {err}" for i, err in enumerate(batch_errors, start=1))
+                    last_error = ProjectValidationError(feedback)
+                    continue
+
+                if is_first_batch:
+                    fs_resolutions = cand_fs_res
+                    exp_fulfillments = cand_exp_res
+
+                sorted_batch = sorted(raw_scenes, key=lambda sc: int(sc["chapter"]))
+                batch_normalized: List[Dict[str, Any]] = []
+                for item in sorted_batch:
                     s_dict = dict(item)
-                    expected_ch = start_chapter + offset
-                    if int(s_dict.get("chapter", 0)) != expected_ch:
-                        raise ProjectValidationError(
-                            f"Expected finale scene chapter {expected_ch}, got {s_dict.get('chapter')!r}"
-                        )
-                    if s_dict.get("public_title"):
-                        s_dict["public_title"] = _strip_chapter_prefix(str(s_dict["public_title"]))
                     s_dict["volume"] = finale_vol
                     for ed in s_dict.get("expectation_directives") or []:
                         if isinstance(ed, Mapping) and ed.get("action") == "fulfill" and ed.get("id"):
                             fulfilled_exp_in_scenes.add(str(ed["id"]))
-                    normalized_scenes.append(s_dict)
+                    batch_normalized.append(s_dict)
 
-                for eid in active_exps:
-                    if eid not in exp_fulfillments and eid not in fulfilled_exp_in_scenes:
-                        raise ProjectValidationError(
-                            f"Finale missing fulfillment for active expectation '{eid}'"
-                        )
-                    if eid in exp_fulfillments:
-                        f_ch = int(exp_fulfillments[eid])
-                        if f_ch not in finale_chapters:
-                            raise ProjectValidationError(
-                                f"Expectation '{eid}' fulfill_chapter {f_ch} outside finale range"
-                            )
-                        if eid not in fulfilled_exp_in_scenes:
-                            target_scene = normalized_scenes[f_ch - start_chapter]
-                            directives_list = list(target_scene.get("expectation_directives") or [])
-                            directives_list.append(
-                                {
-                                    "id": eid,
-                                    "title": active_exps[eid].title,
-                                    "due_chapter": f_ch,
-                                    "description": active_exps[eid].description,
-                                    "action": "fulfill",
-                                    "evidence_keywords": [active_exps[eid].title[:4] or "兑现"],
-                                }
-                            )
-                            target_scene["expectation_directives"] = directives_list
-                            fulfilled_exp_in_scenes.add(eid)
+                normalized_scenes.extend(batch_normalized)
+                trailing_suppress = _trailing_suppress_count(
+                    [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
+                    + normalized_scenes
+                )
+                batch_passed = True
+                break
 
-                # Validate full project in staging with is_final_volume=True
-                with tempfile.TemporaryDirectory(prefix="xsb_fin_") as tmpdir:
-                    staging = Path(tmpdir)
-                    shutil.copytree(root, staging, dirs_exist_ok=True, ignore=shutil.ignore_patterns("_archive", "*.tmp"))
-                    self._prepare_multi_volume_dir(staging)
+            if not batch_passed:
+                raise PlanningValidationError(
+                    f"plan_finale_volume batch {batch_idx}/{total_batches} (chapters {b_start}..{b_end}) "
+                    f"failed validation after {self.max_validation_retries} attempts:\n{feedback or last_error}"
+                ) from last_error
 
-                    meta_raw = yaml.safe_load((staging / "project.yaml").read_text(encoding="utf-8"))
-                    meta_raw["volume_index"] = finale_vol
-                    meta_raw["is_final_volume"] = True
-                    (staging / "project.yaml").write_text(
-                        _dump_yaml(meta_raw), encoding="utf-8", newline="\n"
-                    )
-
-                    fs_raw = yaml.safe_load((staging / "foreshadows.yaml").read_text(encoding="utf-8")) or {}
-                    updated_fs_list = self._build_finale_foreshadows_list(
-                        fs_raw,
-                        fs_resolutions=fs_resolutions,
-                        unresolved_fs=unresolved_fs,
-                        effective_snapshot=effective_snapshot,
-                    )
-                    (staging / "foreshadows.yaml").write_text(
-                        _dump_yaml({"foreshadows": updated_fs_list}),
-                        encoding="utf-8",
-                        newline="\n",
-                    )
-
-                    finale_vol_data = {
-                        "volume": finale_vol,
-                        "is_final_volume": True,
-                        "scenes": normalized_scenes,
+        # Attach fulfill directives for any mapped active expectations not yet inlined in scenes
+        for eid, f_ch in exp_fulfillments.items():
+            if eid in active_exps and eid not in fulfilled_exp_in_scenes:
+                target_scene = normalized_scenes[f_ch - start_chapter]
+                directives_list = list(target_scene.get("expectation_directives") or [])
+                directives_list.append(
+                    {
+                        "id": eid,
+                        "title": active_exps[eid].title,
+                        "due_chapter": f_ch,
+                        "description": active_exps[eid].description,
+                        "action": "fulfill",
+                        "evidence_keywords": [active_exps[eid].title[:4] or "兑现"],
                     }
-                    (staging / "outline" / f"vol_{finale_vol:02d}.yaml").write_text(
-                        _dump_yaml(finale_vol_data),
-                        encoding="utf-8",
-                        newline="\n",
-                    )
+                )
+                target_scene["expectation_directives"] = directives_list
+                fulfilled_exp_in_scenes.add(eid)
 
-                    load_project(staging, is_final_volume=True)
+        # Validate full project in staging with is_final_volume=True
+        try:
+            with tempfile.TemporaryDirectory(prefix="xsb_fin_") as tmpdir:
+                staging = Path(tmpdir)
+                shutil.copytree(
+                    root, staging, dirs_exist_ok=True, ignore=shutil.ignore_patterns("_archive", "*.tmp")
+                )
+                self._prepare_multi_volume_dir(staging)
 
-            except (
-                ProjectValidationError,
-                ValueError,
-                KeyError,
-                TypeError,
-            ) as exc:
-                last_error = exc
-                feedback = str(exc)
-                continue
+                meta_raw = yaml.safe_load((staging / "project.yaml").read_text(encoding="utf-8"))
+                meta_raw["volume_index"] = finale_vol
+                meta_raw["is_final_volume"] = True
+                (staging / "project.yaml").write_text(
+                    _dump_yaml(meta_raw), encoding="utf-8", newline="\n"
+                )
 
-            # Persist validated finale volume into project_dir
-            stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%dT%H%M%S_%f")
-            self._migrate_single_outline_if_needed(root, stamp)
+                fs_raw = yaml.safe_load((staging / "foreshadows.yaml").read_text(encoding="utf-8")) or {}
+                updated_fs_list = self._build_finale_foreshadows_list(
+                    fs_raw,
+                    fs_resolutions=fs_resolutions,
+                    unresolved_fs=unresolved_fs,
+                    effective_snapshot=effective_snapshot,
+                )
+                (staging / "foreshadows.yaml").write_text(
+                    _dump_yaml({"foreshadows": updated_fs_list}),
+                    encoding="utf-8",
+                    newline="\n",
+                )
 
-            meta_raw = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
-            meta_raw["volume_index"] = finale_vol
-            meta_raw["is_final_volume"] = True
-            _write_text_archived(root / "project.yaml", _dump_yaml(meta_raw), root, stamp)
+                finale_vol_data = {
+                    "volume": finale_vol,
+                    "is_final_volume": True,
+                    "scenes": normalized_scenes,
+                }
+                (staging / "outline" / f"vol_{finale_vol:02d}.yaml").write_text(
+                    _dump_yaml(finale_vol_data),
+                    encoding="utf-8",
+                    newline="\n",
+                )
 
-            fs_raw = yaml.safe_load((root / "foreshadows.yaml").read_text(encoding="utf-8")) or {}
-            updated_fs_list = self._build_finale_foreshadows_list(
-                fs_raw,
-                fs_resolutions=fs_resolutions,
-                unresolved_fs=unresolved_fs,
-                effective_snapshot=effective_snapshot,
-            )
-            _write_text_archived(
-                root / "foreshadows.yaml",
-                _dump_yaml({"foreshadows": updated_fs_list}),
-                root,
-                stamp,
-            )
+                load_project(staging, is_final_volume=True)
+        except (ProjectValidationError, ValueError, KeyError, TypeError) as exc:
+            raise PlanningValidationError(
+                f"plan_finale_volume final staging validation failed: {exc}"
+            ) from exc
 
-            finale_vol_path = root / "outline" / f"vol_{finale_vol:02d}.yaml"
-            finale_vol_data = {
-                "volume": finale_vol,
-                "is_final_volume": True,
-                "scenes": normalized_scenes,
-            }
-            _write_text_archived(finale_vol_path, _dump_yaml(finale_vol_data), root, stamp)
+        # Persist validated finale volume into project_dir
+        stamp = datetime.now(SHANGHAI_TZ).strftime("%Y%m%dT%H%M%S_%f")
+        self._migrate_single_outline_if_needed(root, stamp)
 
-            final_project = load_project(root, is_final_volume=True)
-            return FinaleVolumeResult(
-                project_dir=root,
-                project=final_project,
-                volume_index=finale_vol,
-                start_chapter=start_chapter,
-                end_chapter=end_chapter,
-                resolved_foreshadow_ids=sorted(unresolved_fs.keys()),
-                fulfilled_expectation_ids=sorted(active_exps.keys()),
-                volume_file_path=finale_vol_path,
-                attempts_used=attempt,
-            )
+        meta_raw = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
+        meta_raw["volume_index"] = finale_vol
+        meta_raw["is_final_volume"] = True
+        _write_text_archived(root / "project.yaml", _dump_yaml(meta_raw), root, stamp)
 
-        raise PlanningValidationError(
-            f"plan_finale_volume failed validation after {self.max_validation_retries} attempts: {last_error}"
-        ) from last_error
+        fs_raw = yaml.safe_load((root / "foreshadows.yaml").read_text(encoding="utf-8")) or {}
+        updated_fs_list = self._build_finale_foreshadows_list(
+            fs_raw,
+            fs_resolutions=fs_resolutions,
+            unresolved_fs=unresolved_fs,
+            effective_snapshot=effective_snapshot,
+        )
+        _write_text_archived(
+            root / "foreshadows.yaml",
+            _dump_yaml({"foreshadows": updated_fs_list}),
+            root,
+            stamp,
+        )
+
+        finale_vol_path = root / "outline" / f"vol_{finale_vol:02d}.yaml"
+        finale_vol_data = {
+            "volume": finale_vol,
+            "is_final_volume": True,
+            "scenes": normalized_scenes,
+        }
+        _write_text_archived(finale_vol_path, _dump_yaml(finale_vol_data), root, stamp)
+
+        final_project = load_project(root, is_final_volume=True)
+        return FinaleVolumeResult(
+            project_dir=root,
+            project=final_project,
+            volume_index=finale_vol,
+            start_chapter=start_chapter,
+            end_chapter=end_chapter,
+            resolved_foreshadow_ids=sorted(unresolved_fs.keys()),
+            fulfilled_expectation_ids=sorted(active_exps.keys()),
+            volume_file_path=finale_vol_path,
+            attempts_used=max_attempts_used,
+        )
 
 
 __all__ = [

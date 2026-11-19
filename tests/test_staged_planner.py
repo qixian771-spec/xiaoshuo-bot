@@ -892,5 +892,522 @@ class TestAsyncWizardAndDBMigration(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class TestStagedExtendAndFinalePlanner(unittest.TestCase):
+    @staticmethod
+    def _create_vol1_project(proj_dir: Path, *, num_chapters: int = 60) -> Path:
+        import yaml
+
+        (proj_dir / "outline").mkdir(parents=True, exist_ok=True)
+        (proj_dir / "project.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "project_id": proj_dir.name,
+                    "title": "工位反杀大富翁",
+                    "genre": "都市脑洞",
+                    "genre_id": "urban_brainhole",
+                    "synopsis": "实习转正前夜被抢走算法，激活十倍反噬账单系统，一路逆袭拿下资本总部。",
+                    "default_pov_character": "mc",
+                    "author_level": "lv2_plus",
+                    "contract_track": "serial_20k",
+                    "volume_index": 1,
+                    "is_final_volume": False,
+                    "alternate_titles": [
+                        "工位刷出百亿资金",
+                        "抢我方案反手收购",
+                        "被裁后主管跪求我",
+                        "十倍返现职场破局",
+                        "工牌一扔买下大厦",
+                    ],
+                    "alternate_blurbs": [
+                        "简介一：十倍反噬账单一路爽到资本顶层。",
+                        "简介二：被裁当天激活系统，反手买下整栋总部大楼。",
+                        "简介三：每一次职场黑幕，都变成他账户里暴涨的零。",
+                    ],
+                    "tweet_aliases": ["工位刷百亿", "反噬账单局", "被裁暴富录"],
+                    "volume_cap_locks": [
+                        {"ledger_key": "cash", "volume": 1, "max_value": 50_000_000.0, "unit": "元"}
+                    ],
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (proj_dir / "characters.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "characters": [
+                        {
+                            "id": "mc",
+                            "name": "许明远",
+                            "role": "protagonist",
+                            "personality": "冷静果断",
+                            "speech_style": "短句带刺",
+                        },
+                        {
+                            "id": "rival",
+                            "name": "赵志强",
+                            "role": "antagonist",
+                            "personality": "贪婪跋扈",
+                            "speech_style": "阴阳怪气",
+                        },
+                    ]
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (proj_dir / "assets.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "assets": [
+                        {
+                            "id": "badge",
+                            "name": "员工工牌",
+                            "location": "主角手中",
+                            "holder": "许明远",
+                            "condition": "完好",
+                            "physical_details": "蓝带磁卡",
+                        }
+                    ]
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (proj_dir / "foreshadows.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "foreshadows": [
+                        {
+                            "id": "FS-01",
+                            "title": "原始提交哈希密约",
+                            "plant_chapter": 1,
+                            "due_chapter": 120,
+                            "plant_instruction": "第1章埋下原始哈希证据",
+                            "payoff_instruction": "终卷当众核验哈希",
+                            "plant_keywords": ["哈希"],
+                            "payoff_keywords": ["核验"],
+                            "cross_volume": True,
+                        }
+                    ]
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (proj_dir / "style_profiles.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "style_profiles": [
+                        {
+                            "id": "urban_brainhole_human",
+                            "name": "都市脑洞白描",
+                            "granularity_notes": "短段节奏快",
+                            "sample_text": "主管把解约单拍在玻璃桌上时，我兜里只剩三百块。",
+                        }
+                    ]
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        scenes = [
+            {
+                "chapter": ch,
+                "scene_id": f"ch{ch:04d}_v1",
+                "internal_title": f"首卷节点{ch}",
+                "public_title": f"账单反杀第{ch}局",
+                "pov_character": "mc",
+                "active_characters": ["mc", "rival"],
+                "active_assets": ["badge"],
+                "style_profile_ids": ["urban_brainhole_human"],
+                "location_time": "海城写字楼",
+                "location_id": "haicheng_hq",
+                "events": [f"第{ch}章完成职场反击"],
+                "stop_condition": "留下新悬念",
+                "min_chars": 1800,
+                "max_chars": 4000,
+                "beat_type": "反转打脸",
+                "emotion_polarity": "burst" if ch % 2 == 1 else "neutral",
+                "cliffhanger_hook": "更高层来电",
+                "volume": 1,
+            }
+            for ch in range(1, num_chapters + 1)
+        ]
+        (proj_dir / "outline" / "vol_01.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "volume": 1,
+                    "is_final_volume": False,
+                    "volume_cap_locks": [
+                        {"ledger_key": "cash", "volume": 1, "max_value": 50_000_000.0, "unit": "元"}
+                    ],
+                    "scenes": scenes,
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return proj_dir
+
+    @staticmethod
+    def _make_scene(
+        ch: int,
+        *,
+        volume: int,
+        location_id: str = "jingzhou_exchange",
+        polarity: str = "burst",
+        public_title: Optional[str] = None,
+        pov_character: str = "mc",
+        active_characters: Optional[List[str]] = None,
+        active_assets: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "chapter": ch,
+            "scene_id": f"ch{ch:04d}_v{volume}",
+            "internal_title": f"卷{volume}节点{ch}",
+            "public_title": public_title if public_title is not None else f"新地图破局{ch}",
+            "pov_character": pov_character,
+            "active_characters": active_characters if active_characters is not None else ["mc", "rival"],
+            "active_assets": active_assets if active_assets is not None else ["badge"],
+            "style_profile_ids": ["urban_brainhole_human"],
+            "location_time": "京州金融交易所",
+            "location_id": location_id,
+            "events": [f"第{ch}章主角推进新地图资本对决"],
+            "stop_condition": "反派吃瘪退场并抛出新悬念",
+            "min_chars": 1800,
+            "max_chars": 4000,
+            "beat_type": "反转打脸",
+            "emotion_polarity": polarity,
+            "cliffhanger_hook": "神秘并购函送达",
+            "volume": volume,
+        }
+
+    def test_p1_6_extend_volume_staged_25_chapters_splits_3_batches_and_loads_cleanly(self) -> None:
+        class _StagedExtendLLM(LLMProvider):
+            def __init__(self) -> None:
+                self.requests: List[LLMRequest] = []
+
+            def generate(self, request: LLMRequest) -> LLMResponse:
+                self.requests.append(request)
+                meta = dict(request.metadata or {})
+                s_ch = int(meta["start_chapter"])
+                e_ch = int(meta["end_chapter"])
+                vol = int(meta["target_volume"])
+                batch_idx = int(meta["batch_index"])
+                scenes = [
+                    TestStagedExtendAndFinalePlanner._make_scene(
+                        ch, volume=vol, polarity="burst" if ch % 2 == 1 else "neutral"
+                    )
+                    for ch in range(s_ch, e_ch + 1)
+                ]
+                payload: Dict[str, Any] = {"scenes": scenes}
+                if batch_idx == 1:
+                    payload.update(
+                        {
+                            "map_name": "京州国际金融交易所",
+                            "location_id": "jingzhou_exchange",
+                            "soft_identity_reboot": "以独立清算顾问身份空降京州总行",
+                            "volume_cap_locks": [
+                                {"ledger_key": "cash", "volume": vol, "max_value": 5_000_000_000.0, "unit": "元"}
+                            ],
+                        }
+                    )
+                return LLMResponse(
+                    request_id=request.request_id,
+                    content=json.dumps(payload, ensure_ascii=False),
+                    model="fake-planner",
+                    provider="fake",
+                )
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_p16_ext25_"))
+        try:
+            proj_dir = self._create_vol1_project(tmp / "staged_ext_book", num_chapters=60)
+            llm = _StagedExtendLLM()
+            progress_events: List[Dict[str, Any]] = []
+            planner = AutoNovelPlanner(llm)
+            res = planner.extend_volume(
+                proj_dir,
+                batch_size=25,
+                on_progress=progress_events.append,
+            )
+
+            self.assertEqual(len(llm.requests), 3)
+            ranges = [
+                (r.metadata["start_chapter"], r.metadata["end_chapter"], r.metadata["batch_index"], r.metadata["total_batches"])
+                for r in llm.requests
+            ]
+            self.assertEqual(ranges, [(61, 70, 1, 3), (71, 80, 2, 3), (81, 85, 3, 3)])
+            self.assertEqual(len(progress_events), 3)
+            self.assertTrue(res.triggered_map_change)
+            self.assertEqual(res.volume_index, 2)
+            self.assertEqual(res.start_chapter, 61)
+            self.assertEqual(res.end_chapter, 85)
+            reloaded = load_project(proj_dir)
+            self.assertEqual(len(reloaded.scenes), 85)
+            self.assertEqual(reloaded.meta.volume_index, 2)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_p1_6_extend_volume_collects_all_meta_and_scene_errors_and_feeds_back_on_retry(self) -> None:
+        class _RetryExtendLLM(LLMProvider):
+            def __init__(self) -> None:
+                self.requests: List[LLMRequest] = []
+
+            def generate(self, request: LLMRequest) -> LLMResponse:
+                self.requests.append(request)
+                meta = dict(request.metadata or {})
+                s_ch, e_ch = int(meta["start_chapter"]), int(meta["end_chapter"])
+                vol = int(meta["target_volume"])
+                batch_idx = int(meta["batch_index"])
+                attempt = int(meta["attempt"])
+                if batch_idx == 1 and attempt == 1:
+                    # Simultaneous errors: colliding old location_id, empty soft_identity_reboot,
+                    # non-upgraded lock, unknown character id, and 第61章 prefix in public_title
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(
+                            ch,
+                            volume=vol,
+                            public_title=f"第{ch}章违规标题" if ch == 61 else f"新地图破局{ch}",
+                            active_characters=["mc", "ghost_char"] if ch == 62 else ["mc", "rival"],
+                        )
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {
+                        "map_name": "海城旧地",
+                        "location_id": "haicheng_hq",
+                        "soft_identity_reboot": "",
+                        "volume_cap_locks": [
+                            {"ledger_key": "cash", "volume": vol, "max_value": 50_000_000.0, "unit": "元"}
+                        ],
+                        "scenes": scenes,
+                    }
+                else:
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(ch, volume=vol)
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {"scenes": scenes}
+                    if batch_idx == 1:
+                        payload.update(
+                            {
+                                "map_name": "京州国际金融交易所",
+                                "location_id": "jingzhou_exchange",
+                                "soft_identity_reboot": "海外审计顾问新身份空降",
+                                "volume_cap_locks": [
+                                    {"ledger_key": "cash", "volume": vol, "max_value": 500_000_000.0, "unit": "元"}
+                                ],
+                            }
+                        )
+                return LLMResponse(
+                    request_id=request.request_id,
+                    content=json.dumps(payload, ensure_ascii=False),
+                    model="fake-planner",
+                    provider="fake",
+                )
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_p16_retry_"))
+        try:
+            proj_dir = self._create_vol1_project(tmp / "retry_ext_book", num_chapters=60)
+            llm = _RetryExtendLLM()
+            res = AutoNovelPlanner(llm).extend_volume(proj_dir, batch_size=15)
+
+            # Batch 1 took 2 attempts, Batch 2 took 1 attempt => 3 LLM calls total
+            self.assertEqual(len(llm.requests), 3)
+            self.assertEqual(res.attempts_used, 2)
+            retry_prompt = llm.requests[1].user_prompt
+            self.assertIn("haicheng_hq", retry_prompt)
+            self.assertIn("soft_identity_reboot", retry_prompt)
+            self.assertIn("must exceed", retry_prompt)
+            self.assertIn("ghost_char", retry_prompt)
+            self.assertIn("第X章", retry_prompt)
+            self.assertEqual(len(load_project(proj_dir).scenes), 75)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_p1_6_extend_volume_stops_after_3_failures_and_never_persists_partial(self) -> None:
+        class _FailBatch2LLM(LLMProvider):
+            def __init__(self) -> None:
+                self.requests: List[LLMRequest] = []
+
+            def generate(self, request: LLMRequest) -> LLMResponse:
+                self.requests.append(request)
+                meta = dict(request.metadata or {})
+                s_ch, e_ch = int(meta["start_chapter"]), int(meta["end_chapter"])
+                vol = int(meta["target_volume"])
+                batch_idx = int(meta["batch_index"])
+                if batch_idx == 1:
+                    # End batch 1 with 2 consecutive suppress chapters (ch 69, 70)
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(
+                            ch,
+                            volume=vol,
+                            polarity="suppress" if ch >= 69 else "burst",
+                        )
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {
+                        "map_name": "京州国际金融交易所",
+                        "location_id": "jingzhou_exchange",
+                        "soft_identity_reboot": "海外审计顾问新身份空降",
+                        "volume_cap_locks": [
+                            {"ledger_key": "cash", "volume": vol, "max_value": 500_000_000.0, "unit": "元"}
+                        ],
+                        "scenes": scenes,
+                    }
+                else:
+                    # Always violate cross-batch consecutive suppress (ch 71 is 3rd suppress) + unknown asset
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(
+                            ch,
+                            volume=vol,
+                            polarity="suppress" if ch == 71 else "burst",
+                            active_assets=["nonexistent_asset"] if ch == 72 else ["badge"],
+                        )
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {"scenes": scenes}
+                return LLMResponse(
+                    request_id=request.request_id,
+                    content=json.dumps(payload, ensure_ascii=False),
+                    model="fake-planner",
+                    provider="fake",
+                )
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_p16_fail_"))
+        try:
+            proj_dir = self._create_vol1_project(tmp / "fail_ext_book", num_chapters=60)
+            llm = _FailBatch2LLM()
+            with self.assertRaises(PlanningValidationError) as ctx:
+                AutoNovelPlanner(llm).extend_volume(proj_dir, batch_size=15)
+
+            # 1 call for batch 1 + strictly 3 calls for batch 2 (no 4th attempt!)
+            self.assertEqual(len(llm.requests), 4)
+            err_msg = str(ctx.exception)
+            self.assertIn("extend_volume", err_msg)
+            self.assertIn("batch 2/2", err_msg)
+            self.assertIn("suppress", err_msg)
+            self.assertIn("nonexistent_asset", err_msg)
+            # Partial vol_02.yaml must NEVER be persisted
+            self.assertFalse((proj_dir / "outline" / "vol_02.yaml").exists())
+            self.assertEqual(len(load_project(proj_dir).scenes), 60)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_p1_6_plan_finale_volume_staged_15_chapters_retry_and_permanent_failure(self) -> None:
+        from xiaoshuo_bot.models import ExpectationState, WorldStateSnapshot
+
+        class _StagedFinaleLLM(LLMProvider):
+            def __init__(self, *, fail_batch2_always: bool = False) -> None:
+                self.fail_batch2_always = fail_batch2_always
+                self.requests: List[LLMRequest] = []
+
+            def generate(self, request: LLMRequest) -> LLMResponse:
+                self.requests.append(request)
+                meta = dict(request.metadata or {})
+                s_ch, e_ch = int(meta["start_chapter"]), int(meta["end_chapter"])
+                vol = int(meta["finale_volume"])
+                batch_idx = int(meta["batch_index"])
+                attempt = int(meta["attempt"])
+
+                if batch_idx == 1 and attempt == 1 and not self.fail_batch2_always:
+                    # Simultaneous errors: missing FS-01, out-of-range EXP-01, unknown char id
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(
+                            ch,
+                            volume=vol,
+                            active_characters=["mc", "bad_id"] if ch == 61 else ["mc", "rival"],
+                        )
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {
+                        "foreshadow_resolutions": {},
+                        "expectation_fulfillments": {"EXP-01": 999},
+                        "scenes": scenes,
+                    }
+                elif batch_idx == 2 and self.fail_batch2_always:
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(
+                            ch,
+                            volume=vol,
+                            active_assets=["ghost_asset"],
+                        )
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {"scenes": scenes}
+                else:
+                    scenes = [
+                        TestStagedExtendAndFinalePlanner._make_scene(ch, volume=vol)
+                        for ch in range(s_ch, e_ch + 1)
+                    ]
+                    payload = {"scenes": scenes}
+                    if batch_idx == 1:
+                        payload.update(
+                            {
+                                "foreshadow_resolutions": {"FS-01": 72},
+                                "expectation_fulfillments": {"EXP-01": 74},
+                            }
+                        )
+                return LLMResponse(
+                    request_id=request.request_id,
+                    content=json.dumps(payload, ensure_ascii=False),
+                    model="fake-planner",
+                    provider="fake",
+                )
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_p16_fin_"))
+        try:
+            proj_dir = self._create_vol1_project(tmp / "staged_fin_book", num_chapters=60)
+            snap = WorldStateSnapshot(
+                current_chapter=60,
+                current_volume=1,
+                active_expectations={
+                    "EXP-01": ExpectationState(
+                        id="EXP-01",
+                        title="夺回控股董事会席位",
+                        planted_chapter=5,
+                        due_chapter=75,
+                        description="终局完成控股权清算",
+                    )
+                },
+            )
+            llm = _StagedFinaleLLM(fail_batch2_always=False)
+            res = AutoNovelPlanner(llm).plan_finale_volume(proj_dir, snapshot=snap, num_chapters=15)
+
+            # Batch 1 (61..70) took 2 attempts + Batch 2 (71..75) took 1 attempt = 3 calls
+            self.assertEqual(len(llm.requests), 3)
+            self.assertEqual(res.attempts_used, 2)
+            retry_prompt = llm.requests[1].user_prompt
+            self.assertIn("FS-01", retry_prompt)
+            self.assertIn("EXP-01", retry_prompt)
+            self.assertIn("bad_id", retry_prompt)
+            self.assertEqual(res.resolved_foreshadow_ids, ["FS-01"])
+            self.assertEqual(res.fulfilled_expectation_ids, ["EXP-01"])
+            reloaded = load_project(proj_dir, is_final_volume=True)
+            self.assertTrue(reloaded.meta.is_final_volume)
+            self.assertEqual(len(reloaded.scenes), 75)
+            self.assertEqual(reloaded.foreshadows["FS-01"].due_chapter, 72)
+
+            # Permanent 3-attempt failure on batch 2 stops at 3 and leaves project untouched
+            proj_dir2 = self._create_vol1_project(tmp / "fail_fin_book", num_chapters=60)
+            llm_fail = _StagedFinaleLLM(fail_batch2_always=True)
+            with self.assertRaises(PlanningValidationError) as ctx:
+                AutoNovelPlanner(llm_fail).plan_finale_volume(proj_dir2, snapshot=snap, num_chapters=15)
+            self.assertEqual(len(llm_fail.requests), 4)
+            self.assertIn("plan_finale_volume", str(ctx.exception))
+            self.assertIn("batch 2/2", str(ctx.exception))
+            self.assertIn("ghost_asset", str(ctx.exception))
+            self.assertFalse(load_project(proj_dir2).meta.is_final_volume)
+            self.assertFalse((proj_dir2 / "outline" / "vol_02.yaml").exists())
+        finally:
+            shutil.rmtree(tmp)
+
+
 if __name__ == "__main__":
     unittest.main()
