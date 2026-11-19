@@ -1268,8 +1268,8 @@ class AITicChecker:
                             line_number=narr_start_line,
                             context_snippet=paragraphs_with_lines[narr_start_idx][2][:60],
                             fix_hint=(
-                                f"第 {narr_start_idx + 1}~{narr_end_idx + 1} 段连续纯旁白达 {narr_run_chars} 字（超过 320 字上限），"
-                                "请穿插人物对话、即时动作反馈或系统面板交互"
+                                f"第 {narr_start_idx + 1}~{narr_end_idx + 1} 段连续不含引号的纯旁白达 {narr_run_chars} 字（超过 320 字上限），"
+                                "请在该区间中段穿插带引号“...”的人物对话、角色低声自语/复核或书面/短信引文（纯动作描写不打断纯旁白计数）"
                             ),
                         )
                     )
@@ -1299,8 +1299,8 @@ class AITicChecker:
                     line_number=narr_start_line,
                     context_snippet=paragraphs_with_lines[narr_start_idx][2][:60],
                     fix_hint=(
-                        f"第 {narr_start_idx + 1}~{narr_end_idx + 1} 段连续纯旁白达 {narr_run_chars} 字（超过 320 字上限），"
-                        "请穿插人物对话、即时动作反馈或系统面板交互"
+                        f"第 {narr_start_idx + 1}~{narr_end_idx + 1} 段连续不含引号的纯旁白达 {narr_run_chars} 字（超过 320 字上限），"
+                        "请在该区间中段穿插带引号“...”的人物对话、角色低声自语/复核或书面/短信引文（纯动作描写不打断纯旁白计数）"
                     ),
                 )
             )

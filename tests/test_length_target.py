@@ -73,6 +73,34 @@ class LengthTargetTest(unittest.TestCase):
     def test_other_violations_get_no_length_block(self) -> None:
         _, rewrite = self.compiler.compile_rewrite_prompt(self.scene, self.state, "草稿", _report(2500, "SYM_001"))
         self.assertNotIn("### 篇幅缺口", rewrite)
+        self.assertNotIn("### 篇幅超限裁剪", rewrite)
+
+    def test_overlong_draft_rewrite_states_excess_and_safe_range(self) -> None:
+        over = self.scene.max_chars + 1
+        _, rewrite = self.compiler.compile_rewrite_prompt(self.scene, self.state, "草稿", _report(over, "LEN_002"))
+        self.assertIn("### 篇幅超限裁剪", rewrite)
+        self.assertIn(f"上一版共 {over} 字", rewrite)
+        self.assertIn("共 1 字", rewrite)
+        self.assertIn(f"{self.scene.min_chars}～{self.scene.max_chars} 字", rewrite)
+
+    def test_solo_scene_prompt_and_narration_wall_rewrite_explain_quote_reset(self) -> None:
+        solo_meta = replace(self.project.meta, contract_track="complete_150k", panel_policy="forbid")
+        solo_scene = replace(self.scene, active_characters=[self.scene.pov_character])
+        solo_proj = replace(self.project, meta=solo_meta, scenes=[solo_scene])
+        solo_compiler = PromptCompiler(solo_proj)
+        sys_p, _ = solo_compiler.compile_scene_prompt(solo_scene, self.state)
+        self.assertIn("单人独角戏", sys_p)
+        self.assertIn("纯动作描写无法打断纯旁白计数", sys_p)
+
+        _, rewrite = solo_compiler.compile_rewrite_prompt(
+            solo_scene,
+            self.state,
+            "草稿",
+            _report(2200, "RHYTHM_NARRATION_WALL"),
+        )
+        self.assertIn("### 纯旁白墙切分指引", rewrite)
+        self.assertIn("纯动作或景物描写即使再短也不会清零连续纯旁白字数", rewrite)
+        self.assertIn("低声自语", rewrite)
 
 
 if __name__ == "__main__":

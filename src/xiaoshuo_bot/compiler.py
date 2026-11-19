@@ -439,9 +439,15 @@ class PromptCompiler:
                 if scene.chapter == 1
                 else ""
             )
+            solo_quote_rule = (
+                "（本章为单人独角戏且禁用面板：每写 200～260 字必须自然穿插一句带双引号“...”的视点人物低声自语/复核、来电短信文字或器物/纸页上的引文，因为纯动作描写无法打断纯旁白计数！）"
+                if (len(scene.active_characters) <= 1 and panel_policy != "allow_system_tag")
+                else "（每 200～260 字须穿插带引号“...”的人物对话或书面引文，纯动作描写不打断纯旁白计数）"
+            )
             tomato_sys_constraints = (
                 "\n- **手机竖屏短段呼吸排版**：每段控制在 1～3 句（严禁单段超过 120 字的实心砖头文）；"
-                "连续纯旁白不超过 320 字；禁止连续超过 4 轮无动作或神态描写的“裸对话”；"
+                f"连续不含引号的纯旁白绝对不超过 320 字{solo_quote_rule}；"
+                "禁止连续超过 4 轮无动作或神态描写的“裸对话”；"
                 "保持长短句错落拉高节奏爆发力（Burstiness σ >= 10），严禁全篇句长均等。\n"
                 f"- **爆款追读铁律**：{ch1_hook_rule}"
                 "严禁章末出现“一夜无话/沉沉睡去/圆满解决/期待明天”泄气收尾，必须在强悬念或新冲突露头时断章；"
@@ -534,7 +540,7 @@ class PromptCompiler:
             target_chars = target_chapter_chars(scene)
             shortfall = scene.min_chars - report.char_count
             event_lines = "\n".join(f"   {i}. {e}" for i, e in enumerate(scene.events, start=1))
-            length_gap_block = (
+            length_gap_block += (
                 "### 篇幅缺口（本次重写的首要任务）\n"
                 f"上一版只有 {report.char_count} 字，比硬性下限 {scene.min_chars} 字还少 {shortfall} 字。"
                 f"本次必须写到约 {target_chars} 字。\n"
@@ -542,6 +548,30 @@ class PromptCompiler:
                 "补人物的具体动作与对话往来、器物的物理细节、场景的声音光线与触感。"
                 "严禁用议论、总结、心理独白堆字。\n"
                 f"{event_lines}\n\n"
+            )
+        if any(v.rule_id == "LEN_002" for v in report.violations):
+            target_chars = target_chapter_chars(scene)
+            excess = report.char_count - scene.max_chars
+            trim_target = max(excess + 40, report.char_count - target_chars)
+            length_gap_block += (
+                "### 篇幅超限裁剪（本次重写的首要任务）\n"
+                f"上一版共 {report.char_count} 字，超出硬性上限 {scene.max_chars} 字共 {excess} 字。"
+                f"本次必须压缩到约 {target_chars} 字（安全区间 {scene.min_chars}～{scene.max_chars} 字，建议净删减约 {trim_target} 字）。\n"
+                "做法：完整保留所有章纲核心事件、全部必保伏笔关键词以及用于打断纯旁白墙的引号句；"
+                "精准删减重复环境铺陈、冗余修饰词与重复动作，严禁删减过度导致跌破下限。\n\n"
+            )
+        if any(v.rule_id == "RHYTHM_NARRATION_WALL" for v in report.violations):
+            solo_hint = (
+                "当前为单人独角戏，可通过主角低声自语/复核发现（如“外层新油，内层旧垢。”）、手机来电/短信屏幕引文、账本/刻字引文自然带出双引号。"
+                if len(scene.active_characters) <= 1
+                else "可在该区间中段穿插简短带引号“...”的人物对白、追问或书面/器物引文。"
+            )
+            length_gap_block += (
+                "### 纯旁白墙切分指引（RHYTHM_NARRATION_WALL）\n"
+                "门禁只把包含双引号“...”/「...」（或允许的系统面板【...】）的段落视为打断纯旁白墙；"
+                "纯动作或景物描写即使再短也不会清零连续纯旁白字数！\n"
+                f"做法：把违规段落区间按每 200～260 字切开，在中间自然嵌入简短引号句。{solo_hint}"
+                f"同时注意维持全文总字数在 {scene.min_chars}～{scene.max_chars} 字区间内。\n\n"
             )
 
         if self.project.meta.panel_policy == "allow_system_tag":
