@@ -348,7 +348,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             for k, v in extra_headers.items():
                 self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(encoded)
+        if self.command != "HEAD":
+            self.wfile.write(encoded)
 
     def _send_bytes(
         self,
@@ -365,7 +366,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             for k, v in extra_headers.items():
                 self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def _send_error(
         self,
@@ -439,6 +441,9 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._dispatch("GET")
 
+    def do_HEAD(self) -> None:
+        self._dispatch("HEAD")
+
     def do_POST(self) -> None:
         self._dispatch("POST")
 
@@ -460,19 +465,27 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
 
         try:
             # Static pages: "/" public studio, "/admin/" owner console, other assets by name
-            if method == "GET" and not path.startswith("/api/"):
+            if method in ("GET", "HEAD") and not path.startswith("/api/"):
                 self._handle_static(_STATIC_PAGE_ROUTES.get(path, path))
                 return
 
-            # Public read-only studio (no auth, GET only, sanitized payloads)
+            # Public read-only studio (no auth, GET/HEAD only, sanitized payloads)
             if path.startswith("/api/public/"):
-                if method != "GET":
+                if method not in ("GET", "HEAD"):
                     self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "Public API is read-only")
                     return
                 if path == API_PUBLIC_BOOKS:
                     self._send_json(HTTPStatus.OK, {"books": list_public_books(self.server.db)})
                     return
                 if path == API_PUBLIC_EVENTS_STREAM:
+                    if method == "HEAD":
+                        self._send_bytes(
+                            HTTPStatus.OK,
+                            b"",
+                            "text/event-stream; charset=utf-8",
+                            extra_headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                        )
+                        return
                     self._handle_events_stream(public=True)
                     return
                 m_pc = _RE_PUBLIC_CHAPTER.match(path)
@@ -490,7 +503,7 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                 return
 
             # Health Check (public, zero secrets)
-            if method == "GET" and path == API_HEALTH:
+            if method in ("GET", "HEAD") and path == API_HEALTH:
                 self._handle_health()
                 return
 

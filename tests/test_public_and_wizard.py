@@ -289,6 +289,53 @@ class TestPublicStudio(_ServerCase):
         self.assertIn("章末钩子：", js_txt)
         self.assertIn(".plan-hook", css_txt)
 
+    def test_p2_2_http_head_supported_for_static_health_and_public_routes_with_keepalive(self) -> None:
+        import http.client
+
+        host, port = self.server.server_address[:2]
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        try:
+            for path, expected_ct in (
+                ("/", "text/html; charset=utf-8"),
+                ("/admin/", "text/html; charset=utf-8"),
+                ("/admin/wizard", "text/html; charset=utf-8"),
+                ("/public.css", "text/css; charset=utf-8"),
+                ("/api/health", "application/json; charset=utf-8"),
+                ("/api/public/books", "application/json; charset=utf-8"),
+                ("/api/public/books/baiwu_dukou", "application/json; charset=utf-8"),
+                ("/api/public/events/stream", "text/event-stream; charset=utf-8"),
+            ):
+                conn.request("HEAD", path)
+                resp = conn.getresponse()
+                body = resp.read()
+                self.assertEqual(resp.status, 200, f"HEAD {path} returned {resp.status}")
+                self.assertEqual(resp.getheader("Content-Type"), expected_ct, path)
+                self.assertEqual(body, b"", f"HEAD {path} must return empty body")
+                if path != "/api/public/events/stream":
+                    cl = int(resp.getheader("Content-Length") or "0")
+                    self.assertGreater(cl, 0, f"HEAD {path} should report positive Content-Length")
+
+            # Missing static route returns 404 (not 501), empty body
+            conn.request("HEAD", "/nonexistent_asset_404.html")
+            resp_404 = conn.getresponse()
+            self.assertEqual(resp_404.status, 404)
+            self.assertEqual(resp_404.read(), b"")
+
+            # Admin route without token still enforces 401 (never bypasses auth)
+            conn.request("HEAD", "/api/books")
+            resp_401 = conn.getresponse()
+            self.assertEqual(resp_401.status, 401)
+            self.assertEqual(resp_401.read(), b"")
+
+            # Follow-up GET on the same HTTP/1.1 keep-alive connection succeeds cleanly
+            conn.request("GET", "/api/health")
+            resp_get = conn.getresponse()
+            self.assertEqual(resp_get.status, 200)
+            health = json.loads(resp_get.read().decode("utf-8"))
+            self.assertEqual(health["status"], "ok")
+        finally:
+            conn.close()
+
 
 class TestWizardWithoutProvider(_ServerCase):
     provider = None
