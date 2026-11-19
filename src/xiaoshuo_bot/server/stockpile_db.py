@@ -169,6 +169,7 @@ class StockpileDB:
         )
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
+        self.check_and_fail_planning_sessions()
 
     def close(self) -> None:
         with self._lock:
@@ -377,6 +378,10 @@ class StockpileDB:
                 );
                 """
             )
+            # Migration: Add progress_json to wizard_sessions
+            columns = [row[1] for row in cur.execute("PRAGMA table_info(wizard_sessions)")]
+            if "progress_json" not in columns:
+                cur.execute("ALTER TABLE wizard_sessions ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'")
 
     def get_journal_mode(self) -> str:
         with self._lock:
@@ -457,6 +462,16 @@ class StockpileDB:
                 VALUES (?, ?, 'IN_PROGRESS', 0, '[]', ?, ?, ?)
                 """,
                 (session_id, idea, json.dumps(options, ensure_ascii=False), now, now),
+            )
+
+    def check_and_fail_planning_sessions(self) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE wizard_sessions
+                SET status = 'FAILED', error_message = '服务重启中断了立项，请重新点确认'
+                WHERE status = 'PLANNING'
+                """
             )
 
     def get_wizard_session(self, session_id: str) -> Dict[str, Any]:

@@ -56,4 +56,21 @@ while view["status"] == "IN_PROGRESS":
     show(view)
 print("READY:", view["status"])
 view = call(f"/api/wizard/sessions/{sid}/confirm", {"pen_name": "试跑"})
-print("CONFIRMED:", view["status"], "book_id=", view["book_id"])
+print("CONFIRMED:", view["status"])
+
+# Poll for completion
+while True:
+    time.sleep(3)
+    with urllib.request.urlopen(urllib.request.Request(
+        BASE + f"/api/wizard/sessions/{sid}",
+        headers={"Authorization": f"Bearer {TOKEN}"}
+    )) as r:
+        view = json.load(r)
+    print(f"Polling: {view['status']} - {view.get('progress_json')}")
+    if view["status"] in ["CREATED", "FAILED"]:
+        break
+
+if view["status"] == "CREATED":
+    print("SUCCESS: book_id=", view["book_id"])
+else:
+    print("FAILED:", view["error_message"])

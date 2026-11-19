@@ -310,36 +310,67 @@ class NewBookWizard:
         s = self.db.get_wizard_session(session_id)
         if s["status"] != STATUS_READY:
             raise WizardError(f"会话状态为 {s['status']}，四步都选完才能确认开写")
-        by_step = {c["step"]: c["option"] for c in s["choices"]}
-        direction = by_step["direction"]
-        scale = by_step["scale"]
-        project_id = "book_" + self._now_fn().strftime("%Y%m%d_%H%M%S")
-        brief = (
-            f"原始题材：{s['idea']}\n"
-            f"书名必须为：{scale['title']}\n"
-            f"简介方向：{scale['blurb']}\n"
-            f"{_choices_text(s['choices'])}"
-        )
-        target = int(scale["target_chapters"]) if scale["author_level"] == "lv0_1" else None
-        req = AutoCreateBookRequest(
-            project_id=project_id,
-            genre_id=direction["genre_id"],
-            author_level=scale["author_level"],
-            pen_name=pen_name.strip(),
-            target_chapters=target,
-            creative_brief=brief,
-        )
-        summary = self._create_book_fn(req)
-        book_id = getattr(summary, "book_id", "") or project_id
+        
+        # Mark as PLANNING and trigger async job
         self.db.update_wizard_session(
             session_id,
-            status=STATUS_CREATED,
+            status="PLANNING",
             step_index=s["step_index"],
             choices=s["choices"],
             options=[],
-            book_id=book_id,
+            book_id="",
+            error_message=""
         )
+        # In a real system, this would be a background task. 
+        # Here we simulate the trigger.
+        from threading import Thread
+        Thread(target=self._run_async_planning, args=(session_id, pen_name)).start()
+        
         return self._view(session_id)
+        
+    def _run_async_planning(self, session_id: str, pen_name: str) -> None:
+        try:
+            s = self.db.get_wizard_session(session_id)
+            by_step = {c["step"]: c["option"] for c in s["choices"]}
+            direction = by_step["direction"]
+            scale = by_step["scale"]
+            project_id = "book_" + self._now_fn().strftime("%Y%m%d_%H%M%S")
+            brief = (
+                f"原始题材：{s['idea']}\n"
+                f"书名必须为：{scale['title']}\n"
+                f"简介方向：{scale['blurb']}\n"
+                f"{_choices_text(s['choices'])}"
+            )
+            target = int(scale["target_chapters"]) if scale["author_level"] == "lv0_1" else None
+            req = AutoCreateBookRequest(
+                project_id=project_id,
+                genre_id=direction["genre_id"],
+                author_level=scale["author_level"],
+                pen_name=pen_name.strip(),
+                target_chapters=target,
+                creative_brief=brief,
+            )
+            # This would call the planner asynchronously
+            summary = self._create_book_fn(req)
+            book_id = getattr(summary, "book_id", "") or project_id
+            self.db.update_wizard_session(
+                session_id,
+                status=STATUS_CREATED,
+                step_index=s["step_index"],
+                choices=s["choices"],
+                options=[],
+                book_id=book_id,
+            )
+        except Exception as e:
+            logger.error("Async planning failed: %s", e)
+            self.db.update_wizard_session(
+                session_id,
+                status="FAILED",
+                step_index=s["step_index"],
+                choices=s["choices"],
+                options=[],
+                error_message=str(e)
+            )
 
 
 __all__ = ["NewBookWizard", "WizardError", "WIZARD_STEPS"]
