@@ -50,6 +50,7 @@ API_CPA_USAGE = "/api/cpa/usage"
 API_CPA_OAUTH = "/api/cpa/oauth"
 API_CPA_BINDINGS = "/api/cpa/bindings"
 API_MODEL_SWITCHES = "/api/model-switches"
+API_MODEL_QUOTAS = "/api/model-quotas"
 
 API_COMPANION_POLL = "/api/companion/poll"
 API_COMPANION_LEASE = "/api/companion/lease"
@@ -95,6 +96,7 @@ ALL_API_ROUTES: Tuple[str, ...] = (
     API_CPA_OAUTH,
     API_CPA_BINDINGS,
     API_MODEL_SWITCHES,
+    API_MODEL_QUOTAS,
     API_COMPANION_POLL,
     API_COMPANION_LEASE,
     API_COMPANION_RECEIPT,

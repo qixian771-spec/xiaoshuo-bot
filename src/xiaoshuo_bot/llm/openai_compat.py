@@ -301,7 +301,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 if chunk.get("model"):
                     actual_model = str(chunk["model"])
                 if isinstance(chunk.get("usage"), dict) and chunk["usage"]:
-                    usage = dict(chunk["usage"])
+                    usage.update(chunk["usage"])
 
                 choices = chunk.get("choices") or []
                 for choice in choices:

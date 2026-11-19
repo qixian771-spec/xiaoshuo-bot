@@ -17,9 +17,12 @@ from xiaoshuo_bot.cli import _build_serve_router
 from xiaoshuo_bot.contracts import BookRunStatus, StockpileStatus
 from xiaoshuo_bot.llm import (
     LLMConfigurationError,
+    LLMRequest,
+    ModelQuotaSnapshot,
     RoleEndpointConfig,
     RoleModelRouter,
     WorkBuddyModelCatalog,
+    extract_workbuddy_usage_quota,
     verify_router_models_against_cpa,
 )
 from xiaoshuo_bot.server.app import create_server
@@ -567,6 +570,274 @@ class TestPerChapterModelConsistencyAndMigration(unittest.TestCase):
             finally:
                 cpa_srv.shutdown()
                 cpa_srv.server_close()
+
+
+class TestTask4ModelQuotaTracking(unittest.TestCase):
+    """Task 4: Capture WorkBuddy usage.quota, persist in SQLite, expose via /api/model-quotas & Web UI."""
+
+    def test_extract_workbuddy_usage_quota_handles_real_payload_and_rejects_missing_percent(self) -> None:
+        catalog = WorkBuddyModelCatalog(
+            hy4_flash="wb/hy4flash-free",
+            hy4="wb/hy4std",
+            deepseek_v4_1_flash="wb/deepseek-v4.1-flash",
+            mimo_v2_6_pro="wb/mimo-v2.6-pro",
+        )
+        # Exact real-world payload shape observed from CPA + cpa-workbuddy on wb/hy4flash-free
+        real_usage = {
+            "prompt_tokens": 58,
+            "completion_tokens": 41,
+            "total_tokens": 99,
+            "credit": 0,
+            "quota": {
+                "model": "hy4-flash",
+                "percent": 1,
+                "reset_at": "1795175004",
+                "shared_models": [],
+            },
+        }
+        snap = extract_workbuddy_usage_quota(
+            real_usage,
+            requested_model="wb/hy4flash-free",
+            catalog=catalog,
+            role="writer",
+            updated_at="2026-11-19T20:51:39+08:00",
+        )
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        self.assertEqual(snap.model, "wb/hy4flash-free")
+        self.assertEqual(snap.raw_model, "hy4-flash")
+        self.assertEqual(snap.model_label, "Hy4 flash")
+        self.assertEqual(snap.percent, 1.0)
+        self.assertEqual(snap.reset_at, "2026-11-20T19:43:24+08:00")
+        self.assertEqual(snap.reset_at_raw, "1795175004")
+        self.assertEqual(snap.role, "writer")
+
+        # Millisecond unix epoch and ISO UTC timestamps also normalize cleanly to Asia/Shanghai (+08:00)
+        ms_snap = extract_workbuddy_usage_quota(
+            {"quota": {"model": "deepseek-v4.1-flash", "percent": 68.5, "reset_at": "1795175004000"}},
+            catalog=catalog,
+            role="planner",
+        )
+        self.assertIsNotNone(ms_snap)
+        assert ms_snap is not None
+        self.assertEqual(ms_snap.model, "wb/deepseek-v4.1-flash")
+        self.assertEqual(ms_snap.percent, 68.5)
+        self.assertEqual(ms_snap.reset_at, "2026-11-20T19:43:24+08:00")
+
+        iso_snap = extract_workbuddy_usage_quota(
+            {"quota": {"model": "wb/mimo-v2.6-pro", "percent": 92, "reset_at": "2026-11-20T11:43:24Z"}},
+            catalog=catalog,
+        )
+        self.assertIsNotNone(iso_snap)
+        assert iso_snap is not None
+        self.assertEqual(iso_snap.model, "wb/mimo-v2.6-pro")
+        self.assertEqual(iso_snap.reset_at, "2026-11-20T19:43:24+08:00")
+
+        # Never fabricate 0% when usage.quota or percent is absent / invalid
+        self.assertIsNone(extract_workbuddy_usage_quota({"prompt_tokens": 10}))
+        self.assertIsNone(extract_workbuddy_usage_quota({"quota": {"model": "hy4-flash"}}))
+        self.assertIsNone(extract_workbuddy_usage_quota({"quota": {"model": "hy4-flash", "percent": True}}))
+        self.assertIsNone(extract_workbuddy_usage_quota({"quota": {"model": "hy4-flash", "percent": "nan"}}))
+
+    def test_sse_usage_quota_persists_to_sqlite_and_exposes_via_admin_api(self) -> None:
+        call_no = {"n": 0}
+
+        def chat_handler(payload: Dict[str, Any]):
+            call_no["n"] += 1
+            m = payload.get("model")
+            if m == CFG_MODELS["hy4_flash"]:
+                pct = 14 if call_no["n"] == 1 else 42.5
+                chunk1 = json.dumps(
+                    {
+                        "id": f"chatcmpl-q-{call_no['n']}",
+                        "model": m,
+                        "choices": [{"index": 0, "delta": {"role": "assistant", "content": "测试响应"}, "finish_reason": None}],
+                    },
+                    ensure_ascii=False,
+                )
+                # Split token usage and quota across two SSE chunks to verify merge semantics
+                chunk2 = json.dumps(
+                    {
+                        "id": f"chatcmpl-q-{call_no['n']}",
+                        "model": m,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200},
+                    },
+                    ensure_ascii=False,
+                )
+                chunk3 = json.dumps(
+                    {
+                        "id": f"chatcmpl-q-{call_no['n']}",
+                        "model": m,
+                        "choices": [],
+                        "usage": {
+                            "quota": {
+                                "model": "hy4-flash",
+                                "percent": pct,
+                                "reset_at": "1795175004",
+                                "shared_models": ["hy4-flash-free"],
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                return 200, [
+                    f"data: {chunk1}\n\n",
+                    f"data: {chunk2}\n\n",
+                    f"data: {chunk3}\n\n",
+                    "data: [DONE]\n\n",
+                ], True
+            chunk_ds = json.dumps(
+                {
+                    "id": f"chatcmpl-ds-{call_no['n']}",
+                    "model": m,
+                    "choices": [{"index": 0, "delta": {"content": "立项响应"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 200,
+                        "completion_tokens": 150,
+                        "quota": {
+                            "model": "deepseek-v4.1-flash",
+                            "percent": 76.25,
+                            "reset_at": "2026-11-21T00:00:00+08:00",
+                            "shared_models": [],
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            )
+            return 200, [f"data: {chunk_ds}\n\n", "data: [DONE]\n\n"], True
+
+        cpa_srv, cpa_url = _start_mock_cpa_models_server(
+            lambda: (200, list(CFG_MODELS.values())),
+            chat_handler=chat_handler,
+        )
+        admin_token = "q" * 32
+        with tempfile.TemporaryDirectory(prefix="wb_quota_e2e_") as tmp:
+            tmp_path = Path(tmp)
+            try:
+                catalog = WorkBuddyModelCatalog.from_mapping(CFG_MODELS)
+                router = RoleModelRouter.from_workbuddy_catalog(
+                    catalog,
+                    base_url=cpa_url,
+                    api_keys=["sk-cpa-key"],
+                )
+                srv = create_server(
+                    host="127.0.0.1",
+                    port=0,
+                    db_path=tmp_path / "matrix.db",
+                    projects_root=tmp_path / "projects",
+                    admin_token=admin_token,
+                    provider=router,
+                    export_only=True,
+                )
+                port = srv.server_address[1]
+                srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+                srv_thread.start()
+                try:
+                    # 1. Trigger writer (twice to verify upsert update) + planner calls
+                    for idx in range(2):
+                        resp = router.generate(
+                            "writer",
+                            LLMRequest(
+                                request_id=f"req-w-{idx}",
+                                chapter=1,
+                                attempt=1,
+                                purpose="draft",
+                                system_prompt="sys",
+                                user_prompt="user",
+                                max_tokens=200,
+                            ),
+                        )
+                        self.assertEqual(resp.content, "测试响应")
+                        self.assertEqual(resp.usage["prompt_tokens"], 120)
+                        self.assertEqual(resp.usage["completion_tokens"], 80)
+
+                    router.generate(
+                        "planner",
+                        LLMRequest(
+                            request_id="req-p-1",
+                            chapter=0,
+                            attempt=1,
+                            purpose="plan",
+                            system_prompt="sys",
+                            user_prompt="user",
+                            max_tokens=200,
+                        ),
+                    )
+
+                    # 2. Verify SQLite persistence in model_quotas
+                    db_rows = {row["model"]: row for row in srv.db.list_model_quotas()}
+                    self.assertIn(CFG_MODELS["hy4_flash"], db_rows)
+                    self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["percent"], 42.5)
+                    self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["reset_at"], "2026-11-20T19:43:24+08:00")
+                    self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["raw_model"], "hy4-flash")
+                    self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["shared_models"], ["hy4-flash-free"])
+                    self.assertEqual(db_rows[CFG_MODELS["deepseek_v4_1_flash"]]["percent"], 76.25)
+
+                    # 3. Verify GET /api/model-quotas requires admin auth (401 without token)
+                    with self.assertRaises(urllib.error.HTTPError) as unauth_ctx:
+                        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/model-quotas")
+                    self.assertEqual(unauth_ctx.exception.code, 401)
+
+                    # 4. Verify GET /api/model-quotas returns all 4 whitelist models in canonical order
+                    headers = {"Authorization": f"Bearer {admin_token}"}
+                    with urllib.request.urlopen(
+                        urllib.request.Request(f"http://127.0.0.1:{port}/api/model-quotas", headers=headers)
+                    ) as resp_http:
+                        data = json.loads(resp_http.read().decode("utf-8"))
+                    quotas = data["quotas"]
+                    self.assertEqual(
+                        [q["model"] for q in quotas],
+                        [
+                            CFG_MODELS["hy4_flash"],
+                            CFG_MODELS["deepseek_v4_1_flash"],
+                            CFG_MODELS["mimo_v2_6_pro"],
+                            CFG_MODELS["hy4"],
+                        ],
+                    )
+                    by_id = {q["model"]: q for q in quotas}
+                    self.assertTrue(by_id[CFG_MODELS["hy4_flash"]]["has_quota"])
+                    self.assertEqual(by_id[CFG_MODELS["hy4_flash"]]["percent"], 42.5)
+                    self.assertEqual(by_id[CFG_MODELS["hy4_flash"]]["reset_at"], "2026-11-20T19:43:24+08:00")
+                    self.assertTrue(by_id[CFG_MODELS["hy4_flash"]]["in_rotation"])
+                    self.assertFalse(by_id[CFG_MODELS["hy4_flash"]]["manual_only"])
+
+                    self.assertTrue(by_id[CFG_MODELS["deepseek_v4_1_flash"]]["has_quota"])
+                    self.assertEqual(by_id[CFG_MODELS["deepseek_v4_1_flash"]]["percent"], 76.25)
+
+                    # Unreported models must explicitly carry has_quota=False and percent=None
+                    self.assertFalse(by_id[CFG_MODELS["mimo_v2_6_pro"]]["has_quota"])
+                    self.assertIsNone(by_id[CFG_MODELS["mimo_v2_6_pro"]]["percent"])
+                    self.assertFalse(by_id[CFG_MODELS["hy4"]]["has_quota"])
+                    self.assertTrue(by_id[CFG_MODELS["hy4"]]["manual_only"])
+                    self.assertFalse(by_id[CFG_MODELS["hy4"]]["in_rotation"])
+                finally:
+                    srv.shutdown()
+                    srv.server_close()
+                    srv.db.close()
+            finally:
+                cpa_srv.shutdown()
+                cpa_srv.server_close()
+
+    def test_admin_static_ui_contains_model_quotas_panel_and_valid_progress_css(self) -> None:
+        static_dir = Path(__file__).resolve().parents[1] / "src" / "xiaoshuo_bot" / "server" / "static"
+        html_src = (static_dir / "index.html").read_text(encoding="utf-8")
+        js_src = (static_dir / "app.js").read_text(encoding="utf-8")
+        css_src = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="model-quotas-panel"', html_src)
+        self.assertIn('id="model-quotas-grid"', html_src)
+        self.assertIn('id="cpa-model-quotas-grid"', html_src)
+        self.assertIn('MODEL_QUOTAS: "/api/model-quotas"', js_src)
+        self.assertIn("loadModelQuotas", js_src)
+        self.assertIn("renderModelQuotas", js_src)
+        self.assertIn('<progress class="quota-progress ', js_src)
+        self.assertIn("Asia/Shanghai", js_src)
+        # Modern Web Guidance: -webkit-progress-value and -moz-progress-bar MUST NOT be grouped together
+        self.assertIn(".quota-progress::-webkit-progress-value", css_src)
+        self.assertIn(".quota-progress::-moz-progress-bar", css_src)
+        self.assertNotIn("::-webkit-progress-value,\n.quota-progress::-moz-progress-bar", css_src)
+        self.assertNotIn("::-webkit-progress-value, .quota-progress::-moz-progress-bar", css_src)
 
 
 if __name__ == "__main__":

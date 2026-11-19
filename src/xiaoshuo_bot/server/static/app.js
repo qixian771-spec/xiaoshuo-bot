@@ -25,6 +25,7 @@
     CPA_OAUTH: "/api/cpa/oauth",
     CPA_BINDINGS: "/api/cpa/bindings",
     MODEL_SWITCHES: "/api/model-switches",
+    MODEL_QUOTAS: "/api/model-quotas",
     COMPANION_RESUME: "/api/companion/resume",
     EVENTS_STREAM: "/api/events/stream",
     PRODUCTION_KPI: "/api/production/kpi",
@@ -125,6 +126,7 @@
     cpaUsage: null,
     cpaModels: [],
     cpaBindings: {},
+    modelQuotas: [],
     captchaAlerts: new Map(),
     modelQuotaAlerts: new Map(),
     dismissedQuotaAlertIds: new Set(),
@@ -419,6 +421,123 @@
       hint.textContent = "共 " + kpi.chapters + " 章，平均每章尝试 " + kpi.avg_attempts + " 次";
     } catch (err) {
       showToast("加载写稿效率看板失败：" + err.message, "err");
+    }
+  }
+
+  function formatShanghaiTimestamp(rawValue, opts) {
+    const raw = String(rawValue || "").trim();
+    if (!raw) {
+      return "—";
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      return raw;
+    }
+    try {
+      return new Intl.DateTimeFormat("zh-CN", Object.assign({
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }, opts || {})).format(parsed);
+    } catch (err) {
+      return raw;
+    }
+  }
+
+  function formatQuotaPercent(percent) {
+    const num = Number(percent);
+    if (!Number.isFinite(num)) {
+      return "—";
+    }
+    const rounded = Math.round(num * 100) / 100;
+    return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + "%";
+  }
+
+  function renderModelQuotas() {
+    const targets = [
+      document.getElementById("model-quotas-grid"),
+      document.getElementById("cpa-model-quotas-grid"),
+    ].filter(Boolean);
+    if (targets.length === 0) {
+      return;
+    }
+    const quotas = Array.isArray(state.modelQuotas) ? state.modelQuotas : [];
+    if (quotas.length === 0) {
+      targets.forEach(function (el) {
+        el.innerHTML = '<div class="empty-state">暂无白名单模型额度记录，待首次调用 WorkBuddy 模型后自动显示。</div>';
+      });
+      return;
+    }
+
+    targets.forEach(function (el) {
+      el.innerHTML = quotas.map(function (item) {
+        const label = String(item.label || item.model || "未知模型");
+        const modelId = String(item.model || "");
+        const hasQuota = Boolean(item.has_quota) && item.percent !== null && item.percent !== undefined && Number.isFinite(Number(item.percent));
+        const rawPct = hasQuota ? Number(item.percent) : 0;
+        const clampedPct = Math.max(0, Math.min(100, rawPct));
+        const levelCls = !hasQuota
+          ? "is-empty"
+          : rawPct >= 90
+            ? "is-danger"
+            : rawPct >= 70
+              ? "is-warn"
+              : "is-safe";
+        const roleTag = item.manual_only
+          ? '<span class="tag tag-purple">仅手动指定</span>'
+          : item.in_rotation
+            ? '<span class="tag tag-cyan">自动轮换</span>'
+            : '<span class="tag">已配置</span>';
+        const pctText = hasQuota ? ("已用 " + formatQuotaPercent(rawPct)) : "暂未上报";
+        const resetText = hasQuota && item.reset_at
+          ? formatShanghaiTimestamp(item.reset_at)
+          : "—";
+        const updatedText = hasQuota && item.updated_at
+          ? formatShanghaiTimestamp(item.updated_at, { year: undefined })
+          : "尚未收到该模型响应";
+        const bareModelId = modelId.indexOf("/") !== -1 ? modelId.split("/").slice(1).join("/") : modelId;
+        const rawModelHint = hasQuota && item.raw_model && item.raw_model !== modelId && item.raw_model !== bareModelId
+          ? (" · 上游桶 " + item.raw_model)
+          : "";
+        return (
+          '<article class="model-quota-card ' + escapeHtml(levelCls) + '" data-quota-model="' + escapeHtml(modelId) + '">' +
+            '<div class="model-quota-top">' +
+              '<div>' +
+                '<div class="model-quota-name">' + escapeHtml(label) + '</div>' +
+                '<div class="model-quota-id mono">' + escapeHtml(modelId) + escapeHtml(rawModelHint) + '</div>' +
+              '</div>' +
+              roleTag +
+            '</div>' +
+            '<div class="model-quota-pct-row">' +
+              '<span class="muted">当前额度</span>' +
+              '<span class="model-quota-pct mono ' + escapeHtml(levelCls) + '">' + escapeHtml(pctText) + '</span>' +
+            '</div>' +
+            '<progress class="quota-progress ' + escapeHtml(levelCls) + '" value="' + escapeHtml(clampedPct) + '" max="100" aria-label="' + escapeHtml(label + " 已用额度百分比") + '"></progress>' +
+            '<div class="model-quota-meta">' +
+              '<span>重置时间：<strong class="mono">' + escapeHtml(resetText) + '</strong></span>' +
+              '<span class="model-quota-updated">最近更新：' + escapeHtml(updatedText) + '</span>' +
+            '</div>' +
+          '</article>'
+        );
+      }).join("");
+    });
+  }
+
+  async function loadModelQuotas() {
+    try {
+      const payload = await apiRequest(API_ROUTES.MODEL_QUOTAS, { method: "GET" });
+      state.modelQuotas = (payload && Array.isArray(payload.quotas)) ? payload.quotas : [];
+      renderModelQuotas();
+    } catch (err) {
+      const grid = document.getElementById("model-quotas-grid");
+      if (grid && state.modelQuotas.length === 0) {
+        grid.innerHTML = '<div class="empty-state">加载模型额度失败：' + escapeHtml(err.message) + '</div>';
+      }
     }
   }
 
@@ -1381,6 +1500,7 @@
     await Promise.all([
       loadCpaAuthFiles(),
       loadCpaUsage(),
+      loadModelQuotas(),
       loadCpaModelsAndBindings(),
     ]);
   }
@@ -1909,6 +2029,7 @@
   SSE_HANDLERS[SSE_EVENTS.CHAPTER_STOCKPILED] = function (payload) {
     loadBooks();
     loadProductionKpi();
+    loadModelQuotas();
     return { level: "pass", title: "章节囤稿入库", detail: payload.message || ("第 " + (payload.chapter || 0) + " 章已入库") };
   };
   SSE_HANDLERS[SSE_EVENTS.BOOK_ISOLATED] = function (payload) {
@@ -1981,6 +2102,7 @@
       source: "sse",
     });
     loadBooks();
+    loadModelQuotas();
     if (kind === MODEL_QUOTA_ALERT_KINDS.RATE_LIMIT_RETRY) {
       const m = d.model || d.from_model || "当前模型";
       const n = Math.max(1, Number(d.retry_attempt || 1));
@@ -2477,7 +2599,14 @@
     }
     const btnOverviewRefresh = document.getElementById("btn-overview-refresh");
     if (btnOverviewRefresh) {
-      btnOverviewRefresh.addEventListener("click", loadBooks);
+      btnOverviewRefresh.addEventListener("click", function () {
+        loadBooks();
+        loadModelQuotas();
+      });
+    }
+    const btnRefreshModelQuotas = document.getElementById("btn-refresh-model-quotas");
+    if (btnRefreshModelQuotas) {
+      btnRefreshModelQuotas.addEventListener("click", loadModelQuotas);
     }
     const btnGotoCreate = document.getElementById("btn-goto-create");
     if (btnGotoCreate) {
@@ -2739,6 +2868,7 @@
     await loadBooks();
     if (!state.authRequired) {
       loadModelSwitches();
+      loadModelQuotas();
       loadCpaUsage();
       loadProductionKpi();
       const isolated = state.books.find(function (b) { return b.status === "ISOLATED_GATE_FAILURE"; });

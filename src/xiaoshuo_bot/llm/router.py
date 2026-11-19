@@ -37,11 +37,13 @@ from .openai_compat import OpenAICompatibleProvider
 from .workbuddy_policy import (
     DEFAULT_MODEL_QUOTA_COOLDOWN_SEC,
     DEFAULT_RATE_LIMIT_BACKOFF_SEC,
+    ModelQuotaSnapshot,
     ModelSwitchEvent,
     RateLimitRetryEvent,
     WorkBuddyModelCatalog,
     classify_workbuddy_failure_kind,
     classify_workbuddy_quota_exhausted,
+    extract_workbuddy_usage_quota,
     WORKBUDDY_REASONING_HEADROOM_TOKENS,
     parse_rate_limit_backoff_sec,
     validate_workbuddy_model_allowed,
@@ -487,6 +489,7 @@ class RoleModelRouter:
         monotonic_fn: Optional[Callable[[], float]] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
         on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
+        on_model_quota: Optional[Callable[[ModelQuotaSnapshot], None]] = None,
         now_fn: Optional[Callable[[], datetime]] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
         workbuddy_catalog: Optional[WorkBuddyModelCatalog] = None,
@@ -504,6 +507,8 @@ class RoleModelRouter:
         self._switch_history: List[ModelSwitchEvent] = []
         self._retry_listeners: List[Callable[[RateLimitRetryEvent], None]] = []
         self._retry_history: List[RateLimitRetryEvent] = []
+        self._quota_listeners: List[Callable[[ModelQuotaSnapshot], None]] = []
+        self._model_quotas: Dict[str, ModelQuotaSnapshot] = {}
         self.ledger = ledger or UsageBudgetLedger()
         self._monotonic = monotonic_fn or time.monotonic
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
@@ -513,6 +518,8 @@ class RoleModelRouter:
             self._switch_listeners.append(on_model_switched)
         if on_rate_limit_retry is not None:
             self._retry_listeners.append(on_rate_limit_retry)
+        if on_model_quota is not None:
+            self._quota_listeners.append(on_model_quota)
 
         for role_name, raw_cfg in roles.items():
             cfg = (
@@ -547,6 +554,7 @@ class RoleModelRouter:
         ledger: Optional[UsageBudgetLedger] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
         on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
+        on_model_quota: Optional[Callable[[ModelQuotaSnapshot], None]] = None,
         monotonic_fn: Optional[Callable[[], float]] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
         timeout: int = 300,
@@ -595,6 +603,7 @@ class RoleModelRouter:
             monotonic_fn=monotonic_fn,
             on_model_switched=on_model_switched,
             on_rate_limit_retry=on_rate_limit_retry,
+            on_model_quota=on_model_quota,
             sleep_fn=sleep_fn,
             workbuddy_catalog=catalog,
         )
@@ -606,6 +615,7 @@ class RoleModelRouter:
         ledger: Optional[UsageBudgetLedger] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
         on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
+        on_model_quota: Optional[Callable[[ModelQuotaSnapshot], None]] = None,
         monotonic_fn: Optional[Callable[[], float]] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
     ) -> "RoleModelRouter":
@@ -628,6 +638,7 @@ class RoleModelRouter:
                     ledger=ledger,
                     on_model_switched=on_model_switched,
                     on_rate_limit_retry=on_rate_limit_retry,
+                    on_model_quota=on_model_quota,
                     monotonic_fn=monotonic_fn,
                     sleep_fn=sleep_fn,
                     timeout=int(config.get("timeout", 300)),
@@ -656,6 +667,7 @@ class RoleModelRouter:
                 monotonic_fn=monotonic_fn,
                 on_model_switched=on_model_switched,
                 on_rate_limit_retry=on_rate_limit_retry,
+                on_model_quota=on_model_quota,
                 sleep_fn=sleep_fn,
             )
 
@@ -687,6 +699,7 @@ class RoleModelRouter:
             monotonic_fn=monotonic_fn,
             on_model_switched=on_model_switched,
             on_rate_limit_retry=on_rate_limit_retry,
+            on_model_quota=on_model_quota,
             sleep_fn=sleep_fn,
             workbuddy_catalog=catalog,
         )
@@ -700,6 +713,15 @@ class RoleModelRouter:
         with self._lock:
             if callback not in self._retry_listeners:
                 self._retry_listeners.append(callback)
+
+    def add_model_quota_listener(self, callback: Callable[[ModelQuotaSnapshot], None]) -> None:
+        with self._lock:
+            if callback not in self._quota_listeners:
+                self._quota_listeners.append(callback)
+
+    def get_model_quotas(self) -> Dict[str, ModelQuotaSnapshot]:
+        with self._lock:
+            return dict(self._model_quotas)
 
     def get_active_model(self, role: str) -> str:
         cfg = self.get_role_config(role)
@@ -933,6 +955,30 @@ class RoleModelRouter:
         for listener in listeners:
             listener(event)
 
+    def _capture_usage_quota(
+        self,
+        role: str,
+        cfg: RoleEndpointConfig,
+        requested_model: str,
+        usage: Optional[Mapping[str, Any]],
+    ) -> Optional[ModelQuotaSnapshot]:
+        snap = extract_workbuddy_usage_quota(
+            usage,
+            requested_model=requested_model,
+            catalog=self.workbuddy_catalog,
+            model_labels=cfg.model_labels,
+            role=role,
+            updated_at=self._now_fn().isoformat(),
+        )
+        if snap is None:
+            return None
+        with self._lock:
+            self._model_quotas[snap.model] = snap
+            listeners = list(self._quota_listeners)
+        for listener in listeners:
+            listener(snap)
+        return snap
+
     def _clear_key_cooldowns_for_model(self, role: str, model_id: str, cfg: RoleEndpointConfig) -> None:
         with self._lock:
             if cfg.rotation_models:
@@ -1105,6 +1151,7 @@ class RoleModelRouter:
                         resp = provider.generate(req_for_model)
                         self._mark_key_success_for_model(role, current_model, key_idx, cfg)
                         resolved_model = (resp.model or current_model).strip()
+                        self._capture_usage_quota(role, cfg, current_model, resp.usage)
                         in_tok, out_tok = _extract_tokens(resp.usage)
                         self.ledger.record_usage(
                             role=role,
@@ -1119,7 +1166,9 @@ class RoleModelRouter:
                     except LLMStreamTruncatedError as exc:
                         # Upstream already generated (and billed) tokens; record them and NEVER switch models.
                         self._mark_key_success_for_model(role, current_model, key_idx, cfg)
-                        in_tok, out_tok = _extract_tokens(getattr(exc, "usage", None) or {})
+                        trunc_usage = getattr(exc, "usage", None) or {}
+                        self._capture_usage_quota(role, cfg, current_model, trunc_usage)
+                        in_tok, out_tok = _extract_tokens(trunc_usage)
                         self.ledger.record_usage(
                             role=role,
                             model=getattr(exc, "model", "") or current_model,

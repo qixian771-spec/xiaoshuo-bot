@@ -37,6 +37,7 @@ from ..contracts import (
     API_EVENTS_STREAM,
     API_GENRES,
     API_HEALTH,
+    API_MODEL_QUOTAS,
     API_MODEL_SWITCHES,
     API_PRODUCTION_KPI,
     API_PUBLIC_BOOKS,
@@ -597,6 +598,11 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"events": events})
                 return
 
+            if method == "GET" and path == API_MODEL_QUOTAS:
+                quotas = self.server.scheduler.get_model_quotas()
+                self._send_json(HTTPStatus.OK, {"quotas": quotas})
+                return
+
             if method == "GET" and path == API_BOOKS:
                 books = [b.to_dict() for b in self.server.scheduler.list_books()]
                 digest = self.server.scheduler.get_daily_digest().to_dict()
@@ -664,7 +670,15 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                     if router is not None and hasattr(router, "ledger")
                     else {}
                 )
-                self._send_json(HTTPStatus.OK, {"cpa_usage": cpa_usage, "ledger": local_ledger})
+                model_quotas = self.server.scheduler.get_model_quotas()
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "cpa_usage": cpa_usage,
+                        "ledger": local_ledger,
+                        "model_quotas": model_quotas,
+                    },
+                )
                 return
 
             if path == API_CPA_OAUTH:

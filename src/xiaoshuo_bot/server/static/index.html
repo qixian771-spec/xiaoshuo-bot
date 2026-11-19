@@ -139,6 +139,20 @@
             </div>
           </div>
 
+          <!-- WorkBuddy Whitelist Model Quota Panel (Task 4) -->
+          <section class="panel-card model-quotas-panel" id="model-quotas-panel" aria-label="白名单模型额度">
+            <div class="panel-header model-quotas-head">
+              <div class="model-quotas-title-wrap">
+                <h3>白名单模型额度</h3>
+                <span class="muted model-quotas-sub">来自 WorkBuddy 响应 <code class="mono">usage.quota</code> · 每次调用自动落库</span>
+              </div>
+              <button type="button" class="btn btn-xs btn-ghost" id="btn-refresh-model-quotas">刷新额度</button>
+            </div>
+            <div class="model-quotas-grid" id="model-quotas-grid">
+              <div class="empty-state">正在加载白名单模型额度…</div>
+            </div>
+          </section>
+
           <div class="toolbar">
             <div class="filter-tabs" role="group" aria-label="书籍状态筛选">
               <button type="button" class="filter-chip is-active" data-filter="all">全部书籍</button>
@@ -326,6 +340,7 @@
                   <button type="button" class="btn btn-xs btn-ghost" id="btn-refresh-cpa">刷新状态</button>
                 </div>
                 <div id="cpa-usage-summary" class="cpa-usage-strip">正在读取 CPA 额度统计…</div>
+                <div class="model-quotas-grid model-quotas-grid-compact" id="cpa-model-quotas-grid" aria-label="CPA 白名单模型额度"></div>
                 <div id="cpa-auth-list" class="auth-files-list">
                   <div class="empty-state">加载凭据列表中…</div>
                 </div>

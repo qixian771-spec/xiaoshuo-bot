@@ -48,7 +48,19 @@ from ..llm.base import (
 )
 from ..llm.cpa_manager import CPAManagementClient
 from ..llm.router import RoleEndpointConfig, RoleModelRouter, VALID_ROLES
-from ..llm.workbuddy_policy import ModelSwitchEvent, RateLimitRetryEvent
+from ..llm.workbuddy_policy import (
+    ModelQuotaSnapshot,
+    ModelSwitchEvent,
+    RateLimitRetryEvent,
+    WORKBUDDY_MANUAL_ONLY_SLOTS,
+    WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
+    WORKBUDDY_SLOT_DISPLAY_NAMES,
+    WORKBUDDY_SLOT_HY4,
+    WORKBUDDY_SLOT_HY4_FLASH,
+    WORKBUDDY_SLOT_MIMO_V2_6_PRO,
+    WORKBUDDY_WRITER_ROTATION_SLOTS,
+    _strip_site_prefix,
+)
 from ..loader import load_project
 from ..models import (
     ChapterArtifact,
@@ -253,6 +265,7 @@ class MatrixScheduler:
         if isinstance(self.provider, RoleModelRouter):
             self.provider.add_model_switch_listener(self._handle_model_switched)
             self.provider.add_rate_limit_retry_listener(self._handle_rate_limit_retry)
+            self.provider.add_model_quota_listener(self._handle_model_quota)
 
     def _resolve_event_book_context(
         self,
@@ -368,6 +381,144 @@ class MatrixScheduler:
                 "status_code": event.status_code,
             },
         )
+
+    def _handle_model_quota(self, snap: ModelQuotaSnapshot) -> None:
+        self.db.upsert_model_quota(
+            model=snap.model,
+            model_label=snap.model_label,
+            raw_model=snap.raw_model,
+            percent=snap.percent,
+            reset_at=snap.reset_at,
+            reset_at_raw=snap.reset_at_raw,
+            shared_models=snap.shared_models,
+            role=snap.role,
+            updated_at=snap.updated_at,
+        )
+
+    def get_model_quotas(self) -> List[Dict[str, Any]]:
+        """Return latest WorkBuddy usage.quota snapshots merged with configured whitelist models."""
+        persisted = self.db.list_model_quotas()
+        by_model: Dict[str, Dict[str, Any]] = {}
+        by_bare: Dict[str, Dict[str, Any]] = {}
+        for row in persisted:
+            m = str(row.get("model") or "").strip()
+            if not m:
+                continue
+            by_model[m] = row
+            bare = _strip_site_prefix(m).lower()
+            if bare and bare not in by_bare:
+                by_bare[bare] = row
+
+        def _find_row(model_id: str) -> Optional[Dict[str, Any]]:
+            if model_id in by_model:
+                return by_model[model_id]
+            bare = _strip_site_prefix(model_id).lower()
+            if bare in by_bare:
+                return by_bare[bare]
+            return None
+
+        items: List[Dict[str, Any]] = []
+        seen_models: set[str] = set()
+        router = self._get_router()
+        catalog = getattr(router, "workbuddy_catalog", None) if router is not None else None
+
+        if catalog is not None:
+            display_slots = (
+                WORKBUDDY_SLOT_HY4_FLASH,
+                WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
+                WORKBUDDY_SLOT_MIMO_V2_6_PRO,
+                WORKBUDDY_SLOT_HY4,
+            )
+            slot_map = catalog.slot_to_model()
+            for slot in display_slots:
+                model_id = slot_map[slot]
+                seen_models.add(model_id)
+                row = _find_row(model_id)
+                if row is not None:
+                    seen_models.add(row["model"])
+                items.append(
+                    {
+                        "slot": slot,
+                        "model": model_id,
+                        "label": WORKBUDDY_SLOT_DISPLAY_NAMES[slot],
+                        "in_rotation": slot in WORKBUDDY_WRITER_ROTATION_SLOTS,
+                        "manual_only": slot in WORKBUDDY_MANUAL_ONLY_SLOTS,
+                        "has_quota": row is not None,
+                        "percent": float(row["percent"]) if row is not None else None,
+                        "reset_at": str(row["reset_at"]) if row is not None else "",
+                        "reset_at_raw": str(row["reset_at_raw"]) if row is not None else "",
+                        "raw_model": str(row["raw_model"]) if row is not None else "",
+                        "shared_models": list(row["shared_models"]) if row is not None else [],
+                        "role": str(row["role"]) if row is not None else "",
+                        "updated_at": str(row["updated_at"]) if row is not None else "",
+                    }
+                )
+        elif router is not None:
+            ordered_models: List[Tuple[str, str, bool, bool]] = []
+            seen_cfg: set[str] = set()
+            for role in ("writer", "planner", "critic", "polisher"):
+                if not router.has_role(role):
+                    continue
+                cfg = router.get_role_config(role)
+                candidates = list(cfg.model_whitelist) or list(cfg.rotation_models) or [cfg.model]
+                for model_id in candidates:
+                    if not model_id or model_id in seen_cfg:
+                        continue
+                    seen_cfg.add(model_id)
+                    ordered_models.append(
+                        (
+                            model_id,
+                            cfg.model_labels.get(model_id, "") or model_id,
+                            model_id in cfg.rotation_models,
+                            model_id in cfg.manual_only_models,
+                        )
+                    )
+            for model_id, label, in_rot, manual_only in ordered_models:
+                seen_models.add(model_id)
+                row = _find_row(model_id)
+                if row is not None:
+                    seen_models.add(row["model"])
+                items.append(
+                    {
+                        "slot": "",
+                        "model": model_id,
+                        "label": label,
+                        "in_rotation": bool(in_rot),
+                        "manual_only": bool(manual_only),
+                        "has_quota": row is not None,
+                        "percent": float(row["percent"]) if row is not None else None,
+                        "reset_at": str(row["reset_at"]) if row is not None else "",
+                        "reset_at_raw": str(row["reset_at_raw"]) if row is not None else "",
+                        "raw_model": str(row["raw_model"]) if row is not None else "",
+                        "shared_models": list(row["shared_models"]) if row is not None else [],
+                        "role": str(row["role"]) if row is not None else "",
+                        "updated_at": str(row["updated_at"]) if row is not None else "",
+                    }
+                )
+
+        for row in persisted:
+            m = str(row.get("model") or "").strip()
+            if not m or m in seen_models:
+                continue
+            seen_models.add(m)
+            items.append(
+                {
+                    "slot": "",
+                    "model": m,
+                    "label": str(row.get("model_label") or m),
+                    "in_rotation": False,
+                    "manual_only": False,
+                    "has_quota": True,
+                    "percent": float(row["percent"]),
+                    "reset_at": str(row.get("reset_at") or ""),
+                    "reset_at_raw": str(row.get("reset_at_raw") or ""),
+                    "raw_model": str(row.get("raw_model") or ""),
+                    "shared_models": list(row.get("shared_models") or []),
+                    "role": str(row.get("role") or ""),
+                    "updated_at": str(row.get("updated_at") or ""),
+                }
+            )
+        return items
 
     def _emit(
         self,

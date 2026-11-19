@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 import os
 import re
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -193,6 +194,179 @@ class RateLimitRetryEvent:
             "chapter": int(self.chapter),
             "status_code": int(self.status_code),
         }
+
+
+@dataclass(frozen=True)
+class ModelQuotaSnapshot:
+    """WorkBuddy usage.quota snapshot captured from an upstream chat completion response."""
+
+    model: str
+    raw_model: str
+    model_label: str
+    percent: float
+    reset_at: str
+    reset_at_raw: str = ""
+    shared_models: Tuple[str, ...] = ()
+    role: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "model": self.model,
+            "raw_model": self.raw_model,
+            "model_label": self.model_label or self.model,
+            "percent": float(self.percent),
+            "reset_at": self.reset_at,
+            "reset_at_raw": self.reset_at_raw,
+            "shared_models": list(self.shared_models),
+            "role": self.role,
+            "updated_at": self.updated_at,
+        }
+
+
+_ALNUM_ONLY_RE = re.compile(r"[^a-z0-9]+")
+_NUMERIC_EPOCH_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def _normalize_quota_reset_at(raw_value: Any) -> Tuple[str, str]:
+    """Normalize WorkBuddy usage.quota.reset_at (unix epoch sec/ms or ISO string) into Asia/Shanghai ISO-8601."""
+    if raw_value is None or isinstance(raw_value, bool):
+        return "", ""
+    if isinstance(raw_value, (int, float)):
+        if math.isnan(raw_value) or math.isinf(raw_value):
+            return "", ""
+        raw_str = str(int(raw_value)) if float(raw_value).is_integer() else str(raw_value)
+        ts_val = float(raw_value)
+        if abs(ts_val) >= 1e11:
+            ts_val /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts_val, tz=SHANGHAI_TZ).isoformat(), raw_str
+        except (OSError, OverflowError, ValueError):
+            return raw_str, raw_str
+
+    raw_str = str(raw_value).strip()
+    if not raw_str:
+        return "", ""
+    if _NUMERIC_EPOCH_RE.match(raw_str):
+        ts_val = float(raw_str)
+        if abs(ts_val) >= 1e11:
+            ts_val /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts_val, tz=SHANGHAI_TZ).isoformat(), raw_str
+        except (OSError, OverflowError, ValueError):
+            return raw_str, raw_str
+
+    iso_candidate = raw_str[:-1] + "+00:00" if raw_str.endswith("Z") else raw_str
+    try:
+        parsed = datetime.fromisoformat(iso_candidate)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
+        else:
+            parsed = parsed.astimezone(SHANGHAI_TZ)
+        return parsed.isoformat(), raw_str
+    except ValueError:
+        return raw_str, raw_str
+
+
+def _match_model_id_in_whitelist(
+    candidate: str,
+    whitelist: Sequence[str],
+) -> Optional[str]:
+    cleaned = (candidate or "").strip()
+    if not cleaned:
+        return None
+    for item in whitelist:
+        if item == cleaned:
+            return item
+    cand_bare = _strip_site_prefix(cleaned).lower()
+    for item in whitelist:
+        if _strip_site_prefix(item).lower() == cand_bare:
+            return item
+    cand_norm = _ALNUM_ONLY_RE.sub("", cand_bare)
+    if cand_norm:
+        for item in whitelist:
+            item_norm = _ALNUM_ONLY_RE.sub("", _strip_site_prefix(item).lower())
+            if item_norm == cand_norm or (
+                len(cand_norm) >= 4
+                and (item_norm.startswith(cand_norm) or cand_norm.startswith(item_norm))
+            ):
+                return item
+    return None
+
+
+def extract_workbuddy_usage_quota(
+    usage: Optional[Mapping[str, Any]],
+    *,
+    requested_model: str = "",
+    catalog: Optional["WorkBuddyModelCatalog"] = None,
+    model_labels: Optional[Mapping[str, str]] = None,
+    role: str = "",
+    updated_at: str = "",
+) -> Optional[ModelQuotaSnapshot]:
+    """Extract WorkBuddy usage.quota ({model, percent, reset_at, shared_models}) from a response usage mapping.
+
+    Returns None when usage.quota is absent or lacks a valid numeric percent (never fabricates 0%).
+    """
+    if not isinstance(usage, Mapping):
+        return None
+    raw_quota = usage.get("quota")
+    if not isinstance(raw_quota, Mapping) or not raw_quota:
+        return None
+
+    raw_percent = raw_quota.get("percent")
+    if raw_percent is None or isinstance(raw_percent, bool):
+        return None
+    try:
+        percent_val = float(raw_percent)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(percent_val) or math.isinf(percent_val):
+        return None
+
+    raw_model = str(raw_quota.get("model") or "").strip()
+    req_model = (requested_model or "").strip()
+
+    labels_map: Dict[str, str] = {}
+    whitelist: Tuple[str, ...] = ()
+    if catalog is not None:
+        whitelist = catalog.whitelist()
+        labels_map.update(catalog.labels())
+    if model_labels:
+        for k, v in model_labels.items():
+            if str(k).strip() and str(v).strip():
+                labels_map[str(k).strip()] = str(v).strip()
+
+    canonical_model = ""
+    if req_model:
+        matched_req = _match_model_id_in_whitelist(req_model, whitelist) if whitelist else None
+        canonical_model = matched_req or req_model
+    elif raw_model:
+        matched_raw = _match_model_id_in_whitelist(raw_model, whitelist) if whitelist else None
+        canonical_model = matched_raw or raw_model
+
+    if not canonical_model:
+        return None
+
+    display_label = labels_map.get(canonical_model, "").strip() or canonical_model
+    reset_at_iso, reset_at_raw = _normalize_quota_reset_at(raw_quota.get("reset_at"))
+
+    shared_raw = raw_quota.get("shared_models")
+    shared_models: Tuple[str, ...] = ()
+    if isinstance(shared_raw, Sequence) and not isinstance(shared_raw, (str, bytes)):
+        shared_models = tuple(str(x).strip() for x in shared_raw if str(x).strip())
+
+    ts = (updated_at or "").strip() or now_shanghai_iso()
+    return ModelQuotaSnapshot(
+        model=canonical_model,
+        raw_model=raw_model or canonical_model,
+        model_label=display_label,
+        percent=round(percent_val, 2),
+        reset_at=reset_at_iso,
+        reset_at_raw=reset_at_raw,
+        shared_models=shared_models,
+        role=(role or "").strip(),
+        updated_at=ts,
+    )
 
 
 def _strip_site_prefix(model_id: str) -> str:
@@ -672,6 +846,7 @@ __all__ = [
     "DEFAULT_MODEL_QUOTA_COOLDOWN_SEC",
     "WORKBUDDY_REASONING_HEADROOM_TOKENS",
     "DEFAULT_RATE_LIMIT_BACKOFF_SEC",
+    "ModelQuotaSnapshot",
     "ModelSwitchEvent",
     "RateLimitRetryEvent",
     "WORKBUDDY_MANUAL_ONLY_SLOTS",
@@ -689,6 +864,7 @@ __all__ = [
     "WorkBuddyModelCatalog",
     "classify_workbuddy_failure_kind",
     "classify_workbuddy_quota_exhausted",
+    "extract_workbuddy_usage_quota",
     "find_forbidden_model_reason",
     "now_shanghai_iso",
     "parse_rate_limit_backoff_sec",

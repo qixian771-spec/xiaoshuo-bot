@@ -399,6 +399,18 @@ class StockpileDB:
 
                 CREATE INDEX IF NOT EXISTS idx_model_switch_events_created
                     ON model_switch_events(id DESC);
+
+                CREATE TABLE IF NOT EXISTS model_quotas (
+                    model TEXT PRIMARY KEY,
+                    model_label TEXT NOT NULL DEFAULT '',
+                    raw_model TEXT NOT NULL DEFAULT '',
+                    percent REAL NOT NULL,
+                    reset_at TEXT NOT NULL DEFAULT '',
+                    reset_at_raw TEXT NOT NULL DEFAULT '',
+                    shared_models_json TEXT NOT NULL DEFAULT '[]',
+                    role TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             # Legacy schema migration for existing matrix.db databases created before T5.
@@ -630,6 +642,107 @@ class StockpileDB:
             }
             for r in rows
         ]
+
+    # -----------------------------------------------------------------------
+    # WorkBuddy Model Quota Snapshots (usage.quota persistence)
+    # -----------------------------------------------------------------------
+    def upsert_model_quota(
+        self,
+        *,
+        model: str,
+        percent: float,
+        reset_at: str = "",
+        reset_at_raw: str = "",
+        model_label: str = "",
+        raw_model: str = "",
+        shared_models: Sequence[str] = (),
+        role: str = "",
+        updated_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        clean_model = str(model or "").strip()
+        if not clean_model:
+            raise ValueError("model cannot be empty")
+        clean_label = str(model_label or "").strip() or clean_model
+        clean_raw = str(raw_model or "").strip() or clean_model
+        clean_reset = str(reset_at or "").strip()
+        clean_reset_raw = str(reset_at_raw or "").strip()
+        clean_shared = [str(x).strip() for x in (shared_models or ()) if str(x).strip()]
+        clean_role = str(role or "").strip()
+        ts = (updated_at or "").strip() or self._now_iso()
+        pct = round(float(percent), 2)
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO model_quotas
+                    (model, model_label, raw_model, percent, reset_at, reset_at_raw,
+                     shared_models_json, role, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(model) DO UPDATE SET
+                    model_label = excluded.model_label,
+                    raw_model = excluded.raw_model,
+                    percent = excluded.percent,
+                    reset_at = excluded.reset_at,
+                    reset_at_raw = excluded.reset_at_raw,
+                    shared_models_json = excluded.shared_models_json,
+                    role = excluded.role,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    clean_model,
+                    clean_label,
+                    clean_raw,
+                    pct,
+                    clean_reset,
+                    clean_reset_raw,
+                    json.dumps(clean_shared, ensure_ascii=False),
+                    clean_role,
+                    ts,
+                ),
+            )
+        return {
+            "model": clean_model,
+            "model_label": clean_label,
+            "raw_model": clean_raw,
+            "percent": pct,
+            "reset_at": clean_reset,
+            "reset_at_raw": clean_reset_raw,
+            "shared_models": clean_shared,
+            "role": clean_role,
+            "updated_at": ts,
+        }
+
+    def list_model_quotas(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT model, model_label, raw_model, percent, reset_at, reset_at_raw,
+                       shared_models_json, role, updated_at
+                FROM model_quotas
+                ORDER BY updated_at DESC, model ASC
+                """
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                shared = json.loads(r["shared_models_json"] or "[]")
+                if not isinstance(shared, list):
+                    shared = []
+            except json.JSONDecodeError:
+                shared = []
+            out.append(
+                {
+                    "model": str(r["model"] or ""),
+                    "model_label": str(r["model_label"] or ""),
+                    "raw_model": str(r["raw_model"] or ""),
+                    "percent": float(r["percent"]),
+                    "reset_at": str(r["reset_at"] or ""),
+                    "reset_at_raw": str(r["reset_at_raw"] or ""),
+                    "shared_models": [str(x) for x in shared if str(x).strip()],
+                    "role": str(r["role"] or ""),
+                    "updated_at": str(r["updated_at"] or ""),
+                }
+            )
+        return out
 
     # -----------------------------------------------------------------------
     # Production KPI (写稿耗时 vs 重写率)
