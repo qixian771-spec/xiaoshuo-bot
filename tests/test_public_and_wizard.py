@@ -193,7 +193,7 @@ class TestPublicStudio(_ServerCase):
         self.assertEqual(code, 405)
 
     def test_static_page_routing(self) -> None:
-        for path, marker in (("/", "创作演播厅"), ("/admin/", "矩阵总览"), ("/admin/wizard", "新书向导")):
+        for path, marker in (("/", "创作演播厅"), ("/admin/", "书目总览"), ("/admin/wizard", "新书向导")):
             code, headers, body = _http(self.base + path)
             self.assertEqual(code, 200, path)
             self.assertEqual(headers["content-type"], "text/html; charset=utf-8")

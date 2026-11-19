@@ -55,10 +55,13 @@
     { role: "image", label: "封面生图 (image)" },
   ]);
 
+  // Private studio & export-only UI gate (22A/23A: keep backend & contract code, hide racing-matrix & companion UI)
+  const PRIVATE_STUDIO_MODE = true;
+
   const VIEW_META = Object.freeze({
     overview: {
-      title: "矩阵总览与安全垫监控台",
-      subtitle: "10 章安全垫水位调度 · <6 章置顶抢产 · 马甲隔离监控",
+      title: "书目总览",
+      subtitle: "私人创作控制台 · 仅导出人工发布 · 实时门禁监控",
     },
     create: {
       title: "三源爆款立项舱",
@@ -73,13 +76,13 @@
       subtitle: "流式推送章节生产、AI-TIC-CHECK 门禁、四维打分与手术刀精修对比",
     },
     reader: {
-      title: "分章阅读、锁章与一鱼多吃下载中心",
+      title: "分章阅读、锁章与导出中心",
       subtitle: "纯净正文与物理隔离作者有话说 · 锁章防覆盖 · 多平台标准打包",
     },
   });
 
   const BOOK_STATUS_LABELS = Object.freeze({
-    ACTIVE: { text: "连载生产中", cls: "tag-emerald" },
+    ACTIVE: { text: "写作中", cls: "tag-emerald" },
     ISOLATED_GATE_FAILURE: { text: "门禁故障隔离", cls: "tag-gold" },
     PAUSED_AUTH_CAPTCHA: { text: "验证码/登录挂起", cls: "tag-danger" },
     PAUSED_QUOTA_EXHAUSTED: { text: "CPA 额度耗尽", cls: "tag-danger" },
@@ -89,7 +92,7 @@
   });
 
   const CHAPTER_STATUS_LABELS = Object.freeze({
-    STOCKPILED: { text: "已囤稿待发", cls: "tag-emerald" },
+    STOCKPILED: { text: "已过审成稿", cls: "tag-emerald" },
     LEASED: { text: "伴侣租约中", cls: "tag-cyan" },
     DRAFT_SAVED: { text: "已存草稿箱", cls: "tag-gold" },
     SCHEDULED: { text: "已定时发布", cls: "tag-purple" },
@@ -284,6 +287,9 @@
   }
 
   function switchView(viewName) {
+    if (PRIVATE_STUDIO_MODE && viewName === "create") {
+      viewName = "overview";
+    }
     if (!VIEW_META[viewName]) {
       return;
     }
@@ -312,6 +318,7 @@
     if (subEl) {
       subEl.textContent = meta.subtitle;
     }
+    document.title = meta.title + " · xiaoshuo-bot";
 
     if (viewName === "create" && state.genres.length === 0) {
       loadGenres();
@@ -382,7 +389,7 @@
       populateBookSelects();
       renderCaptchaBanner();
     } catch (err) {
-      showToast("加载矩阵书籍失败：" + err.message, "err");
+      showToast("加载书目失败：" + err.message, "err");
     }
   }
 
@@ -468,9 +475,9 @@
       kpiLowCard.classList.toggle("is-alert", criticalCushionBooks.length > 0);
     }
     if (kpiPausedIso) {
-      kpiPausedIso.textContent = captchaCount + " / " + isolatedCount;
+      kpiPausedIso.textContent = PRIVATE_STUDIO_MODE ? String(isolatedCount) : (captchaCount + " / " + isolatedCount);
     }
-    const alertTotal = criticalCushionBooks.length + captchaCount + isolatedCount;
+    const alertTotal = PRIVATE_STUDIO_MODE ? isolatedCount : (criticalCushionBooks.length + captchaCount + isolatedCount);
     if (navAlertBadge) {
       navAlertBadge.hidden = alertTotal === 0;
       navAlertBadge.textContent = String(alertTotal);
@@ -495,7 +502,11 @@
     });
 
     if (filtered.length === 0) {
-      grid.innerHTML = '<div class="empty-state">当前筛选条件下暂无书目。可点击右上角「+ 三源自动立项」全自动开新书。</div>';
+      if (PRIVATE_STUDIO_MODE) {
+        grid.innerHTML = '<div class="empty-state">当前筛选条件下暂无书目。可点击右上角「✚ 新书向导」创建新书。</div>';
+      } else {
+        grid.innerHTML = '<div class="empty-state">当前筛选条件下暂无书目。可点击右上角「+ 三源自动立项」全自动开新书。</div>';
+      }
       return;
     }
 
@@ -509,35 +520,39 @@
       const isBelowTarget = !isCritical && (Boolean(book.low_cushion_alert) || (book.status === "ACTIVE" && stockpiled < target));
       const fillCls = isCritical ? "is-danger" : isBelowTarget ? "is-warn" : "is-safe";
       const statusMeta = BOOK_STATUS_LABELS[book.status] || { text: String(book.status || "未知"), cls: "" };
-      const trackLabel = book.author_level === "lv2_plus" ? "Lv2+ 连载赛马" : "Lv0/1 完本养号";
+      const trackLabel = PRIVATE_STUDIO_MODE
+        ? (book.author_level === "lv2_plus" ? "长篇连载" : "紧凑完本")
+        : (book.author_level === "lv2_plus" ? "Lv2+ 连载赛马" : "Lv0/1 完本养号");
       const isPaused = book.status === "PAUSED_AUTH_CAPTCHA" || book.status === "PAUSED_QUOTA_EXHAUSTED" || book.status === "ISOLATED_GATE_FAILURE" || book.status === "PAUSED";
-      const cardCls = "book-card" + (isCritical ? " is-low-cushion" : "") + (book.status === "ISOLATED_GATE_FAILURE" ? " is-isolated" : "");
+      const cardCls = "book-card" + (!PRIVATE_STUDIO_MODE && isCritical ? " is-low-cushion" : "") + (book.status === "ISOLATED_GATE_FAILURE" ? " is-isolated" : "");
 
       return (
         '<article class="' + escapeHtml(cardCls) + '" data-book-id="' + escapeHtml(bookId) + '">' +
           '<div class="book-card-head">' +
             '<div>' +
               '<h3 class="book-title">' + escapeHtml(title) + '</h3>' +
-              '<div class="book-id mono">' + escapeHtml(bookId) + (book.account_id ? " · 马甲 " + escapeHtml(book.account_id) : "") + '</div>' +
+              '<div class="book-id mono">' + escapeHtml(bookId) + (!PRIVATE_STUDIO_MODE && book.account_id ? " · 马甲 " + escapeHtml(book.account_id) : "") + '</div>' +
             '</div>' +
             '<span class="tag ' + escapeHtml(statusMeta.cls) + '">' + escapeHtml(statusMeta.text) + '</span>' +
           '</div>' +
           '<div class="tag-row">' +
             '<span class="tag tag-gold">' + escapeHtml(book.genre_id || "未分类") + '</span>' +
             '<span class="tag tag-cyan">' + escapeHtml(trackLabel) + '</span>' +
-            (isCritical ? '<span class="tag tag-danger">⚠️ 安全垫 &lt;6 抢产</span>' : isBelowTarget ? '<span class="tag tag-gold">安全垫 &lt;' + escapeHtml(target) + ' 补库中</span>' : "") +
+            (PRIVATE_STUDIO_MODE ? "" : (isCritical ? '<span class="tag tag-danger">⚠️ 安全垫 &lt;6 抢产</span>' : isBelowTarget ? '<span class="tag tag-gold">安全垫 &lt;' + escapeHtml(target) + ' 补库中</span>' : "")) +
           '</div>' +
-          '<div class="cushion-wrap">' +
-            '<div class="cushion-head">' +
-              '<span>囤稿安全垫水位</span>' +
-              '<span class="mono">' + escapeHtml(stockpiled) + " / " + escapeHtml(target) + ' 章</span>' +
-            '</div>' +
-            '<div class="cushion-track">' +
-              '<div class="cushion-fill ' + escapeHtml(fillCls) + '" style="width:' + escapeHtml(pct) + '%"></div>' +
-            '</div>' +
-          '</div>' +
+          (PRIVATE_STUDIO_MODE
+            ? ""
+            : ('<div class="cushion-wrap">' +
+                '<div class="cushion-head">' +
+                  '<span>囤稿安全垫水位</span>' +
+                  '<span class="mono">' + escapeHtml(stockpiled) + " / " + escapeHtml(target) + ' 章</span>' +
+                '</div>' +
+                '<div class="cushion-track">' +
+                  '<div class="cushion-fill ' + escapeHtml(fillCls) + '" style="width:' + escapeHtml(pct) + '%"></div>' +
+                '</div>' +
+              '</div>')) +
           '<div class="book-metrics">' +
-            '<div class="metric-cell"><div class="metric-k">已发最高章</div><div class="metric-v mono">第 ' + escapeHtml(book.max_published_chapter || 0) + ' 章</div></div>' +
+            (PRIVATE_STUDIO_MODE ? "" : '<div class="metric-cell"><div class="metric-k">已发最高章</div><div class="metric-v mono">第 ' + escapeHtml(book.max_published_chapter || 0) + ' 章</div></div>') +
             '<div class="metric-cell"><div class="metric-k">总已产章数</div><div class="metric-v mono">' + escapeHtml(book.total_chapters || 0) + ' 章</div></div>' +
             '<div class="metric-cell"><div class="metric-k">日更目标</div><div class="metric-v mono">' + escapeHtml(book.daily_target_chapters || 2) + ' 章/日</div></div>' +
           '</div>' +
@@ -545,12 +560,12 @@
           '<div class="book-actions">' +
             '<button type="button" class="btn btn-xs btn-primary" data-book-action="read" data-book-id="' + escapeHtml(bookId) + '">📖 阅读/锁章</button>' +
             '<button type="button" class="btn btn-xs btn-outline" data-book-action="detail" data-book-id="' + escapeHtml(bookId) + '">🖼 封面/备选名</button>' +
-            '<button type="button" class="btn btn-xs btn-ghost" data-book-action="promote" data-book-id="' + escapeHtml(bookId) + '">⚡ 晋级加更</button>' +
+            (PRIVATE_STUDIO_MODE ? "" : '<button type="button" class="btn btn-xs btn-ghost" data-book-action="promote" data-book-id="' + escapeHtml(bookId) + '">⚡ 晋级加更</button>') +
             '<button type="button" class="btn btn-xs btn-ghost" data-book-action="extend" data-book-id="' + escapeHtml(bookId) + '">🗺 续纲</button>' +
             (isPaused
               ? '<button type="button" class="btn btn-xs btn-outline" data-book-action="resume" data-book-id="' + escapeHtml(bookId) + '">▶ 恢复生产</button>'
               : '<button type="button" class="btn btn-xs btn-ghost" data-book-action="pause" data-book-id="' + escapeHtml(bookId) + '">⏸ 暂停</button>') +
-            '<button type="button" class="btn btn-xs btn-danger" data-book-action="cut" data-book-id="' + escapeHtml(bookId) + '">✂ 切书</button>' +
+            (PRIVATE_STUDIO_MODE ? "" : '<button type="button" class="btn btn-xs btn-danger" data-book-action="cut" data-book-id="' + escapeHtml(bookId) + '">✂ 切书</button>') +
           '</div>' +
         '</article>'
       );
@@ -710,6 +725,14 @@
     const actionsEl = document.getElementById("captcha-banner-actions");
     const thumbEl = document.getElementById("captcha-banner-thumb");
     if (!banner || !detailsEl || !actionsEl || !thumbEl) {
+      return;
+    }
+    if (PRIVATE_STUDIO_MODE) {
+      banner.hidden = true;
+      detailsEl.innerHTML = "";
+      actionsEl.innerHTML = "";
+      thumbEl.innerHTML = "";
+      thumbEl.hidden = true;
       return;
     }
     const alerts = Array.from(state.captchaAlerts.values());
@@ -1621,7 +1644,7 @@
   SSE_HANDLERS[SSE_EVENTS.BOOK_ISOLATED] = function (payload) {
     loadBooks();
     openIsolationModal(payload);
-    return { level: "fail", title: "单书故障隔离", detail: payload.message || "重写超限已隔离，不影响矩阵其余书目" };
+    return { level: "fail", title: "单书故障隔离", detail: payload.message || "重写超限已隔离，其它书目不受影响" };
   };
   SSE_HANDLERS[SSE_EVENTS.SAFETY_CUSHION_ALERT] = function (payload) {
     loadBooks();

@@ -463,6 +463,174 @@ class TestWebStaticContract(unittest.TestCase):
         self.assertIn("#cpa-bindings-form .binding-fields", self.css_text)
         self.assertIn("#cpa-bindings-form .input-group", self.css_text)
 
+    def test_p1_1_admin_hides_racing_matrix_and_companion_entries_while_keeping_core_entries(self) -> None:
+        from html.parser import HTMLParser
+
+        void_tags = {
+            "area", "base", "br", "col", "embed", "hr", "img",
+            "input", "link", "meta", "param", "source", "track", "wbr",
+        }
+
+        class _VisibilityParser(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.stack: list[tuple[str, bool]] = []
+                self.in_script_or_style = False
+                self.elements: list[dict[str, object]] = []
+                self.visible_texts: list[str] = []
+
+            @property
+            def currently_hidden(self) -> bool:
+                return any(is_h for _, is_h in self.stack)
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                attr_map = {k: ("" if v is None else v) for k, v in attrs}
+                own_hidden = "hidden" in attr_map
+                eff_hidden = self.currently_hidden or own_hidden
+                self.elements.append(
+                    {"tag": tag, "attrs": attr_map, "own_hidden": own_hidden, "hidden": eff_hidden}
+                )
+                if tag in ("script", "style"):
+                    self.in_script_or_style = True
+                if tag not in void_tags:
+                    self.stack.append((tag, own_hidden))
+
+            def handle_endtag(self, tag: str) -> None:
+                if tag in ("script", "style"):
+                    self.in_script_or_style = False
+                for i in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[i][0] == tag:
+                        del self.stack[i:]
+                        break
+
+            def handle_data(self, data: str) -> None:
+                if not self.in_script_or_style and not self.currently_hidden:
+                    text = data.strip()
+                    if text:
+                        self.visible_texts.append(text)
+
+        parser = _VisibilityParser()
+        parser.feed(self.index_text)
+
+        def _find_one(**criteria: str) -> dict[str, object]:
+            matches = [
+                el
+                for el in parser.elements
+                if all(
+                    (el["tag"] == val if key == "tag" else el["attrs"].get(key) == val)
+                    for key, val in criteria.items()
+                )
+            ]
+            self.assertEqual(len(matches), 1, f"Expected exactly 1 element for {criteria}, found {len(matches)}")
+            return matches[0]
+
+        # 1. Racing-matrix and publishing-companion entries MUST be hidden (DOM preserved, UI hidden)
+        hidden_targets = (
+            {"tag": "button", "data-view": "create"},
+            {"id": "btn-goto-create"},
+            {"id": "kpi-card-low-cushion"},
+            {"tag": "button", "data-filter": "LOW_CUSHION"},
+            {"tag": "button", "data-filter": "PAUSED_AUTH_CAPTCHA"},
+            {"tag": "button", "data-filter": "CUT_LOSS"},
+            {"id": "captcha-global-banner"},
+            {"id": "view-create"},
+            {"id": "cut-modal"},
+            {"id": "create-account-id"},
+        )
+        for target in hidden_targets:
+            el = _find_one(**target)
+            self.assertTrue(el["hidden"], f"Expected {target} to be hidden in /admin/ index.html")
+
+        # 2. Core entries MUST stay visible (CPA config, Wizard, Public studio, Live, Reader/Export)
+        visible_targets = (
+            {"tag": "button", "data-view": "overview"},
+            {"tag": "button", "data-view": "cpa"},
+            {"tag": "button", "data-view": "live"},
+            {"tag": "button", "data-view": "reader"},
+            {"tag": "a", "href": "/admin/wizard"},
+            {"tag": "a", "href": "/"},
+            {"id": "kpi-today-tokens"},
+            {"id": "kpi-production"},
+            {"id": "kpi-paused-isolated"},
+            {"tag": "button", "data-filter": "all"},
+            {"tag": "button", "data-filter": "ACTIVE"},
+            {"tag": "button", "data-filter": "ISOLATED_GATE_FAILURE"},
+        )
+        for target in visible_targets:
+            el = _find_one(**target)
+            self.assertFalse(el["hidden"], f"Expected core entry {target} to stay visible in /admin/ index.html")
+
+        # 3. No racing-matrix / companion wording in visible index.html text
+        visible_blob = "\n".join(parser.visible_texts)
+        for forbidden_term in (
+            "番茄爆款矩阵",
+            "安全垫",
+            "伴侣",
+            "马甲",
+            "止损切书",
+            "三源爆款立项",
+            "三源自动立项",
+            "验证码挂起",
+        ):
+            self.assertNotIn(
+                forbidden_term,
+                visible_blob,
+                f"Forbidden racing-matrix/companion term {forbidden_term!r} still visible in index.html",
+            )
+
+        # 4. CSS [hidden] rule must enforce display: none !important so flex/grid components cannot override it
+        self.assertRegex(self.css_text, r"\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;")
+
+    def test_p1_1_app_js_enforces_private_studio_mode_gates(self) -> None:
+        self.assertRegex(self.app_text, r"\bconst\s+PRIVATE_STUDIO_MODE\s*=\s*true\s*;")
+
+        m_meta = re.search(
+            r"const\s+VIEW_META\s*=\s*Object\.freeze\(\{(.*?)\}\);",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_meta, "VIEW_META missing in app.js")
+        m_ov_meta = re.search(r"overview\s*:\s*\{([^}]*)\}", m_meta.group(1), re.DOTALL)
+        self.assertIsNotNone(m_ov_meta, "VIEW_META.overview missing in app.js")
+        for forbidden in ("矩阵", "安全垫", "马甲"):
+            self.assertNotIn(forbidden, m_ov_meta.group(1))
+
+        m_switch = re.search(
+            r"function\s+switchView\s*\(viewName\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_switch, "switchView() missing in app.js")
+        self.assertIn('if (PRIVATE_STUDIO_MODE && viewName === "create")', m_switch.group(1))
+        self.assertIn('viewName = "overview";', m_switch.group(1))
+        self.assertIn("document.title =", m_switch.group(1))
+
+        m_captcha = re.search(
+            r"function\s+renderCaptchaBanner\s*\(\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_captcha, "renderCaptchaBanner() missing in app.js")
+        self.assertIn("if (PRIVATE_STUDIO_MODE)", m_captcha.group(1))
+        self.assertLess(
+            m_captcha.group(1).index("if (PRIVATE_STUDIO_MODE)"),
+            m_captcha.group(1).index("banner.hidden = false;"),
+        )
+
+        m_grid = re.search(
+            r"function\s+renderBooksGrid\s*\(\)\s*\{(.*?)\n  \}",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_grid, "renderBooksGrid() missing in app.js")
+        grid_body = m_grid.group(1)
+        self.assertIn('PRIVATE_STUDIO_MODE ? "" : \'<button type="button" class="btn btn-xs btn-ghost" data-book-action="promote"', grid_body)
+        self.assertIn('PRIVATE_STUDIO_MODE ? "" : \'<button type="button" class="btn btn-xs btn-danger" data-book-action="cut"', grid_body)
+        self.assertIn("!PRIVATE_STUDIO_MODE && book.account_id", grid_body)
+        self.assertIn('data-book-action="read"', grid_body)
+        self.assertIn('data-book-action="detail"', grid_body)
+        self.assertIn('data-book-action="extend"', grid_body)
+
 
 if __name__ == "__main__":
     unittest.main()

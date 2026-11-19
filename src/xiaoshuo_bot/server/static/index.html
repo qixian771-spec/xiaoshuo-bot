@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>番茄爆款矩阵控制台 · xiaoshuo-bot</title>
+  <title>小说写作控制台 · xiaoshuo-bot</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -13,18 +13,18 @@
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">墨</div>
         <div class="brand-meta">
-          <div class="brand-title">番茄爆款矩阵</div>
-          <div class="brand-sub">xiaoshuo-bot v2 控制台</div>
+          <div class="brand-title">小说写作台</div>
+          <div class="brand-sub">私人全自动创作控制台</div>
         </div>
       </div>
 
       <nav class="nav-list" role="tablist" aria-label="功能视图切换">
         <button type="button" class="nav-btn is-active" data-view="overview" role="tab" aria-selected="true">
           <span class="nav-icon" aria-hidden="true">◈</span>
-          <span class="nav-label">矩阵总览与安全垫</span>
+          <span class="nav-label">书目总览</span>
           <span class="nav-badge" id="nav-badge-alert" hidden>0</span>
         </button>
-        <button type="button" class="nav-btn" data-view="create" role="tab" aria-selected="false">
+        <button type="button" class="nav-btn" data-view="create" role="tab" aria-selected="false" hidden>
           <span class="nav-icon" aria-hidden="true">✦</span>
           <span class="nav-label">三源爆款立项舱</span>
         </button>
@@ -68,8 +68,8 @@
     <div class="main-area">
       <header class="topbar">
         <div class="topbar-left">
-          <h1 class="page-title" id="page-title">矩阵总览与安全垫监控台</h1>
-          <span class="page-subtitle" id="page-subtitle">10 章安全垫水位调度 · &lt;6 章置顶抢产 · 马甲隔离监控</span>
+          <h1 class="page-title" id="page-title">书目总览</h1>
+          <span class="page-subtitle" id="page-subtitle">私人创作控制台 · 仅导出人工发布 · 实时门禁监控</span>
         </div>
         <div class="topbar-right">
           <div class="pill" id="sse-pill">
@@ -105,16 +105,16 @@
       <!-- Global Toast Container -->
       <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
-      <!-- View 1: 矩阵总览与安全垫监控台 -->
+      <!-- View 1: 书目总览 -->
       <main class="view-container">
         <section class="view-panel is-active" id="view-overview" data-view-panel="overview">
           <div class="kpi-grid">
             <div class="kpi-card">
-              <div class="kpi-label">在跑连载书目</div>
+              <div class="kpi-label">在写书目</div>
               <div class="kpi-value" id="kpi-active-books">0 / 0</div>
-              <div class="kpi-hint">活跃调度 / 矩阵总书数</div>
+              <div class="kpi-hint">在写书目 / 总书目</div>
             </div>
-            <div class="kpi-card kpi-danger" id="kpi-card-low-cushion">
+            <div class="kpi-card kpi-danger" id="kpi-card-low-cushion" hidden>
               <div class="kpi-label">安全垫告急 (&lt;6 章)</div>
               <div class="kpi-value" id="kpi-low-cushion">0</div>
               <div class="kpi-hint">低于 6 章自动置顶抢产</div>
@@ -130,31 +130,31 @@
               <div class="kpi-hint" id="kpi-production-hint">每章平均耗时 / 需要重写的章节占比</div>
             </div>
             <div class="kpi-card">
-              <div class="kpi-label">验证码挂起 / 隔离</div>
-              <div class="kpi-value" id="kpi-paused-isolated">0 / 0</div>
-              <div class="kpi-hint">伴侣挂起账号 / 门禁隔离书目</div>
+              <div class="kpi-label">门禁隔离</div>
+              <div class="kpi-value" id="kpi-paused-isolated">0</div>
+              <div class="kpi-hint">触发门禁熔断停笔书目</div>
             </div>
           </div>
 
           <div class="toolbar">
             <div class="filter-tabs" role="group" aria-label="书籍状态筛选">
               <button type="button" class="filter-chip is-active" data-filter="all">全部书籍</button>
-              <button type="button" class="filter-chip" data-filter="ACTIVE">连载生产中</button>
-              <button type="button" class="filter-chip" data-filter="LOW_CUSHION">安全垫 &lt;6 章</button>
-              <button type="button" class="filter-chip" data-filter="PAUSED_AUTH_CAPTCHA">验证码挂起</button>
+              <button type="button" class="filter-chip" data-filter="ACTIVE">写作中</button>
+              <button type="button" class="filter-chip" data-filter="LOW_CUSHION" hidden>安全垫 &lt;6 章</button>
+              <button type="button" class="filter-chip" data-filter="PAUSED_AUTH_CAPTCHA" hidden>验证码挂起</button>
               <button type="button" class="filter-chip" data-filter="ISOLATED_GATE_FAILURE">门禁隔离</button>
-              <button type="button" class="filter-chip" data-filter="CUT_LOSS">已止损切书</button>
+              <button type="button" class="filter-chip" data-filter="CUT_LOSS" hidden>已止损切书</button>
             </div>
             <div class="toolbar-right">
               <a class="btn btn-sm btn-primary" href="/admin/wizard">✚ 新书向导</a>
               <a class="btn btn-sm btn-ghost" href="/" target="_blank" rel="noopener">看演播厅</a>
               <button type="button" class="btn btn-sm btn-ghost" id="btn-overview-refresh">刷新列表</button>
-              <button type="button" class="btn btn-sm btn-primary" id="btn-goto-create">+ 三源自动立项</button>
+              <button type="button" class="btn btn-sm btn-primary" id="btn-goto-create" hidden>+ 三源自动立项</button>
             </div>
           </div>
 
           <div class="books-grid" id="books-grid">
-            <div class="empty-state">正在加载矩阵书目…</div>
+            <div class="empty-state">正在加载书目…</div>
           </div>
         </section>
 
@@ -218,7 +218,7 @@
                 </div>
 
                 <div class="form-row-2">
-                  <label class="field">
+                  <label class="field" hidden>
                     <span class="field-label">绑定伴侣马甲 ID (account_id)</span>
                     <input type="text" id="create-account-id" name="account_id" placeholder="例如 acct_tomato_01">
                   </label>
@@ -385,7 +385,7 @@
                 <button type="button" class="btn btn-sm btn-ghost" id="btn-reader-refresh">刷新章节</button>
               </div>
               <div class="export-bar" aria-label="多平台导出下载">
-                <span class="export-label">一鱼多吃下载：</span>
+                <span class="export-label">导出下载：</span>
                 <button type="button" class="btn btn-sm btn-primary export-btn" data-platform="tomato">🍅 番茄标准+推文包</button>
                 <button type="button" class="btn btn-sm btn-outline export-btn" data-platform="qimao">📘 七猫连载包</button>
                 <button type="button" class="btn btn-sm btn-outline export-btn" data-platform="zhihu">🎭 知乎盐选包</button>
@@ -396,7 +396,7 @@
           <div class="reader-split">
             <div class="panel-card chapter-sidebar">
               <div class="panel-header">
-                <h3>章节目录与囤稿状态</h3>
+                <h3>章节目录</h3>
                 <span class="mono muted" id="reader-chapter-count">0 章</span>
               </div>
               <div class="chapter-list" id="reader-chapter-list">
