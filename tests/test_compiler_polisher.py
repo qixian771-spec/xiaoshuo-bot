@@ -538,6 +538,79 @@ class TestTomatoCriticPolisher(unittest.TestCase):
         self.assertIsNotNone(ctx.exception.report)
         self.assertFalse(ctx.exception.report.passed)
 
+    def test_surgical_polish_prompt_preserves_foreshadow_keywords_and_length_bounds(self) -> None:
+        from xiaoshuo_bot.models import ForeshadowItem
+
+        draft = (
+            "雨点砸在玻璃柜上。\n\n"
+            "潘怀安拨动摆轮，秒针不动，游丝仍紧。\n\n"
+            "冯念慈把两百块押金压在柜台上。"
+        )
+        fs_plant = ForeshadowItem(
+            id="FS-02",
+            title="被按住的秒针",
+            plant_chapter=1,
+            due_chapter=20,
+            plant_instruction="写清秒针不动且游丝仍紧",
+            payoff_instruction="比对撬痕",
+            plant_keywords=["秒针不动", "游丝仍紧", "轴心撬痕"],
+            payoff_keywords=["折断的表冠轴"],
+        )
+        captured: List[LLMRequest] = []
+
+        def _good_polish(req: LLMRequest) -> str:
+            captured.append(req)
+            return json.dumps(
+                {"replacements": {"1": "潘怀安捏住镊子轻拨摆轮，秒针不动，游丝仍紧。"}},
+                ensure_ascii=False,
+            )
+
+        checker = AITicChecker(
+            pov_mode="third_limited",
+            panel_policy="forbid",
+            contract_track="complete_150k",
+        )
+        cp = TomatoCriticPolisher(polisher_provider=_StubProvider(_good_polish), checker=checker)
+        scene = SceneOutline(
+            chapter=1,
+            scene_id="ch0001_scene",
+            internal_title="雨夜开盖",
+            pov_character="mc",
+            active_characters=["mc"],
+            active_assets=[],
+            style_profile_ids=[],
+            location_time="雨夜",
+            events=["开盖验表"],
+            stop_condition="停在刻痕",
+            min_chars=20,
+            max_chars=500,
+        )
+        res = cp.surgical_polish(
+            draft,
+            [1],
+            scene=scene,
+            plant_foreshadows=[fs_plant],
+            chapter=1,
+        )
+        self.assertTrue(res.scan_report.passed)
+        self.assertEqual(len(captured), 1)
+        self.assertGreaterEqual(captured[0].max_tokens, 6000)
+        self.assertIn("必保伏笔原词：秒针不动、游丝仍紧", captured[0].user_prompt)
+        self.assertIn("20～500 字", captured[0].user_prompt)
+
+        # If polisher still paraphrases away mandatory foreshadow cues, gate must STILL reject it
+        bad_cp = TomatoCriticPolisher(
+            polisher_provider=_StubProvider(
+                lambda _: json.dumps(
+                    {"replacements": {"1": "潘怀安轻拨摆轮，秒针仍未走动，游丝绷着。"}},
+                    ensure_ascii=False,
+                )
+            ),
+            checker=checker,
+        )
+        with self.assertRaises(SurgicalPolishGateError):
+            bad_cp.surgical_polish(draft, [1], scene=scene, plant_foreshadows=[fs_plant], chapter=1)
+
     def test_generate_author_note_length_and_anti_diversion_guards(self) -> None:
         sample_chapter = "陈牧挂断内线电话，把加密底稿投上了集团大屏，全楼骤然响起急促的电梯警报。"
         good_note = "董事长连夜来电到底要保谁？下一章直接当面掀桌！求一波催更和五星好评，评论区猜中明天的反转加更一章！"

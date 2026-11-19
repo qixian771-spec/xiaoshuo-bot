@@ -894,40 +894,23 @@ class NovelGenerationEngine:
                                 chapter=scene.chapter,
                             )
                         except SurgicalPolishGateError as exc:
-                            polish_report = exc.report or report
-                            incident = ProductionIncident(
-                                incident_id=f"INC-CH{scene.chapter:04d}-A{attempt}-POLISH",
-                                chapter=scene.chapter,
-                                scene_id=scene.scene_id,
-                                attempt=attempt,
-                                timestamp=_now_shanghai_iso(),
-                                violations=polish_report.violations,
-                                action_taken=(
-                                    f"Surgical polish broke gate -> rewrite attempt {attempt + 1}"
-                                    if attempt < max_attempts
-                                    else "Surgical polish broke gate — exhausted retries"
-                                ),
+                            # candidate_text already passed 100% of AITicChecker & WorldStateManager gates.
+                            # Reject the broken polish and keep the already-gated draft (consistent with
+                            # POLISH_FAILED and POLISH_STATE_GATE degradation) instead of discarding a valid chapter.
+                            polish_res = None
+                            if exc.polished_text:
+                                _write_text_atomic(
+                                    audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_polish_rejected.txt",
+                                    exc.polished_text,
+                                )
+                            self._record_degradation(
+                                scene,
+                                attempt,
+                                stage="POLISH_GATE_REJECTED",
+                                exc=exc,
+                                action_taken="Surgical polish broke gate -> keeping unpolished gated text",
+                                incidents_jsonl=incidents_jsonl,
                             )
-                            self.incidents.append(incident)
-                            with incidents_jsonl.open("a", encoding="utf-8") as f:
-                                f.write(json.dumps(incident.to_dict(), ensure_ascii=False) + "\n")
-                            _write_text_atomic(
-                                audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_rejected.txt",
-                                exc.polished_text or candidate_text,
-                            )
-                            self._emit(
-                                on_progress,
-                                SSE_GATE_FAILED,
-                                {
-                                    "chapter": scene.chapter,
-                                    "attempt": attempt,
-                                    "incident_id": incident.incident_id,
-                                    "violation_count": len(polish_report.violations),
-                                },
-                            )
-                            last_report = polish_report
-                            last_draft = exc.polished_text or candidate_text
-                            continue
                         except (LLMError, CriticResponseParseError) as exc:
                             polish_res = None
                             self._record_degradation(

@@ -18,6 +18,7 @@ from xiaoshuo_bot.cli import _build_text_provider
 from xiaoshuo_bot.critic_polisher import (
     AuthorNoteViolationError,
     CriticEvaluation,
+    SurgicalPolishGateError,
     TomatoCriticPolisher,
 )
 from xiaoshuo_bot.engine import NovelGenerationEngine, ProductionGateFailure
@@ -336,6 +337,42 @@ class TestAuditE2PaidResults(unittest.TestCase):
         self.assertEqual(ev.llm_weak_paragraphs, [1])
         self.assertNotIn(99, ev.weak_paragraphs)
         self.assertNotIn(-3, ev.weak_paragraphs)
+
+    def test_engine_keeps_already_gated_draft_when_optional_surgical_polish_breaks_gate(self) -> None:
+        class _BrokenPolishStub(_StubCriticPolisher):
+            def evaluate_chapter(self, text: str, **_: object) -> CriticEvaluation:
+                return CriticEvaluation(
+                    first_screen_hook=72,
+                    cool_point_density=60,
+                    comment_interactivity=68,
+                    pacing_drag=55,
+                    overall_score=63.0,
+                    weak_paragraphs=[0],
+                )
+
+            def surgical_polish(self, *a: object, **k: object) -> None:
+                raise SurgicalPolishGateError(
+                    "Post-polish missing FS-02",
+                    polished_text="被精修弄丢伏笔的残次品",
+                )
+
+        proj = _project(foreshadows=_bell_foreshadow(), scenes=[_scene(1)], max_rewrite_retries=3)
+        provider = _ScriptedProvider([_text(GOOD_TEXT)])
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = NovelGenerationEngine(
+                proj,
+                provider,
+                tmp,
+                checker=_PassChecker(),
+                critic_polisher=_BrokenPolishStub(),
+            )
+            manifest = engine.run(target_chapters=[1])
+            self.assertEqual(len(provider.requests), 1)
+            self.assertEqual(manifest["chapters"][0]["attempts_used"], 1)
+            written = (Path(tmp) / "chapters" / "chapter_0001.txt").read_text(encoding="utf-8")
+            self.assertEqual(written.strip(), GOOD_TEXT)
+            self.assertTrue((Path(tmp) / "audit" / "ch0001_attempt1_polish_rejected.txt").is_file())
+            self.assertTrue(any("POLISH_GATE_REJECTED" in i.incident_id for i in engine.incidents))
 
 
 class TestAuditM12ProviderEnv(unittest.TestCase):

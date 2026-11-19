@@ -481,6 +481,8 @@ class TomatoCriticPolisher:
         target_indices.sort()
 
         eff_ch = scene.chapter if scene is not None else (chapter or 1)
+        plant_fs_list = list(plant_foreshadows or [])
+        due_fs_list = list(due_foreshadows or [])
 
         if not target_indices:
             post_report = self._run_checker(
@@ -488,8 +490,8 @@ class TomatoCriticPolisher:
                 scene=scene,
                 project_meta=project_meta,
                 characters=characters,
-                due_foreshadows=due_foreshadows,
-                plant_foreshadows=plant_foreshadows,
+                due_foreshadows=due_fs_list,
+                plant_foreshadows=plant_fs_list,
                 world_state=world_state,
                 chapter=chapter,
             )
@@ -509,6 +511,24 @@ class TomatoCriticPolisher:
                 model="",
             )
 
+        # Collect mandatory verbatim foreshadow keywords so the polisher never paraphrases or drops them.
+        required_fs_groups: List[Tuple[str, List[str]]] = []
+        all_required_keywords: List[str] = []
+        for fs in plant_fs_list:
+            kws = [str(k).strip() for k in (fs.plant_keywords or []) if str(k).strip()]
+            if kws:
+                required_fs_groups.append((f"[埋设 {fs.id} {fs.title}]", kws))
+                for kw in kws:
+                    if kw not in all_required_keywords:
+                        all_required_keywords.append(kw)
+        for fs in due_fs_list:
+            kws = [str(k).strip() for k in (fs.payoff_keywords or []) if str(k).strip()]
+            if kws:
+                required_fs_groups.append((f"[回收 {fs.id} {fs.title}]", kws))
+                for kw in kws:
+                    if kw not in all_required_keywords:
+                        all_required_keywords.append(kw)
+
         # Build minimal local context window: ONLY flagged paragraphs plus 1 preceding and 1 following context paragraph
         target_set = set(target_indices)
         context_indices_set: set[int] = set(target_set)
@@ -527,11 +547,18 @@ class TomatoCriticPolisher:
             role_tag = "【待精修目标段落】" if idx in target_set else "【只读上下文参考（严禁改写）】"
             reason = paragraph_reasons.get(idx, "")
             reason_sfx = f" 扣分原因：{reason}" if (idx in target_set and reason) else ""
-            window_blocks.append(f"[{idx}] {role_tag}{reason_sfx}\n{paragraphs_before[idx]}")
+            locked_kws = [kw for kw in all_required_keywords if kw in paragraphs_before[idx]]
+            kw_sfx = (
+                f" 【必保伏笔原词：{'、'.join(locked_kws)} — 必须原字保留，严禁同义改写或删除】"
+                if (idx in target_set and locked_kws)
+                else ""
+            )
+            window_blocks.append(f"[{idx}] {role_tag}{reason_sfx}{kw_sfx}\n{paragraphs_before[idx]}")
             prev_idx = idx
 
         pov_mode = project_meta.pov_mode if project_meta else self.checker.pov_mode
         panel_policy = project_meta.panel_policy if project_meta else self.checker.panel_policy
+        contract_track = project_meta.contract_track if project_meta else self.checker.contract_track
 
         pov_rule = (
             "保持第一人称“我”限知视角。"
@@ -544,18 +571,45 @@ class TomatoCriticPolisher:
             else "严禁输出任何【...】面板或提示框。"
         )
 
+        gate_guard_lines: List[str] = []
+        if required_fs_groups:
+            fs_desc = "；".join(
+                f"{label} 必保原词（至少保留其一）：{'、'.join(f'「{k}」' for k in kws)}"
+                for label, kws in required_fs_groups
+            )
+            gate_guard_lines.append(
+                f"- **伏笔原词零破坏红线**：{fs_desc}。凡是包含上述原词的目标段，精修时必须一字不差保留原词，严禁同义替换（例如不得把“秒针不动”改成“秒针仍不动”或把“游丝仍紧”改成“游丝绷着”）。"
+            )
+        if scene is not None:
+            cur_chars = len(re.sub(r"\s+", "", text))
+            gate_guard_lines.append(
+                f"- **篇幅区间红线**：当前全文约 {cur_chars} 字，章纲硬性允许区间为 {scene.min_chars}～{scene.max_chars} 字；"
+                "精修时请维持各段大致信息量，严禁大幅删字导致全文跌破下限或暴涨超限。"
+            )
+        if contract_track != "legacy":
+            gate_guard_lines.append(
+                "- **竖屏节奏红线**：单段严禁超过 120 字；不得制造超过 320 字的连续纯旁白墙，也不得制造超过 4 轮无动作神态的连续裸对话。"
+            )
+        gate_guard_block = (
+            ("\n### 门禁零破坏硬性红线（精修后将立刻复检，破坏即作废）\n" + "\n".join(gate_guard_lines) + "\n")
+            if gate_guard_lines
+            else ""
+        )
+
         sys_prompt = (
             "# Role: 番茄爆款手术刀精修编辑\n"
             "你只对标有【待精修目标段落】的段落执行局部精修重写，使其节奏紧凑、动作干脆、去套话、符合竖屏短段呼吸感。\n"
             f"硬性约束：{pov_rule}{panel_rule}"
             "严禁引入 AI 套话（如“不禁一愣”“眸光微闪”“嘴角勾起一抹”“三分薄凉”“空气仿佛凝固”“不是…而是…”“全场鸦雀无声”），"
+            "严禁删除或同义改写任何标记为【必保伏笔原词】的关键字，"
             "严禁引入真实地名或涉黄血腥敏感词，严禁改动任何未标记的上下文段落，严禁输出多段落合并或章节标题。\n"
             "只输出合法 JSON 对象。"
         )
         user_prompt = (
             f"### 局部手术精修任务（第 {eff_ch} 章）\n"
             f"- 需精修的 0-based 段落索引：{target_indices}\n"
-            f"- 主编意见：{critique or '压缩拖沓，增强画面动作感与长短句交错节奏'}\n\n"
+            f"- 主编意见：{critique or '压缩拖沓，增强画面动作感与长短句交错节奏'}\n"
+            f"{gate_guard_block}\n"
             f"### 局部窗口段落（仅含目标段及其前后各1段上下文）\n"
             + "\n\n".join(window_blocks)
             + "\n\n"
@@ -575,7 +629,7 @@ class TomatoCriticPolisher:
             system_prompt=sys_prompt,
             user_prompt=user_prompt,
             temperature=0.35,
-            max_tokens=2400,
+            max_tokens=6000,
             metadata={"target_indices": target_indices},
         )
         resp = self._call_role("polisher", req)
@@ -633,8 +687,8 @@ class TomatoCriticPolisher:
             scene=scene,
             project_meta=project_meta,
             characters=characters,
-            due_foreshadows=due_foreshadows,
-            plant_foreshadows=plant_foreshadows,
+            due_foreshadows=due_fs_list,
+            plant_foreshadows=plant_fs_list,
             world_state=world_state,
             chapter=chapter,
         )
