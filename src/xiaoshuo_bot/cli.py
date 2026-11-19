@@ -342,7 +342,7 @@ def _cmd_genres(args: argparse.Namespace) -> int:
 
 def _cmd_auto_create(args: argparse.Namespace) -> int:
     provider = _build_text_provider(args)
-    planner = AutoNovelPlanner(provider)
+    planner = AutoNovelPlanner(provider, max_consecutive_same_location=2)
     motif_store = MotifWeightStore(args.motif_store) if args.motif_store else None
     hot_keywords = [k.strip() for k in args.hot_keywords.split(",") if k.strip()] if args.hot_keywords else []
     benchmark_texts = _load_benchmark_texts(args.benchmark_file, args.benchmark_dir)
@@ -389,7 +389,7 @@ def _cmd_deconstruct(args: argparse.Namespace) -> int:
 
 def _cmd_extend(args: argparse.Namespace) -> int:
     provider = _build_text_provider(args)
-    planner = AutoNovelPlanner(provider)
+    planner = AutoNovelPlanner(provider, max_consecutive_same_location=2)
     if args.finale:
         res = planner.plan_finale_volume(
             args.project,
@@ -842,6 +842,7 @@ def build_serve_server(args: argparse.Namespace) -> MatrixHTTPServer:
         static_dir=getattr(args, "static_dir", None),
         sse_heartbeat_sec=float(getattr(args, "sse_heartbeat_sec", 15.0)),
         export_only=_resolve_export_only(args),
+        planner_max_consecutive_same_location=2,
     )
     if tg_config is not None:
         try:

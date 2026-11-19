@@ -248,6 +248,7 @@ class MatrixScheduler:
         safety_cushion_critical: int = SAFETY_CUSHION_CRITICAL,
         now_fn: Optional[Callable[[], datetime]] = None,
         export_only: bool = False,
+        planner_max_consecutive_same_location: Optional[int] = None,
     ) -> None:
         self.db = db
         self.projects_root = Path(projects_root).resolve()
@@ -264,6 +265,11 @@ class MatrixScheduler:
         # Export-only mode (owner decision 23A): no publishing companion consumes the stockpile,
         # so books are written straight through their outline instead of stopping at the cushion.
         self.export_only = bool(export_only)
+        self.planner_max_consecutive_same_location = (
+            int(planner_max_consecutive_same_location)
+            if planner_max_consecutive_same_location is not None
+            else None
+        )
 
         self._prod_lock = threading.Lock()
         self._bg_stop = threading.Event()
@@ -637,7 +643,10 @@ class MatrixScheduler:
             raise SchedulerConfigurationError(
                 "LLM provider/RoleModelRouter is not configured for AutoNovelPlanner."
             )
-        return AutoNovelPlanner(self.provider)
+        return AutoNovelPlanner(
+            self.provider,
+            max_consecutive_same_location=self.planner_max_consecutive_same_location,
+        )
 
     # -----------------------------------------------------------------------
     # MatrixControlPort Implementation

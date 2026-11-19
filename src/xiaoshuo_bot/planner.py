@@ -590,6 +590,8 @@ def _collect_scene_batch_errors(
     *,
     recipe: Optional[GenreRecipe] = None,
     prior_trailing_suppress: int = 0,
+    prior_trailing_location: Tuple[str, int] = ("", 0),
+    max_consecutive_same_location: Optional[int] = None,
 ) -> List[str]:
     """Collect ALL validation errors for a Stage 2 scene batch without stopping at the first error."""
     start_ch, end_ch = chapter_range
@@ -814,6 +816,33 @@ def _collect_scene_batch_errors(
             consecutive_suppress = 0
             suppress_run.clear()
 
+    # Consecutive identical location_id check (aligns with STATE_STALE_LOCATION gate <= 2)
+    if max_consecutive_same_location is not None and int(max_consecutive_same_location) > 0:
+        limit = int(max_consecutive_same_location)
+        cur_loc = str(prior_trailing_location[0] or "").strip() if prior_trailing_location else ""
+        consec_loc = max(0, int(prior_trailing_location[1])) if cur_loc else 0
+        loc_run: List[int] = []
+        for ch in sorted(valid_scenes_by_ch):
+            loc = str(valid_scenes_by_ch[ch].get("location_id") or "").strip()
+            if not loc:
+                cur_loc = ""
+                consec_loc = 0
+                loc_run.clear()
+                continue
+            if loc == cur_loc:
+                consec_loc += 1
+                loc_run.append(ch)
+                if consec_loc > limit:
+                    errors.append(
+                        f"Chapter {ch}: consecutive location_id={loc!r} exceeds max {limit} "
+                        f"(would trigger STATE_STALE_LOCATION gate; prior_trailing={prior_trailing_location}, "
+                        f"batch_run={loc_run}; switch to a distinct sub-space or new location_id)"
+                    )
+            else:
+                cur_loc = loc
+                consec_loc = 1
+                loc_run = [ch]
+
     # Golden-three-chapter beat alignment check (chapters 1..3 must match genre recipe beats)
     if recipe is not None and recipe.golden_three_beats:
         golden_beats_by_ch = {b.chapter: b for b in recipe.golden_three_beats}
@@ -947,6 +976,61 @@ def _trailing_suppress_count(scenes: Sequence[Mapping[str, Any]]) -> int:
         else:
             break
     return count
+
+
+def _trailing_location_run(scenes: Sequence[Mapping[str, Any]]) -> Tuple[str, int]:
+    """Return (location_id, consecutive_count) for the trailing non-empty location run."""
+    if not scenes:
+        return ("", 0)
+    last_loc = str(scenes[-1].get("location_id") or "").strip()
+    if not last_loc:
+        return ("", 0)
+    count = 0
+    for sc in reversed(scenes):
+        loc = str(sc.get("location_id") or "").strip()
+        if loc == last_loc:
+            count += 1
+        else:
+            break
+    return (last_loc, count)
+
+
+def find_stale_location_runs(
+    scenes: Sequence[Any],
+    *,
+    max_consecutive: int = 2,
+) -> List[Dict[str, Any]]:
+    """Audit ordered scenes and return any chapters violating >max_consecutive identical location_id."""
+    limit = max(1, int(max_consecutive))
+    ordered = sorted(
+        scenes,
+        key=lambda sc: int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0)),
+    )
+    violations: List[Dict[str, Any]] = []
+    cur_loc = ""
+    run_chapters: List[int] = []
+    for sc in ordered:
+        ch = int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0))
+        loc = str((sc.get("location_id") if isinstance(sc, Mapping) else getattr(sc, "location_id", "")) or "").strip()
+        if not loc:
+            cur_loc = ""
+            run_chapters = []
+            continue
+        if loc == cur_loc:
+            run_chapters.append(ch)
+            if len(run_chapters) > limit:
+                violations.append(
+                    {
+                        "chapter": ch,
+                        "location_id": loc,
+                        "consecutive_count": len(run_chapters),
+                        "run_chapters": list(run_chapters),
+                    }
+                )
+        else:
+            cur_loc = loc
+            run_chapters = [ch]
+    return violations
 
 
 def _make_chapter_batches(
@@ -1270,6 +1354,7 @@ class AutoNovelPlanner:
         guard: Optional[PlagiarismAndCollisionGuard] = None,
         deconstructor: Optional[BestsellerDeconstructor] = None,
         max_validation_retries: int = 3,
+        max_consecutive_same_location: Optional[int] = None,
     ) -> None:
         if provider is None:
             raise LLMConfigurationError("AutoNovelPlanner requires a configured LLM provider/router")
@@ -1279,6 +1364,9 @@ class AutoNovelPlanner:
         self.guard = guard or PlagiarismAndCollisionGuard()
         self.deconstructor = deconstructor or BestsellerDeconstructor(provider, guard=self.guard)
         self.max_validation_retries = max_validation_retries
+        self.max_consecutive_same_location = (
+            int(max_consecutive_same_location) if max_consecutive_same_location is not None else None
+        )
 
     @staticmethod
     def _build_signing_application_md(
@@ -1780,7 +1868,7 @@ class AutoNovelPlanner:
             "1. chapter 必须连续完整覆盖本批指定章号，不得缺章、重章或越界。\n"
             "2. public_title 严禁带有「第X章」「第X回」「第X节」前缀。\n"
             "3. pov_character、active_characters、active_assets、style_profile_ids 只能使用设定包给出的已有 id，且 pov_character 必须在 active_characters 中。\n"
-            "4. emotion_polarity 只能取 suppress / burst / neutral / mixed，且全书（含跨批衔接）连续 suppress 绝对不超过 2 章。\n"
+            "4. emotion_polarity 只能取 suppress / burst / neutral / mixed，且全书（含跨批衔接）连续 suppress 绝对不超过 2 章；同一 location_id 绝对不可连续出现超过 2 章（否则触发 STATE_STALE_LOCATION 场景僵化门禁），若剧情围绕同一大区域请细分子空间（如 *_front / *_backroom / *_alley）或切换新场景。\n"
             "5. 本批要求埋设或回收的伏笔，必须在对应章节的 events 中显式体现该伏笔 id 及物理关键词。\n"
             "6. 若本批包含第 1~3 章，必须严格对齐下方【题材黄金三章节拍】：第 1、2、3 章的 beat_type 必须包含对应章节的必填节拍定位名称，cliffhanger_hook 必须非空并贴合章末断章方向，events 必须落实开篇钩子、核心冲突与爽点/反转；所有章节情节须遵守下方【题材硬常识防穿帮卡】。\n"
             "7. 四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；有变化时每一项都必须照样例的字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。\n"
@@ -1798,6 +1886,7 @@ class AutoNovelPlanner:
 
         for batch_idx, (start_ch, end_ch) in enumerate(ranges, start=1):
             prior_trailing_suppress = _trailing_suppress_count(all_scenes)
+            prior_trailing_loc = _trailing_location_run(all_scenes)
             prior_summary_lines = [
                 f"- 第{s['chapter']}章《{s.get('public_title') or s.get('internal_title')}》："
                 f"{'；'.join(str(e) for e in (s.get('events') or [])[:2])}"
@@ -1862,6 +1951,7 @@ class AutoNovelPlanner:
                     f"可用文风 id 列表（严禁编造其他 id）: {', '.join(style_ids)}\n"
                     f"单章默认字数区间: {recipe.min_chapter_words}~{recipe.max_chapter_words}\n"
                     f"前批末尾连续 suppress 章数: {prior_trailing_suppress}（与本批衔接后连续 suppress 绝对不超过 2 章）\n"
+                    f"前批末尾场景 location_id: {prior_trailing_loc[0] or '无'}（已连续 {prior_trailing_loc[1]} 章；衔接后同一 location_id 连续绝对不超过 2 章）\n"
                     f"{golden_three_section}"
                     f"{common_sense_block}\n\n"
                     f"本批必须埋设/回收的伏笔:\n{batch_fs_block}\n"
@@ -1904,6 +1994,8 @@ class AutoNovelPlanner:
                     (start_ch, end_ch),
                     recipe=recipe,
                     prior_trailing_suppress=prior_trailing_suppress,
+                    prior_trailing_location=prior_trailing_loc,
+                    max_consecutive_same_location=self.max_consecutive_same_location,
                 )
                 if not errors:
                     assert isinstance(raw_batch, list)
@@ -2441,6 +2533,9 @@ class AutoNovelPlanner:
         trailing_suppress = _trailing_suppress_count(
             [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
         )
+        trailing_loc = _trailing_location_run(
+            [{"location_id": sc.location_id} for sc in existing_ordered]
+        )
 
         for batch_idx, (b_start, b_end) in enumerate(chapter_batches, start=1):
             b_count = b_end - b_start + 1
@@ -2488,6 +2583,7 @@ class AutoNovelPlanner:
                     f"最新世界状态: current_chapter={snap_ch}, balances={effective_snapshot.numeric_balances if effective_snapshot else {}}, "
                     f"deceased_characters={deceased_ids}, forbidden_titles={effective_snapshot.get_all_forbidden_titles() if effective_snapshot else []}\n"
                     f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
+                    f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"章评舆情调优指令（必须严格注入第 {start_chapter} 章及之后，严禁触碰 <={project.meta.max_published_chapter} 的已发章节）:\n"
                     f"{directives_text or '无'}\n"
@@ -2549,6 +2645,8 @@ class AutoNovelPlanner:
                     (b_start, b_end),
                     recipe=recipe,
                     prior_trailing_suppress=trailing_suppress,
+                    prior_trailing_location=trailing_loc,
+                    max_consecutive_same_location=self.max_consecutive_same_location,
                 )
                 batch_errors.extend(scene_errs)
 
@@ -2585,6 +2683,10 @@ class AutoNovelPlanner:
                 normalized_new_scenes.extend(batch_normalized)
                 trailing_suppress = _trailing_suppress_count(
                     [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
+                    + normalized_new_scenes
+                )
+                trailing_loc = _trailing_location_run(
+                    [{"location_id": sc.location_id} for sc in existing_ordered]
                     + normalized_new_scenes
                 )
                 batch_passed = True
@@ -2851,6 +2953,9 @@ class AutoNovelPlanner:
         trailing_suppress = _trailing_suppress_count(
             [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
         )
+        trailing_loc = _trailing_location_run(
+            [{"location_id": sc.location_id} for sc in existing_ordered]
+        )
 
         for batch_idx, (b_start, b_end) in enumerate(chapter_batches, start=1):
             b_count = b_end - b_start + 1
@@ -2904,6 +3009,7 @@ class AutoNovelPlanner:
                     f"本批章号范围: 第 {b_start} 章 ～ 第 {b_end} 章（本批共 {b_count} 章）\n"
                     f"{valid_ids_block}\n"
                     f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
+                    f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"{schedule_block}\n"
                     f"{feedback_section}"
@@ -2964,6 +3070,8 @@ class AutoNovelPlanner:
                     (b_start, b_end),
                     recipe=recipe,
                     prior_trailing_suppress=trailing_suppress,
+                    prior_trailing_location=trailing_loc,
+                    max_consecutive_same_location=self.max_consecutive_same_location,
                 )
                 batch_errors.extend(scene_errs)
 
@@ -2989,6 +3097,10 @@ class AutoNovelPlanner:
                 normalized_scenes.extend(batch_normalized)
                 trailing_suppress = _trailing_suppress_count(
                     [{"emotion_polarity": sc.emotion_polarity} for sc in existing_ordered]
+                    + normalized_scenes
+                )
+                trailing_loc = _trailing_location_run(
+                    [{"location_id": sc.location_id} for sc in existing_ordered]
                     + normalized_scenes
                 )
                 batch_passed = True
@@ -3116,4 +3228,5 @@ __all__ = [
     "VolumeExtensionResult",
     "FinaleVolumeResult",
     "AutoNovelPlanner",
+    "find_stale_location_runs",
 ]

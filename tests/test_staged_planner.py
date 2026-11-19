@@ -1562,6 +1562,86 @@ class TestTask2PlanningGenreBlueprintsAndGoldenThree(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
+    def test_stale_location_run_rejected_at_planning_time_and_fixed_on_retry(self) -> None:
+        from xiaoshuo_bot.planner import find_stale_location_runs
+
+        bible = _make_valid_bible(self.safe_names, author_level="lv0_1", target_chapters=72)
+        recipe = get_genre("urban_brainhole")
+
+        # 1. Within-batch 3-consecutive identical location_id rejected when max_consecutive_same_location=2
+        bad_batch = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(11, 21)]
+        for sc in bad_batch[3:6]:  # ch14, ch15, ch16
+            sc["location_id"] = "huai_an_ji_shop"
+        errs = _collect_scene_batch_errors(
+            bad_batch,
+            bible,
+            (11, 20),
+            recipe=recipe,
+            max_consecutive_same_location=2,
+        )
+        self.assertTrue(any("STATE_STALE_LOCATION" in e and "Chapter 16" in e for e in errs), errs)
+
+        # 2. Cross-batch boundary (prior batch ended with 2 identical locations + next batch starts with same)
+        cross_batch = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(11, 21)]
+        cross_batch[0]["location_id"] = "huai_an_ji_shop"
+        cross_errs = _collect_scene_batch_errors(
+            cross_batch,
+            bible,
+            (11, 20),
+            recipe=recipe,
+            prior_trailing_location=("huai_an_ji_shop", 2),
+            max_consecutive_same_location=2,
+        )
+        self.assertTrue(any("STATE_STALE_LOCATION" in e and "Chapter 11" in e for e in cross_errs), cross_errs)
+
+        # 3. find_stale_location_runs audit helper matches checker threshold (>2 consecutive)
+        runs = find_stale_location_runs(bad_batch, max_consecutive=2)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["chapter"], 16)
+        self.assertEqual(runs[0]["location_id"], "huai_an_ji_shop")
+        bad_batch[5]["location_id"] = "huai_an_ji_back_room_night"
+        self.assertEqual(find_stale_location_runs(bad_batch, max_consecutive=2), [])
+
+        # 4. End-to-end staged planner feeds STATE_STALE_LOCATION feedback back and succeeds on retry
+        def inject_stale_loc(req: LLMRequest) -> Optional[Dict[str, Any]]:
+            meta = dict(req.metadata or {})
+            if meta.get("stage") == "scenes" and meta.get("batch") == 2 and meta.get("attempt") == 1:
+                scenes = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(11, 21)]
+                for sc in scenes[3:6]:
+                    sc["location_id"] = "huai_an_ji_shop"
+                return {"scenes": scenes}
+            return None
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_stale_loc_retry_"))
+        try:
+            llm = ScriptedStagedPlannerLLM(
+                safe_names=self.safe_names,
+                author_level="lv0_1",
+                target_chapters=72,
+                fault_injector=inject_stale_loc,
+            )
+            planner = AutoNovelPlanner(llm, max_consecutive_same_location=2)
+            res = planner.plan_new_project(
+                project_id="stale_loc_retry_book",
+                genre_id="urban_brainhole",
+                output_dir=tmp / "stale_loc_retry_book",
+                author_level="lv0_1",
+                target_chapters=72,
+            )
+            self.assertEqual(len(res.project.scenes), 72)
+            self.assertEqual(find_stale_location_runs(res.project.scenes, max_consecutive=2), [])
+            retry_reqs = [
+                r for r in llm.requests
+                if (r.metadata or {}).get("stage") == "scenes"
+                and (r.metadata or {}).get("batch") == 2
+                and (r.metadata or {}).get("attempt") == 2
+            ]
+            self.assertEqual(len(retry_reqs), 1)
+            self.assertIn("STATE_STALE_LOCATION", retry_reqs[0].user_prompt)
+            self.assertIn("huai_an_ji_shop", retry_reqs[0].user_prompt)
+        finally:
+            shutil.rmtree(tmp)
+
 
 if __name__ == "__main__":
     unittest.main()

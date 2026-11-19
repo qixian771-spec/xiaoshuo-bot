@@ -1238,6 +1238,7 @@ def create_server(
     allow_insecure_loopback_no_auth: Optional[bool] = None,
     export_only: bool = False,
     verify_cpa_models: Optional[bool] = None,
+    planner_max_consecutive_same_location: Optional[int] = None,
 ) -> MatrixHTTPServer:
     """Create and validate a configured MatrixHTTPServer (enforces InsecureBindError & CPA model check)."""
     resolved_token = validate_bind_security(
@@ -1288,6 +1289,7 @@ def create_server(
             motif_store=motif_store,
             now_fn=now_fn,
             export_only=export_only,
+            planner_max_consecutive_same_location=planner_max_consecutive_same_location,
         )
 
     admin_auth = AdminAuthManager(
