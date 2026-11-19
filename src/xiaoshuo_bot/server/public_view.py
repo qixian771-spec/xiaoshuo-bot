@@ -70,7 +70,9 @@ def list_public_books(db: StockpileDB) -> List[Dict[str, Any]]:
                 "updated_at": book["updated_at"],
             }
         )
-    out.sort(key=lambda b: (b["status"] != "ACTIVE", b["updated_at"]), reverse=False)
+    # Active books stay pinned ahead of non-active books; within each group newest updated_at comes first.
+    out.sort(key=lambda b: (str(b["updated_at"]), str(b["book_id"])), reverse=True)
+    out.sort(key=lambda b: b["status"] != "ACTIVE")
     return out
 
 

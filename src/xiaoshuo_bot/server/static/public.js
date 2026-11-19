@@ -40,7 +40,7 @@
 
   function badgeClass(status) {
     if (status === "ACTIVE") return "badge is-active";
-    if (status === "COMPLETED") return "badge";
+    if (status === "COMPLETED" || status === "PAUSED_MANUAL") return "badge";
     return "badge is-paused";
   }
 
@@ -84,6 +84,10 @@
       const ol = $("plan-events");
       ol.textContent = "";
       plan.events.forEach((e) => ol.appendChild(el("li", "", e)));
+      const hookEl = $("plan-hook");
+      const hookText = String(plan.hook || "").trim();
+      hookEl.hidden = !hookText;
+      hookEl.textContent = hookText ? "章末钩子：" + hookText : "";
     }
 
     const chs = $("chapters");

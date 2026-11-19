@@ -232,6 +232,63 @@ class TestPublicStudio(_ServerCase):
         self.assertEqual(b_quota["status"], "PAUSED_QUOTA_EXHAUSTED")
         self.assertEqual(b_quota["status_text"], "额度用完，暂停中")
 
+    def test_p2_1_public_book_ordering_active_first_newest_updated_first(self) -> None:
+        db = self.server.db
+        for bid, title, status, ts in (
+            ("bk_active_old", "旧在写书", BookRunStatus.ACTIVE, "2026-11-18T08:00:00+08:00"),
+            ("bk_active_new", "新在写书", BookRunStatus.ACTIVE, "2026-11-18T12:00:00+08:00"),
+            ("bk_paused_new", "新暂停书", BookRunStatus.PAUSED_MANUAL, "2026-11-18T15:00:00+08:00"),
+            ("bk_done_old", "旧完本书", BookRunStatus.COMPLETED, "2026-11-18T07:00:00+08:00"),
+        ):
+            db.register_book(book_id=bid, project_dir=self.project_dir, title=title, status=status)
+            with db._lock:
+                db._conn.execute("UPDATE books SET updated_at = ? WHERE book_id = ?", (ts, bid))
+        with db._lock:
+            db._conn.execute(
+                "UPDATE books SET updated_at = ? WHERE book_id = 'baiwu_dukou'",
+                ("2026-11-18T10:00:00+08:00",),
+            )
+
+        code, _, body = _http(self.base + "/api/public/books")
+        self.assertEqual(code, 200)
+        ordered_ids = [b["book_id"] for b in json.loads(body)["books"]]
+        self.assertEqual(
+            ordered_ids,
+            ["bk_active_new", "baiwu_dukou", "bk_active_old", "bk_paused_new", "bk_done_old"],
+        )
+
+    def test_p2_1_public_studio_renders_current_plan_hook_contract(self) -> None:
+        import yaml
+
+        outline_path = self.project_dir / "outline.yaml"
+        outline_raw = yaml.safe_load(outline_path.read_text(encoding="utf-8"))
+        for sc in outline_raw["scenes"]:
+            if sc.get("chapter") == 3:
+                sc["cliffhanger_hook"] = "配电箱骤然断电，透气窗外响起红漆胶鞋踩水声"
+        outline_path.write_text(
+            yaml.safe_dump(outline_raw, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        code, _, body = _http(self.base + "/api/public/books/baiwu_dukou")
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertIsNotNone(data["current_plan"])
+        self.assertEqual(
+            data["current_plan"].get("hook"),
+            "配电箱骤然断电，透气窗外响起红漆胶鞋踩水声",
+        )
+
+        static_dir = REPO_ROOT / "src" / "xiaoshuo_bot" / "server" / "static"
+        html_txt = (static_dir / "public.html").read_text(encoding="utf-8")
+        js_txt = (static_dir / "public.js").read_text(encoding="utf-8")
+        css_txt = (static_dir / "public.css").read_text(encoding="utf-8")
+        self.assertIn('id="plan-hook"', html_txt)
+        self.assertIn('$("plan-hook")', js_txt)
+        self.assertIn("plan.hook", js_txt)
+        self.assertIn("章末钩子：", js_txt)
+        self.assertIn(".plan-hook", css_txt)
+
 
 class TestWizardWithoutProvider(_ServerCase):
     provider = None
