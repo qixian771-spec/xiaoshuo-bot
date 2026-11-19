@@ -66,6 +66,7 @@ API_PUBLIC_BOOKS = "/api/public/books"
 API_PUBLIC_BOOK = "/api/public/books/{book_id}"
 API_PUBLIC_CHAPTER = "/api/public/books/{book_id}/chapters/{chapter}"
 API_PUBLIC_EVENTS_STREAM = "/api/public/events/stream"
+API_PUBLIC_PIPELINE = "/api/public/pipeline"
 
 # Admin new-book wizard and production KPI (admin auth)
 API_WIZARD_SESSIONS = "/api/wizard/sessions"
@@ -108,6 +109,7 @@ ALL_API_ROUTES: Tuple[str, ...] = (
     API_PUBLIC_BOOK,
     API_PUBLIC_CHAPTER,
     API_PUBLIC_EVENTS_STREAM,
+    API_PUBLIC_PIPELINE,
     API_WIZARD_SESSIONS,
     API_WIZARD_SESSION,
     API_WIZARD_ANSWER,
@@ -217,6 +219,11 @@ SSE_COMPANION_RESUMED = "companion_resumed"
 SSE_METRICS_COLLECTED = "metrics_collected"
 SSE_RACING_DECISION = "racing_decision"
 SSE_CPA_QUOTA_ALERT = "cpa_quota_alert"
+SSE_PIPELINE_STAGE = "pipeline_stage"
+SSE_PIPELINE_TOKEN_USAGE = "pipeline_token_usage"
+SSE_PIPELINE_GATE_REPORT = "pipeline_gate_report"
+SSE_PIPELINE_MODEL_EVENT = "pipeline_model_event"
+SSE_PIPELINE_CHAPTER_LOCKED = "pipeline_chapter_locked"
 
 ALL_SSE_EVENTS: Tuple[str, ...] = (
     SSE_HEARTBEAT,
@@ -234,6 +241,11 @@ ALL_SSE_EVENTS: Tuple[str, ...] = (
     SSE_METRICS_COLLECTED,
     SSE_RACING_DECISION,
     SSE_CPA_QUOTA_ALERT,
+    SSE_PIPELINE_STAGE,
+    SSE_PIPELINE_TOKEN_USAGE,
+    SSE_PIPELINE_GATE_REPORT,
+    SSE_PIPELINE_MODEL_EVENT,
+    SSE_PIPELINE_CHAPTER_LOCKED,
 )
 
 

@@ -42,6 +42,7 @@ from ..contracts import (
     API_PRODUCTION_KPI,
     API_PUBLIC_BOOKS,
     API_PUBLIC_EVENTS_STREAM,
+    API_PUBLIC_PIPELINE,
     API_WIZARD_SESSIONS,
     AutoCreateBookRequest,
     BookRunStatus,
@@ -480,6 +481,12 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                     return
                 if path == API_PUBLIC_BOOKS:
                     self._send_json(HTTPStatus.OK, {"books": list_public_books(self.server.db)})
+                    return
+                if path == API_PUBLIC_PIPELINE:
+                    self._send_json(
+                        HTTPStatus.OK,
+                        self.server.scheduler.get_public_pipeline_snapshot(),
+                    )
                     return
                 if path == API_PUBLIC_EVENTS_STREAM:
                     if method == "HEAD":
@@ -1179,10 +1186,17 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                     evt = q.get(timeout=0.5)
                     if public:
                         titles = {b["book_id"]: b["title"] for b in self.server.db.list_books()}
-                        pub = public_event(evt, titles)
+                        is_replay = bool(
+                            getattr(
+                                getattr(self.server.scheduler, "pipeline_tracker", None),
+                                "replay_mode",
+                                False,
+                            )
+                        )
+                        pub = public_event(evt, titles, replay=is_replay)
                         if pub is None:
                             continue
-                        frame = format_sse_frame(evt.event, pub)
+                        frame = format_sse_frame(evt.event, pub, event_id=evt.event_id or None)
                     else:
                         frame = evt.to_sse_frame()
                     self.wfile.write(frame.encode("utf-8"))

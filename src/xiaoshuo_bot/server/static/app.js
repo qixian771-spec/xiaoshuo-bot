@@ -47,6 +47,11 @@
     METRICS_COLLECTED: "metrics_collected",
     RACING_DECISION: "racing_decision",
     CPA_QUOTA_ALERT: "cpa_quota_alert",
+    PIPELINE_STAGE: "pipeline_stage",
+    PIPELINE_TOKEN_USAGE: "pipeline_token_usage",
+    PIPELINE_GATE_REPORT: "pipeline_gate_report",
+    PIPELINE_MODEL_EVENT: "pipeline_model_event",
+    PIPELINE_CHAPTER_LOCKED: "pipeline_chapter_locked",
   });
 
   const CPA_ROLES = Object.freeze([
@@ -2128,6 +2133,56 @@
       };
     }
     return { level: "fail", title: "超预算 / 额度熔断告警", detail: payload.message || "同档凭据冷却或额度触顶，已停机保护" };
+  };
+  SSE_HANDLERS[SSE_EVENTS.PIPELINE_STAGE] = function (payload) {
+    const d = payload.data || {};
+    const stage = String(d.stage || "stage");
+    const status = String(d.status || "");
+    const lvl = status === "done" ? "pass" : (status === "failed" ? "fail" : (status === "rewriting" ? "warn" : "info"));
+    return {
+      level: lvl,
+      title: "流水线阶段 · " + stage + (status ? " (" + status + ")" : ""),
+      detail: d.detail || payload.message || "",
+    };
+  };
+  SSE_HANDLERS[SSE_EVENTS.PIPELINE_TOKEN_USAGE] = function (payload) {
+    const d = payload.data || {};
+    return {
+      level: "info",
+      title: "模型真实 Token 用量",
+      detail: (d.model || "") + " · prompt=" + (d.prompt_tokens || 0) + " comp=" + (d.completion_tokens || 0) + " reason=" + (d.reasoning_tokens || 0) + " total=" + (d.total_tokens || 0),
+    };
+  };
+  SSE_HANDLERS[SSE_EVENTS.PIPELINE_GATE_REPORT] = function (payload) {
+    const d = payload.data || {};
+    const passed = Boolean(d.passed);
+    return {
+      level: passed ? "pass" : "fail",
+      title: passed ? "门禁逐条质检通过" : "门禁逐条质检拦截",
+      detail: "字数 " + (d.char_count || 0) + " · 尝试 " + (d.attempt || 0) + "/" + (d.max_attempts || 0),
+    };
+  };
+  SSE_HANDLERS[SSE_EVENTS.PIPELINE_MODEL_EVENT] = function (payload) {
+    const d = payload.data || {};
+    const kind = String(d.kind || "");
+    if (kind === "quota_updated") {
+      loadModelQuotas();
+    }
+    return {
+      level: kind === "quota_exhausted" ? "fail" : (kind === "model_restored" ? "pass" : "warn"),
+      title: "模型事件 · " + (kind || "update"),
+      detail: d.reason || payload.message || "",
+    };
+  };
+  SSE_HANDLERS[SSE_EVENTS.PIPELINE_CHAPTER_LOCKED] = function (payload) {
+    const d = payload.data || {};
+    loadBooks();
+    loadProductionKpi();
+    return {
+      level: "pass",
+      title: "章节哈希锁章完成",
+      detail: "第 " + (payload.chapter || d.chapter || 0) + " 章 · sha256:" + (d.sha256_prefix || "") + " · " + (d.char_count || 0) + " 字",
+    };
   };
 
   function dispatchSseFrame(eventName, rawData) {

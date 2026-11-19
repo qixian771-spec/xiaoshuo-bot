@@ -30,6 +30,11 @@ from ..contracts import (
     SSE_COMPANION_CAPTCHA,
     SSE_COMPANION_RESUMED,
     SSE_CPA_QUOTA_ALERT,
+    SSE_PIPELINE_CHAPTER_LOCKED,
+    SSE_PIPELINE_GATE_REPORT,
+    SSE_PIPELINE_MODEL_EVENT,
+    SSE_PIPELINE_STAGE,
+    SSE_PIPELINE_TOKEN_USAGE,
     SSE_RACING_DECISION,
     SSE_SAFETY_CUSHION_ALERT,
 )
@@ -51,6 +56,7 @@ from ..llm.router import RoleEndpointConfig, RoleModelRouter, VALID_ROLES
 from ..llm.workbuddy_policy import (
     ModelQuotaSnapshot,
     ModelSwitchEvent,
+    ModelUsageEvent,
     RateLimitRetryEvent,
     WORKBUDDY_MANUAL_ONLY_SLOTS,
     WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
@@ -71,7 +77,9 @@ from ..models import (
     resolve_chapter_path,
 )
 from ..planner import AutoNovelPlanner, FinaleVolumeResult, VolumeExtensionResult
+from .public_view import PublicPipelineTracker
 from .stockpile_db import (
+    BookNotFoundError,
     SAFETY_CUSHION_CRITICAL,
     SAFETY_CUSHION_TARGET,
     StockpileDB,
@@ -261,11 +269,13 @@ class MatrixScheduler:
         self._bg_stop = threading.Event()
         self._bg_thread: Optional[threading.Thread] = None
         self._thread_ctx = threading.local()
+        self.pipeline_tracker = PublicPipelineTracker()
 
         if isinstance(self.provider, RoleModelRouter):
             self.provider.add_model_switch_listener(self._handle_model_switched)
             self.provider.add_rate_limit_retry_listener(self._handle_rate_limit_retry)
             self.provider.add_model_quota_listener(self._handle_model_quota)
+            self.provider.add_usage_listener(self._handle_llm_usage)
 
     def _resolve_event_book_context(
         self,
@@ -310,6 +320,19 @@ class MatrixScheduler:
             msg = f"角色 {event.role} 已切回 {to_display}（原模型：{from_display}；{event.reason}）"
         else:
             msg = f"角色 {event.role} 模型已从 {from_display} 切到 {to_display}（原因：{event.reason}）"
+        self._emit(
+            SSE_PIPELINE_MODEL_EVENT,
+            book_id=book_id,
+            chapter=chapter,
+            message=msg,
+            data={
+                "kind": ev_type,
+                "role": event.role,
+                "from_model": event.from_model,
+                "to_model": event.to_model,
+                "reason": event.reason,
+            },
+        )
         self._emit(
             SSE_CPA_QUOTA_ALERT,
             book_id=book_id,
@@ -360,6 +383,21 @@ class MatrixScheduler:
             created_at=event.timestamp,
         )
         self._emit(
+            SSE_PIPELINE_MODEL_EVENT,
+            book_id=book_id,
+            chapter=chapter,
+            message=retry_msg,
+            data={
+                "kind": "rate_limit_retry",
+                "role": event.role,
+                "model": event.model,
+                "retry_attempt": event.attempt,
+                "max_retries": event.max_retries,
+                "wait_seconds": wait_val,
+                "reason": event.reason,
+            },
+        )
+        self._emit(
             SSE_CPA_QUOTA_ALERT,
             book_id=book_id,
             chapter=chapter,
@@ -382,8 +420,25 @@ class MatrixScheduler:
             },
         )
 
+    def _handle_llm_usage(self, event: ModelUsageEvent) -> None:
+        book_id, _book_title, chapter = self._resolve_event_book_context(
+            event.book_id,
+            event.chapter,
+        )
+        self._emit(
+            SSE_PIPELINE_TOKEN_USAGE,
+            book_id=book_id,
+            chapter=chapter,
+            message=(
+                f"{event.role} {event.model} usage: "
+                f"prompt={event.prompt_tokens} comp={event.completion_tokens} "
+                f"reason={event.reasoning_tokens} total={event.total_tokens}"
+            ),
+            data=event.to_dict(),
+        )
+
     def _handle_model_quota(self, snap: ModelQuotaSnapshot) -> None:
-        self.db.upsert_model_quota(
+        saved = self.db.upsert_model_quota(
             model=snap.model,
             model_label=snap.model_label,
             raw_model=snap.raw_model,
@@ -393,6 +448,26 @@ class MatrixScheduler:
             shared_models=snap.shared_models,
             role=snap.role,
             updated_at=snap.updated_at,
+        )
+        book_id, _book_title, chapter = self._resolve_event_book_context("", 0)
+        self._emit(
+            SSE_PIPELINE_MODEL_EVENT,
+            book_id=book_id,
+            chapter=chapter,
+            message=f"{snap.model} quota {snap.percent}%",
+            data={
+                "kind": "quota_updated",
+                "role": snap.role,
+                "model": snap.model,
+                "quota": {
+                    "model": saved["model"],
+                    "label": saved["model_label"],
+                    "has_quota": True,
+                    "percent": saved["percent"],
+                    "reset_at": saved["reset_at"],
+                    "updated_at": saved["updated_at"],
+                },
+            },
         )
 
     def get_model_quotas(self) -> List[Dict[str, Any]]:
@@ -537,7 +612,18 @@ class MatrixScheduler:
             data=dict(data or {}),
             timestamp=shanghai_now(self._now_fn).isoformat(),
         )
+        titles: Dict[str, str] = {}
+        if book_id:
+            try:
+                rec = self.db.get_book(book_id)
+                titles[book_id] = str(rec.get("title") or book_id)
+            except BookNotFoundError:
+                titles[book_id] = book_id
+        self.pipeline_tracker.observe(payload, titles)
         return self.event_broker.publish(payload)
+
+    def get_public_pipeline_snapshot(self) -> Dict[str, Any]:
+        return self.pipeline_tracker.snapshot(self.db, self)
 
     def _get_router(self) -> Optional[RoleModelRouter]:
         if isinstance(self.provider, RoleModelRouter):
@@ -627,6 +713,13 @@ class MatrixScheduler:
                 f"Invalid project_id {request.project_id!r}: cannot point to projects_root"
             )
         planner = self._get_planner()
+        self._emit(
+            SSE_PIPELINE_STAGE,
+            book_id=pid,
+            chapter=0,
+            message=f"[{pid}] 立项开始",
+            data={"stage": "plan", "status": "running", "detail": "三源立项与分卷大纲生成中"},
+        )
 
         result = planner.plan_new_project(
             project_id=pid,
@@ -662,6 +755,17 @@ class MatrixScheduler:
             alternate_blurbs=proj.meta.alternate_blurbs,
             opening_motif=result.opening_motif,
             golden_finger_type=result.golden_finger_type,
+        )
+        self._emit(
+            SSE_PIPELINE_STAGE,
+            book_id=proj.meta.project_id,
+            chapter=0,
+            message=f"[{proj.meta.project_id}] 立项完成（{len(proj.scenes)} 章）",
+            data={
+                "stage": "plan",
+                "status": "done",
+                "detail": f"《{proj.meta.title}》共 {len(proj.scenes)} 章大纲就绪",
+            },
         )
         self.event_broker.notify_poll_waiters()
         return self.db.get_book_summary(proj.meta.project_id)
@@ -1011,6 +1115,16 @@ class MatrixScheduler:
                 paused_reason=str(exc),
             )
             self._emit(
+                SSE_PIPELINE_MODEL_EVENT,
+                book_id=book_id,
+                chapter=next_scene.chapter,
+                message=str(exc),
+                data={
+                    "kind": "quota_exhausted",
+                    "reason": str(exc),
+                },
+            )
+            self._emit(
                 SSE_CPA_QUOTA_ALERT,
                 book_id=book_id,
                 chapter=next_scene.chapter,
@@ -1059,14 +1173,55 @@ class MatrixScheduler:
             locked=locked_val,
             model=actual_model,
         )
+        duration_sec = time.monotonic() - started_monotonic
         self.db.record_production_stat(
             book_id,
             item.chapter,
-            duration_sec=time.monotonic() - started_monotonic,
+            duration_sec=duration_sec,
             attempts_used=int(ch_summary["attempts_used"]),
             rewrites_triggered=int(ch_summary["rewrites_triggered"]),
             char_count=item.char_count,
             model=actual_model,
+        )
+        self._emit(
+            SSE_PIPELINE_CHAPTER_LOCKED,
+            book_id=book_id,
+            chapter=item.chapter,
+            message=f"LOCKED ch{item.chapter:04d} sha256:{item.sha256[:12]}",
+            data={
+                "chapter": item.chapter,
+                "title": public_title,
+                "char_count": item.char_count,
+                "sha256_prefix": item.sha256[:12],
+                "model": actual_model,
+                "duration_sec": round(duration_sec, 1),
+                "attempts_used": int(ch_summary["attempts_used"]),
+                "rewrites_triggered": int(ch_summary["rewrites_triggered"]),
+            },
+        )
+        self._emit(
+            SSE_PIPELINE_STAGE,
+            book_id=book_id,
+            chapter=item.chapter,
+            message=f"ch{item.chapter:04d} 已入库可导出",
+            data={
+                "stage": "export",
+                "status": "done",
+                "char_count": item.char_count,
+                "model": actual_model,
+                "detail": "已入库 · 可随时导出成书包",
+            },
+        )
+        self._emit(
+            SSE_PIPELINE_STAGE,
+            book_id=book_id,
+            chapter=item.chapter,
+            message="待机 / 等待下一章",
+            data={
+                "stage": "idle",
+                "status": "idle",
+                "detail": "待机 / 等待下一章",
+            },
         )
         self.event_broker.notify_poll_waiters()
         return {

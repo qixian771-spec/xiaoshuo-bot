@@ -3,84 +3,316 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>小说机器人 · 创作演播厅</title>
+  <title>AI 写作流水线 · 实时指挥中心 · 创作演播厅</title>
   <meta name="generator" content="xiaoshuo-bot">
   <link rel="stylesheet" href="/public.css">
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span class="dot" id="live-dot" aria-hidden="true"></span>
-      <div>
-        <h1>创作演播厅</h1>
-        <p class="sub">看小说机器人此刻在写什么。只展示通过全部审校的成稿。</p>
-      </div>
-    </div>
-    <span class="live-state" id="live-state">连接中…</span>
-  </header>
-
-  <main class="layout">
-    <section class="col-left">
-      <h2 class="section-title">书架</h2>
-      <ul class="shelf" id="shelf" aria-live="polite"></ul>
-      <p class="empty" id="shelf-empty" hidden>机器人还没有开写新书。</p>
-
-      <h2 class="section-title">机器人动态</h2>
-      <ol class="feed" id="feed" aria-live="polite"></ol>
-      <p class="empty" id="feed-empty">还没有新动态，有阶段完成时会出现在这里。</p>
-    </section>
-
-    <section class="col-main" id="book-panel" hidden>
-      <div class="book-head">
-        <div>
-          <h2 id="book-title"></h2>
-          <p class="meta" id="book-meta"></p>
+  <div class="cmd-shell">
+    <!-- Top Command Header -->
+    <header class="cmd-header">
+      <div class="cmd-brand">
+        <div class="brand-core" aria-hidden="true">
+          <span class="brand-glyph">墨</span>
         </div>
-        <div class="progress" aria-label="写作进度">
-          <div class="bar"><span id="book-bar"></span></div>
-          <span id="book-progress"></span>
+        <div class="brand-copy">
+          <div class="brand-title-row">
+            <h1>AI 写作流水线 · 实时指挥中心</h1>
+            <span class="replay-badge" id="replay-badge" hidden>回放 · 真实历史事件</span>
+          </div>
+          <p class="brand-sub">创作演播厅 · 真实事件驱动 · 仅公开通过全部质检门禁的成稿</p>
         </div>
       </div>
-      <p class="blurb" id="book-blurb"></p>
 
-      <div class="plan" id="plan" hidden>
-        <h3>此刻在构思</h3>
-        <p class="plan-title" id="plan-title"></p>
-        <p class="meta" id="plan-meta"></p>
-        <ol id="plan-events"></ol>
-        <p class="plan-hook" id="plan-hook" hidden></p>
+      <div class="cmd-header-controls">
+        <div class="status-pill" id="live-pill" role="status" aria-live="polite">
+          <span class="status-dot" id="live-dot" aria-hidden="true"></span>
+          <span id="live-state">正在连接实时流…</span>
+        </div>
+        <button type="button" class="ctrl-btn" id="btn-motion-toggle">暂停动效</button>
+      </div>
+    </header>
+
+    <!-- Top Telemetry Dashboard: Model Quota Rings + Production KPIs -->
+    <section class="telemetry-bar" aria-label="顶部实时仪表盘">
+      <div class="quota-panel">
+        <div class="panel-mini-head">
+          <span class="panel-mini-title">白名单模型额度</span>
+          <span class="panel-mini-note mono" id="quota-sync-note">usage.quota 实时落库</span>
+        </div>
+        <div class="quota-rings" id="quota-rings">
+          <div class="quota-empty">加载模型额度中…</div>
+        </div>
       </div>
 
-      <div class="tabs" role="tablist">
-        <button type="button" class="tab is-active" data-tab="chapters" role="tab" aria-selected="true">已成稿章节</button>
-        <button type="button" class="tab" data-tab="cast" role="tab" aria-selected="false">人物设定</button>
-        <button type="button" class="tab" data-tab="world" role="tab" aria-selected="false">关键器物与笔风</button>
-      </div>
-
-      <div class="tab-panel" data-panel="chapters">
-        <ol class="chapters" id="chapters"></ol>
-        <p class="empty" id="chapters-empty" hidden>第一章还在写，成稿后会出现在这里。</p>
-      </div>
-      <div class="tab-panel" data-panel="cast" hidden>
-        <div class="cards" id="cast"></div>
-      </div>
-      <div class="tab-panel" data-panel="world" hidden>
-        <div class="cards" id="items"></div>
-        <div class="cards" id="styles"></div>
+      <div class="kpi-strip">
+        <div class="kpi-tile kpi-model-tile">
+          <span class="kpi-k">当前在用模型</span>
+          <strong class="kpi-v mono" id="kpi-model">—</strong>
+          <span class="kpi-s" id="kpi-model-sub">等待真实调用上报</span>
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-k">全书进度</span>
+          <strong class="kpi-v mono" id="kpi-progress">0 / 0</strong>
+          <div class="kpi-mini-track" aria-hidden="true"><span class="kpi-mini-fill" id="kpi-progress-bar"></span></div>
+          <span class="kpi-s" id="kpi-progress-sub">暂无在写书目</span>
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-k">今日已写章数</span>
+          <strong class="kpi-v mono" id="kpi-today">0 章</strong>
+          <span class="kpi-s mono" id="kpi-today-date">—</span>
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-k">平均每章用时</span>
+          <strong class="kpi-v mono" id="kpi-avg-dur">—</strong>
+          <span class="kpi-s" id="kpi-avg-att">基于真实成稿统计</span>
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-k">一次过审率</span>
+          <strong class="kpi-v mono" id="kpi-first-pass">—</strong>
+          <span class="kpi-s" id="kpi-first-pass-sub">无重写直通占比</span>
+        </div>
       </div>
     </section>
 
-    <section class="col-main" id="reader" hidden>
-      <button type="button" class="back" id="reader-back">← 返回本书</button>
-      <h2 id="reader-title"></h2>
-      <p class="meta" id="reader-meta"></p>
-      <article class="prose" id="reader-body"></article>
-      <div class="reader-nav">
-        <button type="button" id="reader-prev">上一章</button>
-        <button type="button" id="reader-next">下一章</button>
+    <!-- Model Switch / Backoff / Circuit Breaker Dynamic Ribbon -->
+    <section class="model-event-banner" id="model-event-banner" role="status" aria-live="polite" hidden></section>
+
+    <!-- Main Split Workspace: Live Workflow Canvas + Machine Log Terminal -->
+    <section class="command-grid" aria-label="流水线画布与机器终端">
+      <!-- Left/Main: Interactive Workflow Graph Canvas -->
+      <div class="canvas-panel" id="canvas-panel" data-pipeline-state="idle">
+        <div class="canvas-head">
+          <div class="canvas-head-left">
+            <span class="canvas-badge" id="pipeline-state-badge">待机</span>
+            <h2 class="canvas-title" id="pipeline-headline">待机 / 等待下一章</h2>
+          </div>
+          <div class="canvas-head-right">
+            <span class="canvas-meta mono" id="pipeline-last-event">上次事件：—</span>
+            <span class="canvas-attempt-pill mono" id="pipeline-attempt-pill" hidden>第 1/4 次</span>
+          </div>
+        </div>
+
+        <!-- Idle Banner (shown honestly whenever machine is idle) -->
+        <div class="idle-strip" id="idle-strip">
+          <span class="idle-icon" aria-hidden="true">◎</span>
+          <span id="idle-strip-text">当前无正在执行的写作任务 · 待机 / 等待下一章</span>
+          <span class="mono idle-ts" id="idle-strip-ts"></span>
+        </div>
+
+        <!-- Real-Time Workflow Graph (8 Nodes + SVG Animated Wires) -->
+        <div class="workflow-stage" id="workflow-stage">
+          <svg class="workflow-svg" id="workflow-svg" aria-hidden="true"></svg>
+
+          <!-- Rewrite Rollback Pill anchored near feedback edge -->
+          <div class="rewrite-loop-badge mono" id="rewrite-loop-badge" hidden>
+            ↺ 打回重写 · 第 <span id="rewrite-loop-attempt">2/4</span> 次
+          </div>
+
+          <div class="workflow-grid" id="workflow-grid">
+            <!-- Row 1 (L -> R): plan -> outline -> compile -> draft -->
+            <article class="wf-node" id="node-plan" data-stage="plan" data-row="1" data-col="1" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">01</span>
+                <span class="wf-title">立项</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail" data-role="detail">题材配方与全书总纲</p>
+            </article>
+
+            <article class="wf-node" id="node-outline" data-stage="outline" data-row="1" data-col="2" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">02</span>
+                <span class="wf-title">章纲</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail" data-role="detail">节拍、伏笔与字数区间</p>
+            </article>
+
+            <article class="wf-node" id="node-compile" data-stage="compile" data-row="1" data-col="3" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">03</span>
+                <span class="wf-title">组装提示词</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail" data-role="detail">世界状态与记忆金字塔</p>
+            </article>
+
+            <article class="wf-node wf-node-draft" id="node-draft" data-stage="draft" data-row="1" data-col="4" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">04</span>
+                <span class="wf-title">写稿</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <div class="draft-thinking-row" id="draft-thinking-row" hidden>
+                <span class="thinking-pulse" aria-hidden="true"></span>
+                <span class="thinking-label" id="draft-thinking-text">思考中</span>
+                <span class="mono thinking-elapsed" id="draft-elapsed">0s</span>
+              </div>
+              <p class="wf-detail" data-role="detail">等待上游调度</p>
+              <div class="draft-token-box mono" id="draft-token-box">
+                <div class="token-main">
+                  <span class="token-k">真实 Token</span>
+                  <strong class="token-v" id="tok-total">—</strong>
+                </div>
+                <div class="token-sub">
+                  <span>思考 <b id="tok-reason">—</b></span>
+                  <span>输出 <b id="tok-comp">—</b></span>
+                  <span>输入 <b id="tok-prompt">—</b></span>
+                </div>
+              </div>
+            </article>
+
+            <!-- Row 2 (Snake R -> L on desktop: gate -> polish -> lock -> export) -->
+            <article class="wf-node wf-node-gate" id="node-gate" data-stage="gate" data-row="2" data-col="4" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">05</span>
+                <span class="wf-title">门禁质检</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail" data-role="detail">字数 / 伏笔 / 节奏 / 世界状态</p>
+            </article>
+
+            <article class="wf-node" id="node-polish" data-stage="polish" data-row="2" data-col="3" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">06</span>
+                <span class="wf-title">定点精修</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail" data-role="detail">四维评审与局部手术修稿</p>
+            </article>
+
+            <article class="wf-node" id="node-lock" data-stage="lock" data-row="2" data-col="2" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">07</span>
+                <span class="wf-title">锁章</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail mono" data-role="detail">SHA-256 存证与世界快照</p>
+            </article>
+
+            <article class="wf-node" id="node-export" data-stage="export" data-row="2" data-col="1" data-status="idle">
+              <div class="wf-node-head">
+                <span class="wf-step mono">08</span>
+                <span class="wf-title">导出</span>
+                <span class="wf-state-tag" data-role="state">待机</span>
+              </div>
+              <p class="wf-detail" data-role="detail">成稿入库 · 可打包导出</p>
+            </article>
+          </div>
+        </div>
+
+        <!-- Gate Rule-by-Rule Live Matrix -->
+        <div class="gate-matrix-panel" id="gate-rules-panel" aria-label="门禁质检逐条结果">
+          <div class="panel-mini-head">
+            <span class="panel-mini-title">门禁质检清单</span>
+            <span class="panel-mini-note mono" id="gate-summary-note">等待质检结果</span>
+          </div>
+          <div class="gate-rules-grid" id="gate-rules-grid">
+            <div class="gate-empty">尚无本次运行质检记录，执行至门禁节点时逐条亮灯展示。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Machine Log Terminal -->
+      <aside class="terminal-panel" aria-label="机器运行日志终端">
+        <div class="terminal-head">
+          <div class="term-dots" aria-hidden="true">
+            <span class="td td-r"></span>
+            <span class="td td-y"></span>
+            <span class="td td-g"></span>
+          </div>
+          <span class="term-title mono" id="term-title">STREAM // xiaoshuo-bot</span>
+          <div class="term-actions">
+            <span class="term-count mono" id="term-count">0 行</span>
+            <button type="button" class="term-btn" id="btn-term-autoscroll">锁定滚屏</button>
+          </div>
+        </div>
+        <div class="terminal-body mono" id="terminal-body" role="log" aria-live="polite" tabindex="0">
+          <div class="term-empty" id="term-empty">等待真实流水线元数据事件…</div>
+        </div>
+        <button type="button" class="term-jump-bottom" id="btn-term-bottom" hidden>↓ 回到最新日志</button>
+      </aside>
+    </section>
+
+    <!-- Bottom Works & Approved Chapter Reader Section -->
+    <section class="works-section" aria-label="作品区与过审章节阅读">
+      <div class="works-layout">
+        <aside class="shelf-col">
+          <div class="panel-mini-head">
+            <h2 class="section-heading">在写与完本书架</h2>
+            <span class="panel-mini-note">仅展示已过审成稿</span>
+          </div>
+          <ul class="shelf" id="shelf" aria-live="polite"></ul>
+          <p class="empty-msg" id="shelf-empty" hidden>机器人还没有开写新书。</p>
+        </aside>
+
+        <div class="book-col">
+          <section class="book-panel" id="book-panel" hidden>
+            <div class="book-head">
+              <div>
+                <h2 id="book-title"></h2>
+                <p class="meta" id="book-meta"></p>
+              </div>
+              <div class="book-prog" aria-label="本书写作进度">
+                <div class="book-prog-track"><span id="book-bar"></span></div>
+                <span class="mono" id="book-progress"></span>
+              </div>
+            </div>
+            <p class="blurb" id="book-blurb"></p>
+
+            <div class="plan-card" id="plan" hidden>
+              <div class="plan-head">
+                <span class="plan-kicker">此刻在构思</span>
+                <span class="plan-title" id="plan-title"></span>
+              </div>
+              <p class="meta" id="plan-meta"></p>
+              <ol class="plan-events" id="plan-events"></ol>
+              <p class="plan-hook" id="plan-hook" hidden></p>
+            </div>
+
+            <div class="tabs" role="tablist">
+              <button type="button" class="tab is-active" data-tab="chapters" role="tab" aria-selected="true">已过审章节</button>
+              <button type="button" class="tab" data-tab="cast" role="tab" aria-selected="false">人物设定</button>
+              <button type="button" class="tab" data-tab="world" role="tab" aria-selected="false">关键器物与笔风</button>
+            </div>
+
+            <div class="tab-panel" data-panel="chapters">
+              <ol class="chapters-grid" id="chapters"></ol>
+              <p class="empty-msg" id="chapters-empty" hidden>第一章还在写，通过全部质检门禁后会出现在这里。</p>
+            </div>
+            <div class="tab-panel" data-panel="cast" hidden>
+              <div class="info-cards" id="cast"></div>
+            </div>
+            <div class="tab-panel" data-panel="world" hidden>
+              <div class="info-cards" id="items"></div>
+              <div class="info-cards mt-sm" id="styles"></div>
+            </div>
+          </section>
+
+          <section class="reader-panel" id="reader" hidden>
+            <div class="reader-toolbar">
+              <button type="button" class="ctrl-btn" id="reader-back">← 返回章节目录</button>
+              <div class="reader-font-controls" role="group" aria-label="正文字号">
+                <button type="button" class="font-btn" data-font="sm">紧凑</button>
+                <button type="button" class="font-btn is-active" data-font="md">舒适</button>
+                <button type="button" class="font-btn" data-font="lg">大字</button>
+              </div>
+            </div>
+            <header class="reader-head">
+              <h2 id="reader-title"></h2>
+              <p class="meta mono" id="reader-meta"></p>
+            </header>
+            <article class="prose prose-md" id="reader-body"></article>
+            <nav class="reader-nav" aria-label="章节切换">
+              <button type="button" class="ctrl-btn" id="reader-prev">← 上一章</button>
+              <button type="button" class="ctrl-btn" id="reader-next">下一章 →</button>
+            </nav>
+          </section>
+        </div>
       </div>
     </section>
-  </main>
+  </div>
 
   <script src="/public.js" defer></script>
 </body>

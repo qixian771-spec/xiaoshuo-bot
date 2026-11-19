@@ -808,6 +808,69 @@ class StockpileDB:
             "total_chars": int(row["total_chars"]),
         }
 
+    def get_public_production_metrics(self, book_id: Optional[str] = None) -> Dict[str, Any]:
+        """Compute sanitized production metrics (today count, avg duration, first-pass rate) from real stats."""
+        today_date = self._now_dt().strftime("%Y-%m-%d")
+        where = "WHERE book_id = ?" if book_id else ""
+        params: Tuple[Any, ...] = (book_id,) if book_id else ()
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT COUNT(*) AS chapters,
+                       COALESCE(AVG(duration_sec), 0) AS avg_duration_sec,
+                       COALESCE(SUM(CASE WHEN attempts_used <= 1 THEN 1 ELSE 0 END), 0) AS first_pass,
+                       COALESCE(AVG(attempts_used), 0) AS avg_attempts,
+                       COALESCE(SUM(char_count), 0) AS total_chars,
+                       MAX(produced_at) AS latest_produced_at
+                FROM production_stats {where}
+                """,
+                params,
+            ).fetchone()
+            if book_id:
+                today_row = self._conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt FROM production_stats
+                    WHERE book_id = ? AND produced_at LIKE ?
+                    """,
+                    (book_id, f"{today_date}%"),
+                ).fetchone()
+                latest_row = self._conn.execute(
+                    """
+                    SELECT model, produced_at FROM production_stats
+                    WHERE book_id = ?
+                    ORDER BY produced_at DESC, chapter DESC LIMIT 1
+                    """,
+                    (book_id,),
+                ).fetchone()
+            else:
+                today_row = self._conn.execute(
+                    """
+                    SELECT COUNT(*) AS cnt FROM production_stats
+                    WHERE produced_at LIKE ?
+                    """,
+                    (f"{today_date}%",),
+                ).fetchone()
+                latest_row = self._conn.execute(
+                    """
+                    SELECT model, produced_at FROM production_stats
+                    ORDER BY produced_at DESC, chapter DESC LIMIT 1
+                    """
+                ).fetchone()
+        chapters = int(row["chapters"] or 0)
+        first_pass = int(row["first_pass"] or 0)
+        return {
+            "today_date": today_date,
+            "today_chapters": int(today_row["cnt"] or 0) if today_row else 0,
+            "total_chapters_written": chapters,
+            "avg_duration_sec": round(float(row["avg_duration_sec"] or 0.0), 1),
+            "first_pass_rate": round(first_pass / chapters, 4) if chapters else 0.0,
+            "first_pass_count": first_pass,
+            "avg_attempts": round(float(row["avg_attempts"] or 0.0), 2),
+            "total_chars": int(row["total_chars"] or 0),
+            "latest_produced_at": str(latest_row["produced_at"] or "") if latest_row else "",
+            "latest_model": str(latest_row["model"] or "") if latest_row else "",
+        }
+
     # -----------------------------------------------------------------------
     # Admin new-book wizard sessions
     # -----------------------------------------------------------------------

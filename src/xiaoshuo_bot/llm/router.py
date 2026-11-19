@@ -39,6 +39,7 @@ from .workbuddy_policy import (
     DEFAULT_RATE_LIMIT_BACKOFF_SEC,
     ModelQuotaSnapshot,
     ModelSwitchEvent,
+    ModelUsageEvent,
     RateLimitRetryEvent,
     WorkBuddyModelCatalog,
     classify_workbuddy_failure_kind,
@@ -70,6 +71,27 @@ def _extract_tokens(usage: Mapping[str, Any]) -> Tuple[int, int]:
         or 0
     )
     return max(0, int(in_tok)), max(0, int(out_tok))
+
+
+def _extract_real_detailed_usage(usage: Optional[Mapping[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+    """Extract real upstream (prompt, completion, reasoning, total) tokens; returns None for estimated/empty usage."""
+    if not isinstance(usage, Mapping) or not usage or usage.get("estimated") is True:
+        return None
+    prompt_tok, comp_tok = _extract_tokens(usage)
+    details = usage.get("completion_tokens_details")
+    detail_reason = details.get("reasoning_tokens") if isinstance(details, Mapping) else 0
+    raw_reason = (
+        usage.get("completion_thinking_tokens")
+        or detail_reason
+        or usage.get("reasoning_tokens")
+        or 0
+    )
+    reason_tok = max(0, int(raw_reason))
+    raw_total = usage.get("total_tokens")
+    total_tok = max(0, int(raw_total)) if raw_total is not None else (prompt_tok + comp_tok)
+    if prompt_tok == 0 and comp_tok == 0 and reason_tok == 0 and total_tok == 0:
+        return None
+    return prompt_tok, comp_tok, reason_tok, total_tok
 
 
 @dataclass
@@ -490,6 +512,7 @@ class RoleModelRouter:
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
         on_rate_limit_retry: Optional[Callable[[RateLimitRetryEvent], None]] = None,
         on_model_quota: Optional[Callable[[ModelQuotaSnapshot], None]] = None,
+        on_llm_usage: Optional[Callable[[ModelUsageEvent], None]] = None,
         now_fn: Optional[Callable[[], datetime]] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
         workbuddy_catalog: Optional[WorkBuddyModelCatalog] = None,
@@ -509,6 +532,7 @@ class RoleModelRouter:
         self._retry_history: List[RateLimitRetryEvent] = []
         self._quota_listeners: List[Callable[[ModelQuotaSnapshot], None]] = []
         self._model_quotas: Dict[str, ModelQuotaSnapshot] = {}
+        self._usage_listeners: List[Callable[[ModelUsageEvent], None]] = []
         self.ledger = ledger or UsageBudgetLedger()
         self._monotonic = monotonic_fn or time.monotonic
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
@@ -520,6 +544,8 @@ class RoleModelRouter:
             self._retry_listeners.append(on_rate_limit_retry)
         if on_model_quota is not None:
             self._quota_listeners.append(on_model_quota)
+        if on_llm_usage is not None:
+            self._usage_listeners.append(on_llm_usage)
 
         for role_name, raw_cfg in roles.items():
             cfg = (
@@ -718,6 +744,11 @@ class RoleModelRouter:
         with self._lock:
             if callback not in self._quota_listeners:
                 self._quota_listeners.append(callback)
+
+    def add_usage_listener(self, callback: Callable[[ModelUsageEvent], None]) -> None:
+        with self._lock:
+            if callback not in self._usage_listeners:
+                self._usage_listeners.append(callback)
 
     def get_model_quotas(self) -> Dict[str, ModelQuotaSnapshot]:
         with self._lock:
@@ -979,6 +1010,42 @@ class RoleModelRouter:
             listener(snap)
         return snap
 
+    def _emit_llm_usage(
+        self,
+        *,
+        role: str,
+        cfg: RoleEndpointConfig,
+        model: str,
+        request: LLMRequest,
+        usage: Optional[Mapping[str, Any]],
+        latency_sec: float,
+        truncated: bool,
+    ) -> None:
+        parsed = _extract_real_detailed_usage(usage)
+        if parsed is None:
+            return
+        prompt_tok, comp_tok, reason_tok, total_tok = parsed
+        ev = ModelUsageEvent(
+            role=role,
+            model=model,
+            model_label=cfg.format_model_label(model),
+            purpose=str(request.purpose or ""),
+            chapter=int(request.chapter or 0),
+            attempt=int(request.attempt or 0),
+            prompt_tokens=prompt_tok,
+            completion_tokens=comp_tok,
+            reasoning_tokens=reason_tok,
+            total_tokens=total_tok,
+            latency_sec=float(latency_sec),
+            truncated=bool(truncated),
+            timestamp=self._now_fn().isoformat(),
+            book_id=str(request.metadata.get("book_id") or ""),
+        )
+        with self._lock:
+            listeners = list(self._usage_listeners)
+        for listener in listeners:
+            listener(ev)
+
     def _clear_key_cooldowns_for_model(self, role: str, model_id: str, cfg: RoleEndpointConfig) -> None:
         with self._lock:
             if cfg.rotation_models:
@@ -1152,6 +1219,15 @@ class RoleModelRouter:
                         self._mark_key_success_for_model(role, current_model, key_idx, cfg)
                         resolved_model = (resp.model or current_model).strip()
                         self._capture_usage_quota(role, cfg, current_model, resp.usage)
+                        self._emit_llm_usage(
+                            role=role,
+                            cfg=cfg,
+                            model=resolved_model,
+                            request=req_for_model,
+                            usage=resp.usage,
+                            latency_sec=resp.latency_sec,
+                            truncated=False,
+                        )
                         in_tok, out_tok = _extract_tokens(resp.usage)
                         self.ledger.record_usage(
                             role=role,
@@ -1168,6 +1244,15 @@ class RoleModelRouter:
                         self._mark_key_success_for_model(role, current_model, key_idx, cfg)
                         trunc_usage = getattr(exc, "usage", None) or {}
                         self._capture_usage_quota(role, cfg, current_model, trunc_usage)
+                        self._emit_llm_usage(
+                            role=role,
+                            cfg=cfg,
+                            model=getattr(exc, "model", "") or current_model,
+                            request=req_for_model,
+                            usage=trunc_usage,
+                            latency_sec=0.0,
+                            truncated=True,
+                        )
                         in_tok, out_tok = _extract_tokens(trunc_usage)
                         self.ledger.record_usage(
                             role=role,

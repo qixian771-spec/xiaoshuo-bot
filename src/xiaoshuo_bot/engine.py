@@ -19,6 +19,8 @@ from .contracts import (
     SSE_CRITIC_SCORED,
     SSE_GATE_FAILED,
     SSE_GATE_PASSED,
+    SSE_PIPELINE_GATE_REPORT,
+    SSE_PIPELINE_STAGE,
     SSE_SURGICAL_POLISHED,
 )
 from .critic_polisher import (
@@ -55,6 +57,136 @@ from .state import (
 ProgressCallback = Callable[[str, Dict[str, Any]], None]
 
 _CHAPTER_TXT_RE = re.compile(r"^chapter_(\d+)\.txt$")
+_WALL_CHARS_RE = re.compile(r"(\d+)\s*chars\s*>\s*(\d+)")
+_BURST_SIGMA_RE = re.compile(r"σ\s*=\s*([0-9]+(?:\.[0-9]+)?)")
+
+
+def build_public_gate_rules(
+    report: ScanReport,
+    scene: SceneOutline,
+    *,
+    due_count: int = 0,
+    plant_count: int = 0,
+) -> List[Dict[str, Any]]:
+    """Convert a ScanReport into strictly sanitized rule-by-rule check rows (ZERO draft prose)."""
+    violations = list(report.violations or [])
+    crit_violations = [v for v in violations if str(v.severity).upper() == "CRITICAL"]
+
+    len1_fail = any(v.rule_id == "LEN_001" for v in crit_violations)
+    len2_fail = any(v.rule_id == "LEN_002" for v in crit_violations)
+
+    fs_fails = [
+        v for v in crit_violations
+        if str(v.rule_id).startswith(("FS_", "FORESHADOW")) or "FORESHADOW" in str(v.category).upper()
+    ]
+    fs_total = max(0, int(due_count) + int(plant_count))
+    if fs_total > 0:
+        fs_ok = max(0, fs_total - len(fs_fails))
+        fs_metric = f"{fs_ok}/{fs_total} 达标"
+    elif fs_fails:
+        fs_metric = f"{len(fs_fails)} 项缺失"
+    else:
+        fs_metric = "0 缺失"
+
+    wall_fails = [v for v in crit_violations if v.rule_id == "RHYTHM_NARRATION_WALL"]
+    wall_max_chars = 0
+    wall_limit = 320
+    for wf in wall_fails:
+        m = _WALL_CHARS_RE.search(str(wf.matched_text or ""))
+        if m:
+            wall_max_chars = max(wall_max_chars, int(m.group(1)))
+            wall_limit = int(m.group(2))
+    wall_metric = (
+        f"{wall_max_chars} / ≤{wall_limit} 字"
+        if wall_fails and wall_max_chars > 0
+        else (f"{len(wall_fails)} 处超限" if wall_fails else f"≤{wall_limit} 字")
+    )
+
+    burst_warns = [v for v in violations if v.rule_id == "RHYTHM_BURSTINESS"]
+    burst_metric = "达标"
+    if burst_warns:
+        m_sig = _BURST_SIGMA_RE.search(str(burst_warns[0].matched_text or ""))
+        burst_metric = f"σ={m_sig.group(1)} < 10.0" if m_sig else "偏均匀"
+
+    ai_tic_fails = [
+        v for v in crit_violations
+        if str(v.rule_id).startswith(("TIC_", "SUM_", "SYM_", "AI_TIC"))
+    ]
+    world_fails = [
+        v for v in crit_violations
+        if str(v.rule_id).startswith(("STATE_", "WORLD_", "ASSET_", "LEDGER_"))
+        or "WORLD_STATE" in str(v.category).upper()
+    ]
+    handled_ids = {
+        id(v)
+        for v in (
+            [x for x in crit_violations if x.rule_id in ("LEN_001", "LEN_002")]
+            + fs_fails
+            + wall_fails
+            + ai_tic_fails
+            + world_fails
+        )
+    }
+    other_style_fails = [v for v in crit_violations if id(v) not in handled_ids]
+
+    return [
+        {
+            "rule_id": "LEN_001",
+            "label": "字数下限",
+            "passed": not len1_fail,
+            "metric": f"{int(report.char_count)} / ≥{int(scene.min_chars)} 字",
+            "severity": "CRITICAL",
+        },
+        {
+            "rule_id": "LEN_002",
+            "label": "字数上限",
+            "passed": not len2_fail,
+            "metric": f"{int(report.char_count)} / ≤{int(scene.max_chars)} 字",
+            "severity": "CRITICAL",
+        },
+        {
+            "rule_id": "FORESHADOW",
+            "label": "伏笔埋设/兑现",
+            "passed": len(fs_fails) == 0,
+            "metric": fs_metric,
+            "severity": "CRITICAL",
+        },
+        {
+            "rule_id": "RHYTHM_NARRATION_WALL",
+            "label": "纯旁白墙",
+            "passed": len(wall_fails) == 0,
+            "metric": wall_metric,
+            "severity": "CRITICAL",
+        },
+        {
+            "rule_id": "RHYTHM_BURSTINESS",
+            "label": "句长爆发度",
+            "passed": len(burst_warns) == 0,
+            "metric": burst_metric,
+            "severity": "WARNING",
+        },
+        {
+            "rule_id": "AI_TIC",
+            "label": "AI 腔/套话词",
+            "passed": len(ai_tic_fails) == 0,
+            "metric": "0 违规" if not ai_tic_fails else f"{len(ai_tic_fails)} 处违规",
+            "severity": "CRITICAL",
+        },
+        {
+            "rule_id": "POV_STYLE",
+            "label": "视角与格式红线",
+            "passed": len(other_style_fails) == 0,
+            "metric": "0 违规" if not other_style_fails else f"{len(other_style_fails)} 处违规",
+            "severity": "CRITICAL",
+        },
+        {
+            "rule_id": "WORLD_STATE",
+            "label": "世界状态一致",
+            "passed": len(world_fails) == 0,
+            "metric": "0 违规" if not world_fails else f"{len(world_fails)} 处违规",
+            "severity": "CRITICAL",
+        },
+    ]
 
 
 class ProductionGateFailure(RuntimeError):
@@ -714,6 +846,20 @@ class NovelGenerationEngine:
             SSE_CHAPTER_STARTED,
             {"chapter": scene.chapter, "scene_id": scene.scene_id, "volume": scene.volume},
         )
+        scene_title = (scene.public_title or scene.internal_title or f"第 {scene.chapter} 章").strip()
+        self._emit(
+            on_progress,
+            SSE_PIPELINE_STAGE,
+            {
+                "chapter": scene.chapter,
+                "stage": "outline",
+                "status": "done",
+                "scene_title": scene_title,
+                "min_chars": int(scene.min_chars),
+                "max_chars": int(scene.max_chars),
+                "detail": f"章纲就绪 · 第 {scene.chapter} 章《{scene_title}》",
+            },
+        )
         switch_idx_start = (
             len(self.provider.get_model_switch_history())
             if isinstance(self.provider, RoleModelRouter)
@@ -727,6 +873,18 @@ class NovelGenerationEngine:
                 chapter=scene.chapter,
             )
 
+        self._emit(
+            on_progress,
+            SSE_PIPELINE_STAGE,
+            {
+                "chapter": scene.chapter,
+                "stage": "compile",
+                "status": "running",
+                "attempt": 1,
+                "max_attempts": max_attempts,
+                "detail": "组装世界观、记忆金字塔与章节约束",
+            },
+        )
         sys_prompt, user_prompt = self.compiler.compile_scene_prompt(
             scene, self.state, memory_pyramid=self.memory
         )
@@ -734,13 +892,42 @@ class NovelGenerationEngine:
             audit_dir / f"ch{scene.chapter:04d}_compiled_prompt.md",
             f"{sys_prompt}\n\n{user_prompt}\n",
         )
+        self._emit(
+            on_progress,
+            SSE_PIPELINE_STAGE,
+            {
+                "chapter": scene.chapter,
+                "stage": "compile",
+                "status": "done",
+                "attempt": 1,
+                "max_attempts": max_attempts,
+                "detail": "提示词组装完成",
+            },
+        )
 
         last_report: Optional[ScanReport] = None
         last_draft: str = ""
 
+        def _active_model(role: str) -> str:
+            if self.router is not None and self.router.has_role(role):
+                return self.router.get_active_model(role)
+            return str(getattr(self.writer_provider, "model", "") or "")
+
         for attempt in range(1, max_attempts + 1):
             purpose = "draft" if attempt == 1 else "rewrite"
             if attempt > 1 and last_report is not None:
+                self._emit(
+                    on_progress,
+                    SSE_PIPELINE_STAGE,
+                    {
+                        "chapter": scene.chapter,
+                        "stage": "compile",
+                        "status": "running",
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "detail": f"组装第 {attempt}/{max_attempts} 次重写修复指引",
+                    },
+                )
                 sys_prompt, user_prompt = self.compiler.compile_rewrite_prompt(
                     scene=scene,
                     state=self.state,
@@ -751,6 +938,18 @@ class NovelGenerationEngine:
                 _write_text_atomic(
                     audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_rewrite_prompt.md",
                     f"{sys_prompt}\n\n{user_prompt}\n",
+                )
+                self._emit(
+                    on_progress,
+                    SSE_PIPELINE_STAGE,
+                    {
+                        "chapter": scene.chapter,
+                        "stage": "compile",
+                        "status": "done",
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "detail": f"第 {attempt}/{max_attempts} 次重写指引就绪",
+                    },
                 )
 
             req_id = f"ch{scene.chapter:04d}_attempt{attempt}_{purpose}"
@@ -780,6 +979,22 @@ class NovelGenerationEngine:
                     "purpose": purpose,
                 },
             )
+            writer_model_before = _active_model("writer")
+            self._emit(
+                on_progress,
+                SSE_PIPELINE_STAGE,
+                {
+                    "chapter": scene.chapter,
+                    "stage": "draft",
+                    "status": "running",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "purpose": purpose,
+                    "model": writer_model_before,
+                    "thinking": True,
+                    "detail": f"思考中 · 第 {attempt}/{max_attempts} 次（{purpose}）",
+                },
+            )
             try:
                 llm_resp = self.writer_provider.generate(llm_req)
             except LLMStreamTruncatedError as exc:
@@ -805,7 +1020,34 @@ class NovelGenerationEngine:
                 )
                 llm_resp = self.writer_provider.generate(llm_req)
             candidate_text = llm_resp.content.rstrip()
+            self._emit(
+                on_progress,
+                SSE_PIPELINE_STAGE,
+                {
+                    "chapter": scene.chapter,
+                    "stage": "draft",
+                    "status": "done",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "purpose": purpose,
+                    "model": str(llm_resp.model or writer_model_before).strip(),
+                    "latency_sec": round(float(llm_resp.latency_sec or 0.0), 2),
+                    "detail": f"初稿完成（{round(float(llm_resp.latency_sec or 0.0), 1)}s）",
+                },
+            )
 
+            self._emit(
+                on_progress,
+                SSE_PIPELINE_STAGE,
+                {
+                    "chapter": scene.chapter,
+                    "stage": "gate",
+                    "status": "running",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "detail": "执行静态门禁与世界状态一致性核验",
+                },
+            )
             report = self.checker.scan(
                 text=candidate_text,
                 scene=scene,
@@ -827,6 +1069,63 @@ class NovelGenerationEngine:
                 audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_scan.json",
                 report.to_dict(),
             )
+            public_rules = build_public_gate_rules(
+                report,
+                scene,
+                due_count=len(due_fs),
+                plant_count=len(plant_fs),
+            )
+            will_rewrite = (not report.passed) and (attempt < max_attempts)
+            self._emit(
+                on_progress,
+                SSE_PIPELINE_GATE_REPORT,
+                {
+                    "chapter": scene.chapter,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "passed": bool(report.passed),
+                    "char_count": int(report.char_count),
+                    "min_chars": int(scene.min_chars),
+                    "max_chars": int(scene.max_chars),
+                    "will_rewrite": will_rewrite,
+                    "rules": public_rules,
+                },
+            )
+            self._emit(
+                on_progress,
+                SSE_PIPELINE_STAGE,
+                {
+                    "chapter": scene.chapter,
+                    "stage": "gate",
+                    "status": "done" if report.passed else "failed",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "char_count": int(report.char_count),
+                    "will_rewrite": will_rewrite,
+                    "detail": (
+                        f"全部门禁通过 · {int(report.char_count)} 字"
+                        if report.passed
+                        else f"门禁拦截 · 准备第 {attempt + 1}/{max_attempts} 次重写"
+                        if will_rewrite
+                        else "门禁重试耗尽"
+                    ),
+                },
+            )
+            if will_rewrite:
+                self._emit(
+                    on_progress,
+                    SSE_PIPELINE_STAGE,
+                    {
+                        "chapter": scene.chapter,
+                        "stage": "draft",
+                        "status": "rewriting",
+                        "from_stage": "gate",
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "model": _active_model("writer"),
+                        "detail": f"打回重写 · 第 {attempt + 1}/{max_attempts} 次",
+                    },
+                )
 
             if report.passed:
                 self._emit(
@@ -844,6 +1143,19 @@ class NovelGenerationEngine:
                 author_note = ""
 
                 if self.critic_polisher is not None:
+                    self._emit(
+                        on_progress,
+                        SSE_PIPELINE_STAGE,
+                        {
+                            "chapter": scene.chapter,
+                            "stage": "polish",
+                            "status": "running",
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "model": _active_model("critic"),
+                            "detail": "四维审校评分中",
+                        },
+                    )
                     # Critic / polish / author-note are post-gate enhancements: an upstream LLM error
                     # or malformed critic output must degrade gracefully, never discard a gated chapter.
                     try:
@@ -881,6 +1193,19 @@ class NovelGenerationEngine:
                         },
                     )
                     if critic_eval.weak_paragraphs:
+                        self._emit(
+                            on_progress,
+                            SSE_PIPELINE_STAGE,
+                            {
+                                "chapter": scene.chapter,
+                                "stage": "polish",
+                                "status": "running",
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "model": _active_model("polisher"),
+                                "detail": f"四维评分 {critic_eval.overall_score:.1f} · 定点精修 {len(critic_eval.weak_paragraphs)} 段",
+                            },
+                        )
                         try:
                             polish_res = self.critic_polisher.surgical_polish(
                                 candidate_text,
@@ -954,6 +1279,44 @@ class NovelGenerationEngine:
                             )
 
                 if self.critic_polisher is not None:
+                    polish_detail = (
+                        f"定点精修完成 · 替换 {len(polish_res.replaced_indices)} 段"
+                        if polish_res is not None
+                        else (
+                            f"四维评分 {critic_eval.overall_score:.1f} · 保留已过门禁原稿"
+                            if critic_eval is not None
+                            else "审校降级跳过 · 保留已过门禁原稿"
+                        )
+                    )
+                    self._emit(
+                        on_progress,
+                        SSE_PIPELINE_STAGE,
+                        {
+                            "chapter": scene.chapter,
+                            "stage": "polish",
+                            "status": "done",
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "overall_score": round(float(critic_eval.overall_score), 2) if critic_eval is not None else None,
+                            "replaced_count": len(polish_res.replaced_indices) if polish_res is not None else 0,
+                            "detail": polish_detail,
+                        },
+                    )
+                else:
+                    self._emit(
+                        on_progress,
+                        SSE_PIPELINE_STAGE,
+                        {
+                            "chapter": scene.chapter,
+                            "stage": "polish",
+                            "status": "done",
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "detail": "直通成稿",
+                        },
+                    )
+
+                if self.critic_polisher is not None:
                     try:
                         author_note = self.critic_polisher.generate_author_note(
                             candidate_text,
@@ -971,6 +1334,20 @@ class NovelGenerationEngine:
                             action_taken="Author note generation failed -> empty author_note",
                             incidents_jsonl=incidents_jsonl,
                         )
+
+                self._emit(
+                    on_progress,
+                    SSE_PIPELINE_STAGE,
+                    {
+                        "chapter": scene.chapter,
+                        "stage": "lock",
+                        "status": "running",
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "char_count": int(report.char_count),
+                        "detail": "写入章节哈希并推进世界状态快照",
+                    },
+                )
 
                 print(
                     f"[Engine] Chapter {scene.chapter:04d} PASSED AI-TIC-CHECK "
@@ -1054,6 +1431,26 @@ class NovelGenerationEngine:
                     _archive_file(mem_path, self.output_dir, run_stamp)
                 self.memory.save(mem_path)
 
+                print(
+                    f"[Engine] Chapter {scene.chapter:04d} LOCKED sha256:{artifact.sha256[:12]} "
+                    f"({report.char_count} chars, model={actual_model or 'unknown'})",
+                    flush=True,
+                )
+                self._emit(
+                    on_progress,
+                    SSE_PIPELINE_STAGE,
+                    {
+                        "chapter": scene.chapter,
+                        "stage": "lock",
+                        "status": "done",
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "char_count": int(report.char_count),
+                        "sha256_prefix": artifact.sha256[:12],
+                        "model": actual_model,
+                        "detail": f"LOCKED sha256:{artifact.sha256[:10]}",
+                    },
+                )
                 self._emit(
                     on_progress,
                     SSE_CHAPTER_STOCKPILED,

@@ -22,16 +22,25 @@ import urllib.request
 
 from xiaoshuo_bot.contracts import (
     SSE_CHAPTER_ATTEMPT,
+    SSE_CHAPTER_STARTED,
     SSE_CHAPTER_STOCKPILED,
     SSE_GATE_FAILED,
+    SSE_PIPELINE_CHAPTER_LOCKED,
+    SSE_PIPELINE_GATE_REPORT,
+    SSE_PIPELINE_MODEL_EVENT,
+    SSE_PIPELINE_STAGE,
+    SSE_PIPELINE_TOKEN_USAGE,
     AutoCreateBookRequest,
     BookRunStatus,
     SSEEventPayload,
 )
+from xiaoshuo_bot.engine import build_public_gate_rules
 from xiaoshuo_bot.genres import list_genres
 from xiaoshuo_bot.llm.base import LLMProvider, LLMRequest, LLMResponse
+from xiaoshuo_bot.llm.router import _extract_real_detailed_usage
+from xiaoshuo_bot.models import ScanReport, SceneOutline, Violation
 from xiaoshuo_bot.server import create_server
-from xiaoshuo_bot.server.public_view import public_event
+from xiaoshuo_bot.server.public_view import PIPELINE_STAGES, public_event, sanitize_public_text
 from xiaoshuo_bot.server.stockpile_db import StockpileDB
 from xiaoshuo_bot.server.wizard import NewBookWizard, WizardError
 
@@ -489,6 +498,314 @@ class TestProductionKpi(unittest.TestCase):
             db.close()
         finally:
             shutil.rmtree(tmp)
+
+
+class TestPublicCommandCenter(_ServerCase):
+    """Command-center public homepage tests: event schema, leakage scan, idle state, reconnect resync."""
+
+    def test_command_center_pipeline_event_schemas_and_real_usage_only(self) -> None:
+        titles = {"baiwu_dukou": "白雾渡口"}
+
+        # 1. Real upstream usage extracted accurately; estimated/empty usage strictly rejected
+        real_usage = {
+            "prompt_tokens": 4100,
+            "completion_tokens": 1950,
+            "completion_thinking_tokens": 27410,
+            "total_tokens": 6050,
+        }
+        self.assertEqual(_extract_real_detailed_usage(real_usage), (4100, 1950, 27410, 6050))
+        self.assertIsNone(
+            _extract_real_detailed_usage({"prompt_tokens": 100, "completion_tokens": 200, "estimated": True})
+        )
+        self.assertIsNone(_extract_real_detailed_usage({}))
+
+        # 2. build_public_gate_rules emits per-rule numeric metrics with ZERO draft prose snippets
+        secret_draft_snippet = "UNAPPROVED_DRAFT_PROSE_SECRET_SNIPPET_XYZ"
+        scene = SceneOutline(
+            chapter=3,
+            scene_id="ch0003_scene",
+            volume=1,
+            internal_title="第三章",
+            public_title="断电",
+            location_time="雨夜",
+            pov_character="mc",
+            active_characters=["mc"],
+            active_assets=[],
+            style_profile_ids=[],
+            events=["查表"],
+            stop_condition="表盖弹开",
+            min_chars=2050,
+            max_chars=2300,
+        )
+        report = ScanReport(
+            passed=False,
+            char_count=1910,
+            paragraph_count=42,
+            violations=[
+                Violation(
+                    rule_id="LEN_001",
+                    category="LENGTH_VIOLATION",
+                    severity="CRITICAL",
+                    matched_text="1910 chars < min 2050",
+                    line_number=42,
+                    context_snippet=secret_draft_snippet,
+                    fix_hint="补齐字数",
+                ),
+                Violation(
+                    rule_id="RHYTHM_NARRATION_WALL",
+                    category="RHYTHM_VIOLATION",
+                    severity="CRITICAL",
+                    matched_text="Paragraphs #3~#15 (412 chars > 320)",
+                    line_number=5,
+                    context_snippet=secret_draft_snippet,
+                    fix_hint="穿插对话",
+                ),
+            ],
+        )
+        rules = build_public_gate_rules(report, scene, due_count=1, plant_count=1)
+        by_id = {r["rule_id"]: r for r in rules}
+        self.assertFalse(by_id["LEN_001"]["passed"])
+        self.assertIn("1910", by_id["LEN_001"]["metric"])
+        self.assertIn("2050", by_id["LEN_001"]["metric"])
+        self.assertTrue(by_id["LEN_002"]["passed"])
+        self.assertFalse(by_id["RHYTHM_NARRATION_WALL"]["passed"])
+        self.assertIn("412", by_id["RHYTHM_NARRATION_WALL"]["metric"])
+        self.assertTrue(by_id["FORESHADOW"]["passed"])
+        self.assertIn("2/2", by_id["FORESHADOW"]["metric"])
+        self.assertNotIn(secret_draft_snippet, json.dumps(rules, ensure_ascii=False))
+
+        # 3. Fine-grained SSE schemas preserve required fields and attach concise terminal log lines
+        for ev in (
+            SSEEventPayload(
+                event=SSE_PIPELINE_STAGE,
+                book_id="baiwu_dukou",
+                chapter=3,
+                data={"stage": "draft", "status": "running", "attempt": 1, "max_attempts": 4, "model": "wb/hy4flash-free", "thinking": True},
+            ),
+            SSEEventPayload(
+                event=SSE_PIPELINE_TOKEN_USAGE,
+                book_id="baiwu_dukou",
+                chapter=3,
+                data={"role": "writer", "model": "wb/hy4flash-free", "prompt_tokens": 4100, "completion_tokens": 1950, "reasoning_tokens": 27410, "total_tokens": 6050},
+            ),
+            SSEEventPayload(
+                event=SSE_PIPELINE_GATE_REPORT,
+                book_id="baiwu_dukou",
+                chapter=3,
+                data={"attempt": 1, "max_attempts": 4, "passed": False, "char_count": 1910, "min_chars": 2050, "max_chars": 2300, "will_rewrite": True, "rules": rules},
+            ),
+            SSEEventPayload(
+                event=SSE_PIPELINE_MODEL_EVENT,
+                book_id="baiwu_dukou",
+                chapter=3,
+                data={"kind": "model_switched", "role": "writer", "from_model": "wb/hy4flash-free", "to_model": "wb/deepseek-v4.1-flash", "reason": "credit_package_exhausted"},
+            ),
+            SSEEventPayload(
+                event=SSE_PIPELINE_CHAPTER_LOCKED,
+                book_id="baiwu_dukou",
+                chapter=3,
+                data={"title": "断电", "char_count": 2140, "sha256_prefix": "30f3a9c812ab", "model": "wb/hy4flash-free", "duration_sec": 218.5, "attempts_used": 2, "rewrites_triggered": 1},
+            ),
+        ):
+            pub = public_event(ev, titles)
+            self.assertIsNotNone(pub, ev.event)
+            self.assertEqual(pub["event"], ev.event)
+            self.assertIn("log", pub)
+            self.assertIn("text", pub["log"])
+
+    def test_public_command_center_never_leaks_drafts_secrets_paths_ips_or_admin_routes(self) -> None:
+        poison_values = [
+            "sk-live-secret-998877665544",
+            "Bearer super_secret_admin_bearer_token",
+            "XIAOSHUO_ADMIN_TOKEN",
+            "198.51.100.42",
+            "/opt/xiaoshuo-bot/data/matrix.db",
+            "/Users/niuniu/Desktop/secret.txt",
+            "/admin/books",
+            "/api/books/baiwu_dukou",
+            "UNAPPROVED_DRAFT_PROSE_NEVER_PUBLIC",
+            "SECRET_SYSTEM_PROMPT_NEVER_PUBLIC",
+            SECRET_ACCOUNT,
+            SECRET_FANQIE_ID,
+            SECRET_NOTE,
+        ]
+        # Push poisoned metadata & raw draft fields into events
+        sched = self.server.scheduler
+        sched._emit(
+            SSE_PIPELINE_STAGE,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={
+                "stage": "draft",
+                "status": "running",
+                "attempt": 1,
+                "max_attempts": 4,
+                "model": "wb/hy4flash-free",
+                "detail": "err sk-live-secret-998877665544 at 198.51.100.42 /opt/xiaoshuo-bot/data/matrix.db /admin/books /api/books/baiwu_dukou",
+                "draft_body": "UNAPPROVED_DRAFT_PROSE_NEVER_PUBLIC",
+                "system_prompt": "SECRET_SYSTEM_PROMPT_NEVER_PUBLIC",
+                "secret": SECRET_ACCOUNT,
+            },
+        )
+        sched._emit(
+            SSE_PIPELINE_MODEL_EVENT,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={
+                "kind": "quota_exhausted",
+                "reason": "Bearer super_secret_admin_bearer_token XIAOSHUO_ADMIN_TOKEN /Users/niuniu/Desktop/secret.txt",
+                "raw_draft": "UNAPPROVED_DRAFT_PROSE_NEVER_PUBLIC",
+            },
+        )
+
+        # Scan /api/public/pipeline + /api/public/books + /api/public/books/<id> + static public assets
+        collected: List[str] = []
+        for path in (
+            "/api/public/pipeline",
+            "/api/public/books",
+            "/api/public/books/baiwu_dukou",
+            "/api/public/books/baiwu_dukou/chapters/1",
+            "/",
+            "/public.css",
+            "/public.js",
+        ):
+            code, _, body = _http(self.base + path)
+            self.assertEqual(code, 200, path)
+            collected.append(body.decode("utf-8"))
+
+        joined = "\n".join(collected)
+        for forbidden in poison_values:
+            self.assertNotIn(forbidden, joined, f"Public response leaked forbidden marker: {forbidden!r}")
+
+        # Verify public static assets have zero external CDNs, zero admin routes, and zero concrete IPs
+        import re
+        static_dir = REPO_ROOT / "src" / "xiaoshuo_bot" / "server" / "static"
+        for fname in ("public.html", "public.css", "public.js"):
+            txt = (static_dir / fname).read_text(encoding="utf-8")
+            self.assertNotRegex(txt, re.compile(r"https?://(?!www\.w3\.org/2000/svg)", re.IGNORECASE), fname)
+            self.assertNotIn("/admin/", txt, fname)
+            self.assertNotIn("/api/books", txt, fname)
+            self.assertNotIn("XIAOSHUO_ADMIN_TOKEN", txt, fname)
+            self.assertNotRegex(txt, re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), fname)
+
+    def test_public_pipeline_idle_state_honest_with_last_event_timestamp_and_replay_badge(self) -> None:
+        self.server.db.record_production_stat(
+            "baiwu_dukou", 1, duration_sec=210.0, attempts_used=1, rewrites_triggered=0, char_count=2150, model="wb/hy4flash-free"
+        )
+        self.server.db.record_production_stat(
+            "baiwu_dukou", 2, duration_sec=250.0, attempts_used=2, rewrites_triggered=1, char_count=2210, model="wb/hy4flash-free"
+        )
+        code, _, body = _http(self.base + "/api/public/pipeline")
+        self.assertEqual(code, 200)
+        snap = json.loads(body)
+        self.assertEqual(snap["mode"], "live")
+        self.assertEqual(snap["replay_label"], "")
+        self.assertEqual(snap["state"], "idle")
+        self.assertEqual(snap["idle_reason"], "待机 / 等待下一章")
+        self.assertFalse(snap["thinking"])
+        self.assertTrue(bool(snap["last_event_at"]))
+        self.assertEqual(snap["metrics"]["total_chapters_written"], 2)
+        self.assertEqual(snap["metrics"]["first_pass_rate"], 0.5)
+        self.assertEqual(snap["metrics"]["avg_duration_sec"], 230.0)
+        self.assertEqual(snap["metrics"]["book_written_chapters"], 2)
+        self.assertEqual(snap["metrics"]["book_total_chapters"], 5)
+
+        # HEAD /api/public/pipeline also returns 200 OK
+        code_h, _, body_h = _http(self.base + "/api/public/pipeline", method="HEAD")
+        self.assertEqual(code_h, 200)
+        self.assertEqual(body_h, b"")
+
+        # Explicit replay mode MUST clearly identify itself as replay (never pretend live)
+        self.server.scheduler.pipeline_tracker.set_replay_mode(True, "回放 · 服务器真实历史事件")
+        code_r, _, body_r = _http(self.base + "/api/public/pipeline")
+        self.assertEqual(code_r, 200)
+        snap_r = json.loads(body_r)
+        self.assertEqual(snap_r["mode"], "replay")
+        self.assertIn("回放", snap_r["replay_label"])
+
+    def test_public_pipeline_reconnect_recovers_full_authoritative_state(self) -> None:
+        sched = self.server.scheduler
+        # Simulate multiple pipeline transitions occurring while a visitor's SSE connection was dropped
+        sched._emit(SSE_CHAPTER_STARTED, book_id="baiwu_dukou", chapter=3)
+        sched._emit(
+            SSE_PIPELINE_STAGE,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={"stage": "draft", "status": "running", "attempt": 1, "max_attempts": 4, "model": "wb/hy4flash-free", "thinking": True},
+        )
+        sched._emit(
+            SSE_PIPELINE_TOKEN_USAGE,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={"role": "writer", "model": "wb/hy4flash-free", "prompt_tokens": 3500, "completion_tokens": 1600, "reasoning_tokens": 22000, "total_tokens": 5100},
+        )
+        sched._emit(
+            SSE_PIPELINE_GATE_REPORT,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={
+                "attempt": 1,
+                "max_attempts": 4,
+                "passed": False,
+                "char_count": 1920,
+                "min_chars": 2050,
+                "max_chars": 2300,
+                "will_rewrite": True,
+                "rules": [{"rule_id": "LEN_001", "label": "字数下限", "passed": False, "metric": "1920 / ≥2050 字", "severity": "CRITICAL"}],
+            },
+        )
+        sched._emit(
+            SSE_PIPELINE_STAGE,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={"stage": "draft", "status": "rewriting", "from_stage": "gate", "attempt": 2, "max_attempts": 4, "model": "wb/hy4flash-free"},
+        )
+        sched._emit(
+            SSE_PIPELINE_MODEL_EVENT,
+            book_id="baiwu_dukou",
+            chapter=3,
+            data={"kind": "model_switched", "role": "writer", "from_model": "wb/hy4flash-free", "to_model": "wb/deepseek-v4.1-flash", "reason": "credit_package_exhausted"},
+        )
+
+        # Reconnecting client queries /api/public/pipeline and recovers exact authoritative snapshot
+        code, _, body = _http(self.base + "/api/public/pipeline")
+        self.assertEqual(code, 200)
+        snap = json.loads(body)
+        self.assertEqual(snap["state"], "rewriting")
+        self.assertEqual(snap["active_chapter"], 3)
+        self.assertEqual(snap["active_stage"], "draft")
+        self.assertEqual(snap["from_stage"], "gate")
+        self.assertEqual(snap["attempt"], 2)
+        self.assertEqual(snap["current_model"], "wb/deepseek-v4.1-flash")
+        self.assertTrue(snap["chapter_tokens"]["has_usage"])
+        self.assertEqual(snap["chapter_tokens"]["reasoning_tokens"], 22000)
+        self.assertEqual(snap["chapter_tokens"]["total_tokens"], 5100)
+        self.assertEqual(len(snap["gate_rules"]), 1)
+        self.assertFalse(snap["gate_rules"][0]["passed"])
+        self.assertEqual(snap["model_alert"]["kind"], "model_switched")
+        self.assertGreaterEqual(len(snap["recent_logs"]), 5)
+
+        # Verify public.js reconnect handler fetches authoritative state via syncFullState() on reconnect
+        js_txt = (REPO_ROOT / "src" / "xiaoshuo_bot" / "server" / "static" / "public.js").read_text(encoding="utf-8")
+        self.assertIn("state.sseDisconnected", js_txt)
+        self.assertIn("if (wasDown)", js_txt)
+        self.assertIn("syncFullState()", js_txt)
+        self.assertIn('PIPELINE: "/api/public/pipeline"', js_txt)
+
+    def test_public_command_center_static_ui_contracts(self) -> None:
+        static_dir = REPO_ROOT / "src" / "xiaoshuo_bot" / "server" / "static"
+        html_txt = (static_dir / "public.html").read_text(encoding="utf-8")
+        css_txt = (static_dir / "public.css").read_text(encoding="utf-8")
+        js_txt = (static_dir / "public.js").read_text(encoding="utf-8")
+
+        for stage in PIPELINE_STAGES:
+            self.assertIn(f'id="node-{stage}"', html_txt)
+        for elem_id in ("replay-badge", "quota-rings", "workflow-svg", "gate-rules-grid", "terminal-body", "btn-motion-toggle", "idle-strip"):
+            self.assertIn(f'id="{elem_id}"', html_txt)
+        self.assertIn("@property --value", css_txt)
+        self.assertIn("prefers-reduced-motion", css_txt)
+        self.assertIn("@supports not (background-clip: border-area)", css_txt)
+        self.assertIn("progress-ring", js_txt)
 
 
 if __name__ == "__main__":

@@ -224,6 +224,44 @@ class ModelQuotaSnapshot:
         }
 
 
+@dataclass(frozen=True)
+class ModelUsageEvent:
+    """Real upstream token usage emitted after an LLM call completes (never estimated/fake)."""
+
+    role: str
+    model: str
+    model_label: str
+    purpose: str
+    chapter: int
+    attempt: int
+    prompt_tokens: int
+    completion_tokens: int
+    reasoning_tokens: int
+    total_tokens: int
+    latency_sec: float
+    truncated: bool
+    timestamp: str
+    book_id: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "role": self.role,
+            "model": self.model,
+            "model_label": self.model_label or self.model,
+            "purpose": self.purpose,
+            "chapter": int(self.chapter),
+            "attempt": int(self.attempt),
+            "prompt_tokens": int(self.prompt_tokens),
+            "completion_tokens": int(self.completion_tokens),
+            "reasoning_tokens": int(self.reasoning_tokens),
+            "total_tokens": int(self.total_tokens),
+            "latency_sec": round(float(self.latency_sec), 3),
+            "truncated": bool(self.truncated),
+            "timestamp": self.timestamp,
+            "book_id": self.book_id,
+        }
+
+
 _ALNUM_ONLY_RE = re.compile(r"[^a-z0-9]+")
 _NUMERIC_EPOCH_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 
@@ -848,6 +886,7 @@ __all__ = [
     "DEFAULT_RATE_LIMIT_BACKOFF_SEC",
     "ModelQuotaSnapshot",
     "ModelSwitchEvent",
+    "ModelUsageEvent",
     "RateLimitRetryEvent",
     "WORKBUDDY_MANUAL_ONLY_SLOTS",
     "WORKBUDDY_MODEL_COOLDOWN_ENV",
