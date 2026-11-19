@@ -593,6 +593,7 @@ def _collect_scene_batch_errors(
     prior_trailing_location: Tuple[str, int] = ("", 0),
     max_consecutive_same_location: Optional[int] = None,
     prior_open_expectations: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    prior_balances: Optional[Mapping[str, float]] = None,
 ) -> List[str]:
     """Collect ALL validation errors for a Stage 2 scene batch without stopping at the first error."""
     start_ch, end_ch = chapter_range
@@ -889,6 +890,35 @@ def _collect_scene_batch_errors(
                     f"add action='fulfill' with evidence_keywords on Ch.{due_ch} (or earlier)"
                 )
 
+    # Ledger balance overdraft pre-check (prevents STATE_OVERDRAFT deadlocks across batches & volumes)
+    if prior_balances is not None:
+        running_balances: Dict[str, float] = {
+            str(k): float(v)
+            for k, v in prior_balances.items()
+            if _is_strict_number(v)
+        }
+        for ch in sorted(valid_scenes_by_ch):
+            raw_lms = valid_scenes_by_ch[ch].get("ledger_mutations") or []
+            if not isinstance(raw_lms, list):
+                continue
+            for lm in raw_lms:
+                if not isinstance(lm, Mapping):
+                    continue
+                lkey = _nonempty_str(lm.get("ledger_key"))
+                raw_delta = lm.get("delta")
+                if not lkey or not _is_strict_number(raw_delta):
+                    continue
+                delta = float(raw_delta)
+                before = float(running_balances.get(lkey, 0.0))
+                after = before + delta
+                if after < 0:
+                    errors.append(
+                        f"Chapter {ch}: ledger_mutation {lkey!r} delta={delta:g} drives balance from "
+                        f"{before:g} to {after:g} < 0 (would trigger STATE_OVERDRAFT deadlock); "
+                        f"reduce this expenditure or add prior income for {lkey!r}"
+                    )
+                running_balances[lkey] = after
+
     # Golden-three-chapter beat alignment check (chapters 1..3 must match genre recipe beats)
     if recipe is not None and recipe.golden_three_beats:
         golden_beats_by_ch = {b.chapter: b for b in recipe.golden_three_beats}
@@ -963,6 +993,11 @@ def _collect_master_outline_batch_errors(
 def _format_recipe_title_and_blurb_block(recipe: GenreRecipe) -> str:
     """Format genre title_templates, title_examples, and blurb_templates for bible planning."""
     lines: List[str] = ["### 题材书名与简介模板参考（参考结构，严禁照抄范例人物与情节）"]
+    lines.append(
+        "- 高点击商业书名硬性法则：书名（7～15字为佳，硬上限15字，严禁《》）必须一眼露出"
+        "「主角身份/核心金手指或奇异能力/强烈反差冲突或爽点利益」至少两项；"
+        "严禁起《三点十七分》《白雾渡口》《雨夜孤灯》这类纯时间、纯地名、纯景物或抽象文艺短名（除非老板在立项要求中明确指定）。"
+    )
     if recipe.title_templates:
         lines.append("- 爆款书名句式模板：" + " ｜ ".join(recipe.title_templates))
     if recipe.title_examples:
@@ -1206,6 +1241,118 @@ def find_unfulfilled_expectations(
                 reported.add(eid)
                 violations.append(dict(info))
     return violations
+
+
+def _simulate_ledger_balances(
+    scenes: Sequence[Any],
+    initial_balances: Optional[Mapping[str, Any]] = None,
+    *,
+    snapshot: Optional[WorldStateSnapshot] = None,
+) -> Dict[str, float]:
+    """Compute running numeric ledger balances after all provided scenes (respecting snapshot baseline)."""
+    if snapshot is not None:
+        balances: Dict[str, float] = {
+            str(k): float(v)
+            for k, v in (snapshot.numeric_balances or {}).items()
+            if _is_strict_number(v)
+        }
+        snap_ch = int(snapshot.current_chapter)
+    else:
+        balances = {
+            str(k): float(v)
+            for k, v in (initial_balances or {}).items()
+            if _is_strict_number(v)
+        }
+        snap_ch = 0
+
+    ordered = sorted(
+        scenes,
+        key=lambda sc: int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0)),
+    )
+    for sc in ordered:
+        ch = int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0))
+        if ch <= snap_ch:
+            continue
+        lms = sc.get("ledger_mutations") if isinstance(sc, Mapping) else getattr(sc, "ledger_mutations", [])
+        for lm in (lms or []):
+            if isinstance(lm, Mapping):
+                lkey = _nonempty_str(lm.get("ledger_key"))
+                raw_delta = lm.get("delta")
+            else:
+                lkey = _nonempty_str(getattr(lm, "ledger_key", ""))
+                raw_delta = getattr(lm, "delta", None)
+            if not lkey or not _is_strict_number(raw_delta):
+                continue
+            balances[lkey] = float(balances.get(lkey, 0.0)) + float(raw_delta)
+    return balances
+
+
+def _format_balances_summary(balances: Mapping[str, float]) -> str:
+    if not balances:
+        return "无初始账本（任何支出前需先有正向入账）"
+    parts = [f"{k}={v:g}" for k, v in sorted(balances.items())]
+    return ", ".join(parts)
+
+
+def find_ledger_overdrafts(
+    scenes: Sequence[Any],
+    initial_balances: Optional[Mapping[str, Any]] = None,
+    *,
+    snapshot: Optional[WorldStateSnapshot] = None,
+) -> List[Dict[str, Any]]:
+    """Audit a sequence of scenes for any ledger_mutation driving a balance below 0 (STATE_OVERDRAFT)."""
+    if snapshot is not None:
+        balances: Dict[str, float] = {
+            str(k): float(v)
+            for k, v in (snapshot.numeric_balances or {}).items()
+            if _is_strict_number(v)
+        }
+        snap_ch = int(snapshot.current_chapter)
+    else:
+        balances = {
+            str(k): float(v)
+            for k, v in (initial_balances or {}).items()
+            if _is_strict_number(v)
+        }
+        snap_ch = 0
+
+    ordered = sorted(
+        scenes,
+        key=lambda sc: int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0)),
+    )
+    overdrafts: List[Dict[str, Any]] = []
+    for sc in ordered:
+        ch = int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0))
+        if ch <= snap_ch:
+            continue
+        lms = sc.get("ledger_mutations") if isinstance(sc, Mapping) else getattr(sc, "ledger_mutations", [])
+        for lm in (lms or []):
+            if isinstance(lm, Mapping):
+                lkey = _nonempty_str(lm.get("ledger_key"))
+                raw_delta = lm.get("delta")
+                reason = str(lm.get("reason") or "").strip()
+            else:
+                lkey = _nonempty_str(getattr(lm, "ledger_key", ""))
+                raw_delta = getattr(lm, "delta", None)
+                reason = str(getattr(lm, "reason", "") or "").strip()
+            if not lkey or not _is_strict_number(raw_delta):
+                continue
+            delta = float(raw_delta)
+            before = float(balances.get(lkey, 0.0))
+            after = before + delta
+            if after < 0:
+                overdrafts.append(
+                    {
+                        "chapter": ch,
+                        "ledger_key": lkey,
+                        "before": before,
+                        "delta": delta,
+                        "after": after,
+                        "reason": reason,
+                    }
+                )
+            balances[lkey] = after
+    return overdrafts
 
 
 def _make_chapter_batches(
@@ -1907,7 +2054,7 @@ class AutoNovelPlanner:
             "你是番茄爆款总策划师。当前处于【阶段1：设定包 bible】。\n"
             "请严格输出单个 JSON 对象（不要输出 scenes 或 master_outline，也不要输出 JSON 以外的解释文字）。\n"
             "硬性约束：\n"
-            "1. project.title 与 5 个 project.alternate_titles 均须为 1~15 个字符，严禁包含书名号《》，并参考下方赛道书名模板结构（严禁照抄范例）。\n"
+            "1. project.title 与 5 个 project.alternate_titles 均须为 1~15 个字符，严禁包含书名号《》，并按高点击商业书名法则写出强烈钩子/外挂/身份反差（7~15字为佳，严禁起《三点十七分》《白雾渡口》这类纯时间/纯地名/无钩子文艺短名，除非老板明确指定；严禁照抄范例）。\n"
             "2. project.synopsis 与 3 版 project.alternate_blurbs（三段式简介）须参考下方赛道三段式简介范本结构（严禁照抄范本人物与情节）；project.tweet_aliases 至少 1 个（建议 3 个）4~8 字纯简体常用汉字别名。\n"
             "3. 所有角色姓名必须严格取自推荐安全角色名池，严禁黑名单人名、生僻字或同音名；default_pov_character 必须是 characters 中的某个 id。\n"
             "4. foreshadows 每条必须包含非空 plant_keywords 与 payoff_keywords（具体物理证据词），且 due_chapter >= plant_chapter。\n"
@@ -2063,6 +2210,10 @@ class AutoNovelPlanner:
             prior_trailing_suppress = _trailing_suppress_count(all_scenes)
             prior_trailing_loc = _trailing_location_run(all_scenes)
             prior_open_exps = _collect_open_expectations(all_scenes)
+            prior_balances = _simulate_ledger_balances(
+                all_scenes,
+                (bible.get("project") or {}).get("initial_balances"),
+            )
             batch_exp_block = _format_due_expectations_block(prior_open_exps, start_ch, end_ch)
             prior_summary_lines = [
                 f"- 第{s['chapter']}章《{s.get('public_title') or s.get('internal_title')}》："
@@ -2129,6 +2280,7 @@ class AutoNovelPlanner:
                     f"单章默认字数区间: {recipe.min_chapter_words}~{recipe.max_chapter_words}\n"
                     f"前批末尾连续 suppress 章数: {prior_trailing_suppress}（与本批衔接后连续 suppress 绝对不超过 2 章）\n"
                     f"前批末尾场景 location_id: {prior_trailing_loc[0] or '无'}（已连续 {prior_trailing_loc[1]} 章；衔接后同一 location_id 连续绝对不超过 2 章）\n"
+                    f"进入本批前的账本余额（任何支出后余额绝对不得小于 0，否则触发 STATE_OVERDRAFT 拦截）: {_format_balances_summary(prior_balances)}\n"
                     f"{golden_three_section}"
                     f"{common_sense_block}\n\n"
                     f"本批必须埋设/回收的伏笔:\n{batch_fs_block}\n"
@@ -2175,6 +2327,7 @@ class AutoNovelPlanner:
                     prior_trailing_location=prior_trailing_loc,
                     max_consecutive_same_location=self.max_consecutive_same_location,
                     prior_open_expectations=prior_open_exps,
+                    prior_balances=prior_balances,
                 )
                 if not errors:
                     assert isinstance(raw_batch, list)
@@ -2735,6 +2888,11 @@ class AutoNovelPlanner:
                 list(existing_ordered) + list(normalized_new_scenes),
                 snapshot=effective_snapshot,
             )
+            prior_balances = _simulate_ledger_balances(
+                list(existing_ordered) + list(normalized_new_scenes),
+                project.initial_balances,
+                snapshot=effective_snapshot,
+            )
             due_exp_block = _format_due_expectations_block(prior_open_exps, b_start, b_end)
             if is_first_batch:
                 map_instruction = (
@@ -2768,6 +2926,7 @@ class AutoNovelPlanner:
                     f"deceased_characters={deceased_ids}, forbidden_titles={effective_snapshot.get_all_forbidden_titles() if effective_snapshot else []}\n"
                     f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
                     f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
+                    f"进入本批前的账本余额（任何支出后余额绝对不得小于 0，否则触发 STATE_OVERDRAFT 拦截）: {_format_balances_summary(prior_balances)}\n"
                     f"本批到期必须核销的期待感承诺:\n{due_exp_block}\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"章评舆情调优指令（必须严格注入第 {start_chapter} 章及之后，严禁触碰 <={project.meta.max_published_chapter} 的已发章节）:\n"
@@ -2833,6 +2992,7 @@ class AutoNovelPlanner:
                     prior_trailing_location=trailing_loc,
                     max_consecutive_same_location=self.max_consecutive_same_location,
                     prior_open_expectations=prior_open_exps,
+                    prior_balances=prior_balances,
                 )
                 batch_errors.extend(scene_errs)
 
@@ -3159,6 +3319,11 @@ class AutoNovelPlanner:
 
             prior_summary = _format_prior_scene_summaries(existing_ordered, normalized_scenes)
             prior_open_exps = _collect_open_expectations(normalized_scenes)
+            prior_balances = _simulate_ledger_balances(
+                list(existing_ordered) + list(normalized_scenes),
+                project.initial_balances,
+                snapshot=effective_snapshot,
+            )
             due_exp_block = _format_due_expectations_block(prior_open_exps, b_start, b_end)
             if is_first_batch:
                 schedule_block = (
@@ -3198,6 +3363,7 @@ class AutoNovelPlanner:
                     f"{valid_ids_block}\n"
                     f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
                     f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
+                    f"进入本批前的账本余额（任何支出后余额绝对不得小于 0，否则触发 STATE_OVERDRAFT 拦截）: {_format_balances_summary(prior_balances)}\n"
                     f"本批到期必须核销的期待感承诺:\n{due_exp_block}\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"{schedule_block}\n"
@@ -3262,6 +3428,7 @@ class AutoNovelPlanner:
                     prior_trailing_location=trailing_loc,
                     max_consecutive_same_location=self.max_consecutive_same_location,
                     prior_open_expectations=prior_open_exps,
+                    prior_balances=prior_balances,
                 )
                 batch_errors.extend(scene_errs)
 

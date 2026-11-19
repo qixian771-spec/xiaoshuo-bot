@@ -19,8 +19,10 @@ from .models import (
 )
 
 MAX_AUTHOR_NOTE_CHARS = 180
+MAX_SURGICAL_POLISH_PARAGRAPHS = 10
 
 _LOGGER = logging.getLogger(__name__)
+_QUOTE_PRESERVE_RE = re.compile(r"[“”「」『』\"]")
 
 AUTHOR_NOTE_DIVERSION_PATTERNS: Tuple[Tuple[str, str], ...] = (
     (r"微信|微信号|v信|vx|wx", "禁止出现微信/VX/WX导流词"),
@@ -198,6 +200,49 @@ def validate_author_note(note: str, max_chars: int = MAX_AUTHOR_NOTE_CHARS) -> s
     return cleaned
 
 
+def select_polish_targets(
+    evaluation: CriticEvaluation,
+    num_paragraphs: int,
+    *,
+    max_targets: int = MAX_SURGICAL_POLISH_PARAGRAPHS,
+) -> List[int]:
+    """Select the highest-impact weak paragraphs for surgical polishing.
+
+    Prioritizes toxic-editor LLM-flagged paragraphs (especially opening/ending and explicitly
+    reasoned drags) before checker-only rhythm warnings, preventing 25+ paragraph mass rewrites
+    that drift past chapter length gates.
+    """
+    valid: List[int] = []
+    for idx in evaluation.weak_paragraphs:
+        if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < num_paragraphs:
+            if idx not in valid:
+                valid.append(idx)
+    valid.sort()
+    if max_targets <= 0 or len(valid) <= max_targets:
+        return valid
+
+    llm_set = {
+        idx
+        for idx in evaluation.llm_weak_paragraphs
+        if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < num_paragraphs
+    }
+    reason_set = {
+        idx
+        for idx, reason in evaluation.paragraph_reasons.items()
+        if isinstance(idx, int) and str(reason or "").strip() and 0 <= idx < num_paragraphs
+    }
+    priority_llm = llm_set | reason_set
+
+    def _rank_key(idx: int) -> Tuple[int, int, int, int]:
+        is_llm = 0 if idx in priority_llm else 1
+        has_reason = 0 if idx in reason_set else 1
+        is_edge = 0 if (idx <= 2 or idx >= num_paragraphs - 2) else 1
+        return (is_llm, has_reason, is_edge, idx)
+
+    ranked = sorted(valid, key=_rank_key)
+    return sorted(ranked[:max_targets])
+
+
 class TomatoCriticPolisher:
     """Toxic-editor 4D critic, surgical paragraph-only polisher, and compliant author-note generator."""
 
@@ -210,6 +255,7 @@ class TomatoCriticPolisher:
         polisher_provider: Optional[LLMProvider] = None,
         checker: Optional[AITicChecker] = None,
         pass_score_threshold: float = 75.0,
+        max_polish_paragraphs: int = MAX_SURGICAL_POLISH_PARAGRAPHS,
     ) -> None:
         self._router: Optional[RoleModelRouter] = router
         self._fallback_provider: Optional[LLMProvider] = None
@@ -230,6 +276,7 @@ class TomatoCriticPolisher:
         self._polisher_provider = polisher_provider
         self.checker = checker or AITicChecker()
         self.pass_score_threshold = float(pass_score_threshold)
+        self.max_polish_paragraphs = int(max_polish_paragraphs)
 
     def _call_role(self, role: str, request: LLMRequest) -> LLMResponse:
         if role == "critic" and self._critic_provider is not None:
@@ -462,7 +509,11 @@ class TomatoCriticPolisher:
         paragraph_reasons: Dict[int, str] = {}
         critique = ""
         if isinstance(evaluation_or_indices, CriticEvaluation):
-            raw_targets = list(evaluation_or_indices.weak_paragraphs)
+            raw_targets = select_polish_targets(
+                evaluation_or_indices,
+                num_paras,
+                max_targets=self.max_polish_paragraphs,
+            )
             paragraph_reasons = dict(evaluation_or_indices.paragraph_reasons)
             critique = evaluation_or_indices.critique
         else:
@@ -539,6 +590,10 @@ class TomatoCriticPolisher:
                 context_indices_set.add(idx + 1)
         window_indices = sorted(context_indices_set)
 
+        cur_chars = len(re.sub(r"\s+", "", text))
+        near_min_floor = scene is not None and (cur_chars - scene.min_chars) <= 60
+        near_max_ceil = scene is not None and (scene.max_chars - cur_chars) <= 60
+
         window_blocks: List[str] = []
         prev_idx: Optional[int] = None
         for idx in window_indices:
@@ -547,13 +602,26 @@ class TomatoCriticPolisher:
             role_tag = "【待精修目标段落】" if idx in target_set else "【只读上下文参考（严禁改写）】"
             reason = paragraph_reasons.get(idx, "")
             reason_sfx = f" 扣分原因：{reason}" if (idx in target_set and reason) else ""
+            budget_sfx = ""
+            quote_sfx = ""
+            if idx in target_set:
+                orig_len = len(re.sub(r"\s+", "", paragraphs_before[idx]))
+                lo_len = orig_len if near_min_floor else max(12, orig_len - 12)
+                hi_len = orig_len if near_max_ceil else min(115, orig_len + 12)
+                if lo_len > hi_len:
+                    lo_len, hi_len = min(orig_len, 115), min(orig_len, 115)
+                budget_sfx = f" 【字数预算：原长{orig_len}字，精修后请控制在{lo_len}~{hi_len}字】"
+                if _QUOTE_PRESERVE_RE.search(paragraphs_before[idx]):
+                    quote_sfx = " 【原段含引号对白/引文，精修后必须保留双引号台词】"
             locked_kws = [kw for kw in all_required_keywords if kw in paragraphs_before[idx]]
             kw_sfx = (
                 f" 【必保伏笔原词：{'、'.join(locked_kws)} — 必须原字保留，严禁同义改写或删除】"
                 if (idx in target_set and locked_kws)
                 else ""
             )
-            window_blocks.append(f"[{idx}] {role_tag}{reason_sfx}{kw_sfx}\n{paragraphs_before[idx]}")
+            window_blocks.append(
+                f"[{idx}] {role_tag}{reason_sfx}{budget_sfx}{quote_sfx}{kw_sfx}\n{paragraphs_before[idx]}"
+            )
             prev_idx = idx
 
         pov_mode = project_meta.pov_mode if project_meta else self.checker.pov_mode
@@ -581,14 +649,14 @@ class TomatoCriticPolisher:
                 f"- **伏笔原词零破坏红线**：{fs_desc}。凡是包含上述原词的目标段，精修时必须一字不差保留原词，严禁同义替换（例如不得把“秒针不动”改成“秒针仍不动”或把“游丝仍紧”改成“游丝绷着”）。"
             )
         if scene is not None:
-            cur_chars = len(re.sub(r"\s+", "", text))
             gate_guard_lines.append(
                 f"- **篇幅区间红线**：当前全文约 {cur_chars} 字，章纲硬性允许区间为 {scene.min_chars}～{scene.max_chars} 字；"
-                "精修时请维持各段大致信息量，严禁大幅删字导致全文跌破下限或暴涨超限。"
+                "必须严格遵守每段标注的【字数预算】，做到删水不减量（用高张力博弈/爽感细节置换废话），严禁导致全文跌破下限或暴涨超限。"
             )
         if contract_track != "legacy":
             gate_guard_lines.append(
-                "- **竖屏节奏红线**：单段严禁超过 120 字；不得制造超过 320 字的连续纯旁白墙，也不得制造超过 4 轮无动作神态的连续裸对话。"
+                "- **竖屏节奏红线**：单段严禁超过 120 字；原段带双引号的对白精修后必须保留双引号以免制造超过 320 字纯旁白墙；"
+                "也不得制造超过 4 轮无动作神态的连续裸对话。"
             )
         gate_guard_block = (
             ("\n### 门禁零破坏硬性红线（精修后将立刻复检，破坏即作废）\n" + "\n".join(gate_guard_lines) + "\n")
@@ -598,7 +666,10 @@ class TomatoCriticPolisher:
 
         sys_prompt = (
             "# Role: 番茄爆款手术刀精修编辑\n"
-            "你只对标有【待精修目标段落】的段落执行局部精修重写，使其节奏紧凑、动作干脆、去套话、符合竖屏短段呼吸感。\n"
+            "你只对标有【待精修目标段落】的段落执行局部精修重写，重点治好三大掉分病灶：\n"
+            "1. 砍掉无剧情增量的道具反复摆弄（给道具做体检）与同义台词复读，在同一字数预算内换成更锋利的反问、新破绽、利益交锋或打脸反应；\n"
+            "2. 把连续 6～12 字的碎短句分镜体合并重排为「25～40 字推进复句 + 4～12 字爆点短句」的强呼吸错落节奏；\n"
+            "3. 强化首屏冲击力、爽感兑现力度与段评可吐槽性，让读者忍不住追读。\n"
             f"硬性约束：{pov_rule}{panel_rule}"
             "严禁引入 AI 套话（如“不禁一愣”“眸光微闪”“嘴角勾起一抹”“三分薄凉”“空气仿佛凝固”“不是…而是…”“全场鸦雀无声”），"
             "严禁删除或同义改写任何标记为【必保伏笔原词】的关键字，"

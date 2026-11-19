@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 import uuid
 
 from ..contracts import AutoCreateBookRequest
-from ..genres import list_genres
+from ..genres import UnknownGenreError, get_genre, list_genres
 from ..llm.base import LLMRequest
 from ..models import AUTHOR_LEVELS, SHANGHAI_TZ, ProjectValidationError
 from ..planner import _invoke_planner, _parse_json_payload
@@ -100,11 +100,11 @@ WIZARD_STEPS: List[Dict[str, Any]] = [
         "question": "书名和篇幅定哪个？",
         "allow_custom": False,
         "fields": {
-            "label": "方案名（不超过 12 字）",
-            "title": "书名（硬性要求：1~15 个字符，含标点在内不得超过 15 个字符，不带书名号）",
-            "author_level": "lv0_1（70~95 章紧凑完本）或 lv2_plus（长篇连载）",
-            "target_chapters": "lv0_1 时为 70~95 的整数；lv2_plus 时填 0",
-            "blurb": "三段式简介合并为一段（80~150 字）",
+            "label": "方案名（不超过 12 字，须标明「长篇连载」或「紧凑完本」）",
+            "title": "高点击商业书名（硬性要求：1~15 个字符且建议 7~15 字，不带书名号；必须露出主角身份/外挂/冲突反差至少两项，严禁《三点十七分》《白雾渡口》类纯时间/纯地名文艺短名）",
+            "author_level": "优先推荐 lv2_plus（长篇滚动连载，300~700+ 章自动续卷换地图），最多 1 个备选用 lv0_1（70~95 章紧凑完本）",
+            "target_chapters": "lv2_plus 时填 0；lv0_1 时为 70~95 的整数",
+            "blurb": "三段式简介合并为一段（80~150 字，突出开篇压迫→外挂破局→阶梯爽点）",
         },
     },
 ]
@@ -192,6 +192,31 @@ class NewBookWizard:
             catalog = "可选类目（genre_id 只能取这里的值）：\n" + json.dumps(
                 _genre_catalog(), ensure_ascii=False
             ) + "\n"
+        elif step["key"] == "scale":
+            scale_lines: List[str] = [
+                "【高点击书名与长篇连载策划硬要求】：",
+                "1. 篇幅默认优先长篇连载：3 个候选中至少 2 个设为 author_level='lv2_plus'（target_chapters=0，支持 300~700+ 章自动滚动续卷与每 60 章换地图），最多 1 个设为 lv0_1（70~95 章紧凑完本备选）。",
+                "2. 3 个候选书名必须各自采用不同高点击商业套路：",
+                "   - 方案 1（强反差/破格打脸型）：把日常身份与离谱战绩直接撞在一起（例：让你算命，你全网连麦抓通缉犯？）；",
+                "   - 方案 2（核心金手指/利益直给型）：一眼亮出绝活与爽感回报（例：一卦千金：首富跪求我别闭麦）；",
+                "   - 方案 3（身份错位/禁忌悬念型）：用禁忌反差制造强好奇（例：下山摆摊算卦，巡捕房连夜借人）。",
+                "3. 严禁起《三点十七分》《白雾渡口》《雨夜孤灯》这类纯时间、纯地名、纯景物或抽象文艺短名！每个书名必须一眼看出核心看点，7~15 字为佳，严禁超过 15 字，严禁书名号《》。",
+            ]
+            chosen_genre_id = ""
+            for c in choices:
+                if c.get("step") == "direction" and isinstance(c.get("option"), Mapping):
+                    chosen_genre_id = str(c["option"].get("genre_id") or "").strip()
+            if chosen_genre_id:
+                try:
+                    recipe = get_genre(chosen_genre_id)
+                except UnknownGenreError:
+                    recipe = None
+                if recipe is not None:
+                    if recipe.title_templates:
+                        scale_lines.append("4. 当前赛道爆款句式参考：" + " ｜ ".join(recipe.title_templates))
+                    if recipe.title_examples:
+                        scale_lines.append("5. 同赛道书名结构范例（严禁照抄）：" + " / ".join(recipe.title_examples))
+            catalog = "\n".join(scale_lines) + "\n"
         user_prompt = (
             f"老板的原始题材想法：{idea}\n"
             f"老板已经做的选择：\n{_choices_text(choices)}\n"
@@ -310,6 +335,14 @@ class NewBookWizard:
             if not (0 <= idx < len(s["options"])):
                 raise WizardError(f"choice 超出范围 0..{len(s['options']) - 1}")
             chosen = dict(s["options"][idx])
+            if step["key"] == "scale" and body.get("title_override") is not None:
+                override_title = str(body.get("title_override") or "").strip()
+                if override_title:
+                    if not (1 <= len(override_title) <= 15) or "《" in override_title or "》" in override_title:
+                        raise WizardError(
+                            f"scale: title_override {override_title!r} must be 1~15 chars without 《》"
+                        )
+                    chosen["title"] = override_title
         else:
             raise WizardError("请求必须包含 choice、custom 或 reroll=true 之一")
 

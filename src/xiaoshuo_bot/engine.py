@@ -344,6 +344,7 @@ class NovelGenerationEngine:
         *,
         critic_polisher: Optional[TomatoCriticPolisher] = None,
         enable_critic_polish: Optional[bool] = None,
+        re_evaluate_after_polish: bool = True,
         memory_pyramid: Optional[MemoryPyramid] = None,
         on_progress: Optional[ProgressCallback] = None,
     ) -> None:
@@ -384,6 +385,7 @@ class NovelGenerationEngine:
         else:
             self.critic_polisher = None
 
+        self.re_evaluate_after_polish = bool(re_evaluate_after_polish)
         self._default_on_progress = on_progress
         self.incidents: List[ProductionIncident] = []
 
@@ -1139,6 +1141,9 @@ class NovelGenerationEngine:
                 )
 
                 critic_eval: Optional[CriticEvaluation] = None
+                pre_polish_eval: Optional[CriticEvaluation] = None
+                post_polish_eval: Optional[CriticEvaluation] = None
+                polish_reverted_for_score = False
                 polish_res: Optional[SurgicalPolishResult] = None
                 author_note = ""
 
@@ -1179,6 +1184,7 @@ class NovelGenerationEngine:
                             incidents_jsonl=incidents_jsonl,
                         )
                 if self.critic_polisher is not None and critic_eval is not None:
+                    pre_polish_eval = critic_eval
                     _write_json_atomic(
                         audit_dir / f"ch{scene.chapter:04d}_critic_eval.json",
                         critic_eval.to_dict(),
@@ -1203,7 +1209,7 @@ class NovelGenerationEngine:
                                 "attempt": attempt,
                                 "max_attempts": max_attempts,
                                 "model": _active_model("polisher"),
-                                "detail": f"四维评分 {critic_eval.overall_score:.1f} · 定点精修 {len(critic_eval.weak_paragraphs)} 段",
+                                "detail": f"四维评分 {critic_eval.overall_score:.1f} · 定点精修中",
                             },
                         )
                         try:
@@ -1262,12 +1268,77 @@ class NovelGenerationEngine:
                                 )
                                 polish_res = None
 
+                        if polish_res is not None and self.re_evaluate_after_polish:
+                            self._emit(
+                                on_progress,
+                                SSE_PIPELINE_STAGE,
+                                {
+                                    "chapter": scene.chapter,
+                                    "stage": "polish",
+                                    "status": "running",
+                                    "attempt": attempt,
+                                    "max_attempts": max_attempts,
+                                    "model": _active_model("critic"),
+                                    "detail": f"精修已过门禁（{len(polish_res.replaced_indices)} 段）· 同口径复评验分中",
+                                },
+                            )
+                            try:
+                                post_polish_eval = self.critic_polisher.evaluate_chapter(
+                                    polish_res.polished_text,
+                                    scene=scene,
+                                    project_meta=self.project.meta,
+                                    scan_report=polish_res.scan_report,
+                                    characters=self.project.characters,
+                                    world_state=self.state.to_snapshot(),
+                                    chapter=scene.chapter,
+                                )
+                            except (LLMError, CriticResponseParseError) as exc:
+                                post_polish_eval = None
+                                self._record_degradation(
+                                    scene,
+                                    attempt,
+                                    stage="POST_POLISH_CRITIC_FAILED",
+                                    exc=exc,
+                                    action_taken="Post-polish critic re-eval failed -> keeping gated polished text",
+                                    incidents_jsonl=incidents_jsonl,
+                                )
+
+                            if post_polish_eval is not None:
+                                _write_json_atomic(
+                                    audit_dir / f"ch{scene.chapter:04d}_critic_eval_post.json",
+                                    post_polish_eval.to_dict(),
+                                )
+                                if post_polish_eval.overall_score < pre_polish_eval.overall_score:
+                                    polish_reverted_for_score = True
+                                    self._record_degradation(
+                                        scene,
+                                        attempt,
+                                        stage="POLISH_SCORE_REGRESSION",
+                                        exc=RuntimeError(
+                                            f"Post-polish score {post_polish_eval.overall_score:.2f} < "
+                                            f"pre-polish score {pre_polish_eval.overall_score:.2f}"
+                                        ),
+                                        action_taken="Post-polish score regressed -> keeping higher-scoring pre-polish draft",
+                                        incidents_jsonl=incidents_jsonl,
+                                    )
+                                    polish_res = None
+                                else:
+                                    critic_eval = post_polish_eval
+
                         if polish_res is not None:
                             candidate_text = polish_res.polished_text
                             report = polish_res.scan_report
+                            polish_payload = polish_res.to_dict()
+                            if pre_polish_eval is not None:
+                                polish_payload["pre_polish_score"] = pre_polish_eval.overall_score
+                            if post_polish_eval is not None:
+                                polish_payload["post_polish_score"] = post_polish_eval.overall_score
+                                polish_payload["score_delta"] = round(
+                                    post_polish_eval.overall_score - pre_polish_eval.overall_score, 2
+                                )
                             _write_json_atomic(
                                 audit_dir / f"ch{scene.chapter:04d}_polish.json",
-                                polish_res.to_dict(),
+                                polish_payload,
                             )
                             self._emit(
                                 on_progress,
@@ -1275,19 +1346,27 @@ class NovelGenerationEngine:
                                 {
                                     "chapter": scene.chapter,
                                     "replaced_indices": list(polish_res.replaced_indices),
+                                    "pre_polish_score": pre_polish_eval.overall_score if pre_polish_eval else None,
+                                    "post_polish_score": post_polish_eval.overall_score if post_polish_eval else None,
                                 },
                             )
 
                 if self.critic_polisher is not None:
-                    polish_detail = (
-                        f"定点精修完成 · 替换 {len(polish_res.replaced_indices)} 段"
-                        if polish_res is not None
-                        else (
-                            f"四维评分 {critic_eval.overall_score:.1f} · 保留已过门禁原稿"
-                            if critic_eval is not None
-                            else "审校降级跳过 · 保留已过门禁原稿"
+                    if polish_res is not None and pre_polish_eval is not None and post_polish_eval is not None:
+                        delta_val = post_polish_eval.overall_score - pre_polish_eval.overall_score
+                        polish_detail = (
+                            f"定点精修完成 · {pre_polish_eval.overall_score:.1f} → "
+                            f"{post_polish_eval.overall_score:.1f} ({delta_val:+.1f}) · "
+                            f"替换 {len(polish_res.replaced_indices)} 段"
                         )
-                    )
+                    elif polish_res is not None:
+                        polish_detail = f"定点精修完成 · 替换 {len(polish_res.replaced_indices)} 段"
+                    elif polish_reverted_for_score and pre_polish_eval is not None:
+                        polish_detail = f"四维评分 {pre_polish_eval.overall_score:.1f} · 精修未提分，保留高分原稿"
+                    elif critic_eval is not None:
+                        polish_detail = f"四维评分 {critic_eval.overall_score:.1f} · 保留已过门禁原稿"
+                    else:
+                        polish_detail = "审校降级跳过 · 保留已过门禁原稿"
                     self._emit(
                         on_progress,
                         SSE_PIPELINE_STAGE,
@@ -1402,6 +1481,12 @@ class NovelGenerationEngine:
                 }
                 if critic_eval is not None:
                     meta_payload["critic_score"] = critic_eval.overall_score
+                if pre_polish_eval is not None:
+                    meta_payload["pre_polish_critic_score"] = pre_polish_eval.overall_score
+                if polish_res is not None and pre_polish_eval is not None and post_polish_eval is not None:
+                    meta_payload["polish_score_delta"] = round(
+                        post_polish_eval.overall_score - pre_polish_eval.overall_score, 2
+                    )
                 meta_path = _chapter_meta_path(chapters_dir, scene.chapter)
                 _write_json_atomic(
                     meta_path,
@@ -1493,6 +1578,17 @@ class NovelGenerationEngine:
                         {
                             "replaced_indices": list(polish_res.replaced_indices),
                             "model": polish_res.model,
+                            **(
+                                {
+                                    "pre_polish_score": pre_polish_eval.overall_score,
+                                    "post_polish_score": post_polish_eval.overall_score,
+                                    "score_delta": round(
+                                        post_polish_eval.overall_score - pre_polish_eval.overall_score, 2
+                                    ),
+                                }
+                                if pre_polish_eval is not None and post_polish_eval is not None
+                                else {}
+                            ),
                         }
                         if polish_res is not None
                         else None
