@@ -390,6 +390,64 @@ class StockpileDB:
                 cur.execute(
                     "ALTER TABLE wizard_sessions ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"
                 )
+            self._migrate_legacy_manual_pause_books_unlocked()
+
+    def _migrate_legacy_manual_pause_books_unlocked(self) -> int:
+        """Migrate legacy manually paused books (old PAUSED or manual PAUSED_QUOTA_EXHAUSTED) to PAUSED_MANUAL."""
+        manual_markers = (
+            "manually paused",
+            "manual pause",
+            "手动暂停",
+            "人工暂停",
+            "t5 试跑完成",
+        )
+        quota_markers = (
+            "quota",
+            "budget",
+            "429",
+            "exhausted",
+            "exceeded",
+            "circuit",
+            "额度",
+            "预算",
+        )
+        rows = self._conn.execute(
+            """
+            SELECT book_id, status, paused_reason
+            FROM books
+            WHERE status IN ('PAUSED', ?)
+            """,
+            (BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value,),
+        ).fetchall()
+        migrated = 0
+        now_iso = self._now_iso()
+        for row in rows:
+            status = str(row["status"] or "")
+            reason = str(row["paused_reason"] or "")
+            low = reason.strip().lower()
+            should_migrate = False
+            if status == "PAUSED":
+                should_migrate = True
+            elif status == BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value:
+                has_manual = any(m in low for m in manual_markers)
+                has_quota = any(q in low for q in quota_markers)
+                if has_manual and not has_quota:
+                    should_migrate = True
+            if should_migrate:
+                self._conn.execute(
+                    """
+                    UPDATE books
+                    SET status = ?, updated_at = ?
+                    WHERE book_id = ?
+                    """,
+                    (BookRunStatus.PAUSED_MANUAL.value, now_iso, str(row["book_id"])),
+                )
+                migrated += 1
+        return migrated
+
+    def migrate_legacy_manual_pause_books(self) -> int:
+        with self._lock:
+            return self._migrate_legacy_manual_pause_books_unlocked()
 
     def get_journal_mode(self) -> str:
         with self._lock:

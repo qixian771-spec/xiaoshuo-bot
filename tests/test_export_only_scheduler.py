@@ -17,8 +17,8 @@ from typing import Any, Dict, List
 import unittest
 from unittest import mock
 
-from xiaoshuo_bot.contracts import SSE_BOOK_ISOLATED, BookRunStatus
-from xiaoshuo_bot.llm.base import LLMRequestError
+from xiaoshuo_bot.contracts import SSE_BOOK_ISOLATED, SSE_CPA_QUOTA_ALERT, BookRunStatus
+from xiaoshuo_bot.llm.base import BudgetCircuitBreakerError, LLMRequestError, QuotaExhaustedError
 from xiaoshuo_bot.loader import load_project
 from xiaoshuo_bot.server import matrix_scheduler as ms
 from xiaoshuo_bot.server.matrix_scheduler import MatrixScheduler
@@ -116,6 +116,91 @@ class ExportOnlySchedulerTest(unittest.TestCase):
         self.assertEqual(self.events[-1].event, SSE_BOOK_ISOLATED)
         # The isolated book is no longer queued, so the background loop cannot hammer it.
         self.assertEqual(sched.inspect_safety_cushions(emit_alerts=False), [])
+
+    def test_p1_2_manual_pause_distinct_from_quota_and_budget_circuit_breaker(self) -> None:
+        sched = self._scheduler(export_only=True)
+        res_pause = sched.pause_book("b1", reason="老板手动暂停测试")
+        self.assertEqual(res_pause["status"], BookRunStatus.PAUSED_MANUAL.value)
+        self.assertEqual(self.db.get_book("b1")["status"], BookRunStatus.PAUSED_MANUAL.value)
+        self.assertEqual(self.db.get_book("b1")["paused_reason"], "老板手动暂停测试")
+        self.assertEqual(self.events, [])
+        self.assertEqual(sched.inspect_safety_cushions(emit_alerts=False), [])
+
+        res_resume = sched.resume_book("b1")
+        self.assertEqual(res_resume["status"], BookRunStatus.ACTIVE.value)
+        self.assertEqual(self.db.get_book("b1")["paused_reason"], "")
+
+        # Budget circuit breaker sets PAUSED_QUOTA_EXHAUSTED and emits structured cpa_quota_alert
+        sched_budget = self._scheduler(
+            export_only=True,
+            engine_exc=BudgetCircuitBreakerError("Daily budget cap $5.00 exceeded"),
+        )
+        res_budget = sched_budget.produce_next_chapter("b1")
+        self.assertEqual(res_budget["status"], BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value)
+        self.assertEqual(self.db.get_book("b1")["status"], BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value)
+        self.assertEqual(self.events[-1].event, SSE_CPA_QUOTA_ALERT)
+        self.assertEqual(self.events[-1].data.get("kind"), "quota_exhausted")
+        self.assertEqual(self.events[-1].data.get("error_type"), "BudgetCircuitBreakerError")
+        self.assertIn("Daily budget cap", self.events[-1].data.get("reason", ""))
+
+        # QuotaExhaustedError behaves identically and stops queueing
+        sched_budget.resume_book("b1")
+        sched_quota = self._scheduler(
+            export_only=True,
+            engine_exc=QuotaExhaustedError("All whitelist models exhausted (HTTP 429)"),
+        )
+        res_quota = sched_quota.produce_next_chapter("b1")
+        self.assertEqual(res_quota["status"], BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value)
+        self.assertEqual(self.events[-1].event, SSE_CPA_QUOTA_ALERT)
+        self.assertEqual(self.events[-1].data.get("error_type"), "QuotaExhaustedError")
+        self.assertEqual(sched_quota.inspect_safety_cushions(emit_alerts=False), [])
+
+    def test_p1_2_legacy_db_migrates_manual_pause_without_touching_real_quota_exhausted(self) -> None:
+        db_path = self.tmp / "legacy_p1_2.db"
+        legacy_db = StockpileDB(db_path)
+        for bid, title in (
+            ("b_manual_en", "手动暂停英文原因"),
+            ("b_manual_zh", "手动暂停中文原因"),
+            ("b_legacy_paused", "旧PAUSED状态"),
+            ("b_real_budget", "真超预算熔断"),
+            ("b_real_quota", "真429额度耗尽"),
+        ):
+            legacy_db.register_book(book_id=bid, project_dir=self.project_dir, title=title)
+
+        with legacy_db._lock:
+            legacy_db._conn.execute(
+                "UPDATE books SET status = 'PAUSED_QUOTA_EXHAUSTED', paused_reason = 'Manually paused' WHERE book_id = 'b_manual_en'"
+            )
+            legacy_db._conn.execute(
+                "UPDATE books SET status = 'PAUSED_QUOTA_EXHAUSTED', paused_reason = '控制台手动暂停' WHERE book_id = 'b_manual_zh'"
+            )
+            legacy_db._conn.execute(
+                "UPDATE books SET status = 'PAUSED', paused_reason = '旧版手动停笔' WHERE book_id = 'b_legacy_paused'"
+            )
+            legacy_db._conn.execute(
+                "UPDATE books SET status = 'PAUSED_QUOTA_EXHAUSTED', paused_reason = 'Daily budget exceeded (BudgetCircuitBreakerError)' WHERE book_id = 'b_real_budget'"
+            )
+            legacy_db._conn.execute(
+                "UPDATE books SET status = 'PAUSED_QUOTA_EXHAUSTED', paused_reason = 'All credentials HTTP 429 quota exhausted' WHERE book_id = 'b_real_quota'"
+            )
+        legacy_db.close()
+
+        # Re-open triggers automatic _init_schema() migration
+        migrated_db = StockpileDB(db_path)
+        try:
+            self.assertEqual(migrated_db.get_book("b_manual_en")["status"], BookRunStatus.PAUSED_MANUAL.value)
+            self.assertEqual(migrated_db.get_book("b_manual_zh")["status"], BookRunStatus.PAUSED_MANUAL.value)
+            self.assertEqual(migrated_db.get_book("b_legacy_paused")["status"], BookRunStatus.PAUSED_MANUAL.value)
+            self.assertEqual(
+                migrated_db.get_book("b_real_budget")["status"],
+                BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value,
+            )
+            self.assertEqual(
+                migrated_db.get_book("b_real_quota")["status"],
+                BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value,
+            )
+        finally:
+            migrated_db.close()
 
 
 if __name__ == "__main__":

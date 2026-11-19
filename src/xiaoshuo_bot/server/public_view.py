@@ -35,6 +35,7 @@ _STATUS_TEXT = {
     "COMPLETED": "已完本",
     "ISOLATED_GATE_FAILURE": "暂停检修中",
     "PAUSED_QUOTA_EXHAUSTED": "额度用完，暂停中",
+    "PAUSED_MANUAL": "手动暂停",
 }
 
 

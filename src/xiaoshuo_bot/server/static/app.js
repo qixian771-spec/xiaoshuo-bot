@@ -85,10 +85,17 @@
     ACTIVE: { text: "写作中", cls: "tag-emerald" },
     ISOLATED_GATE_FAILURE: { text: "门禁故障隔离", cls: "tag-gold" },
     PAUSED_AUTH_CAPTCHA: { text: "验证码/登录挂起", cls: "tag-danger" },
-    PAUSED_QUOTA_EXHAUSTED: { text: "CPA 额度耗尽", cls: "tag-danger" },
+    PAUSED_QUOTA_EXHAUSTED: { text: "超预算 / 额度熔断", cls: "tag-danger" },
+    PAUSED_MANUAL: { text: "手动暂停", cls: "tag-slate" },
     CUT_LOSS: { text: "已止损切书", cls: "tag-purple" },
     COMPLETED: { text: "已完结", cls: "tag-cyan" },
-    PAUSED: { text: "手动暂停", cls: "tag-gold" },
+    PAUSED: { text: "手动暂停", cls: "tag-slate" },
+  });
+
+  // Reusable alert kinds for both Q14 quota/budget circuit-breaker and future WorkBuddy model rotation
+  const MODEL_QUOTA_ALERT_KINDS = Object.freeze({
+    QUOTA_EXHAUSTED: "quota_exhausted",
+    MODEL_SWITCHED: "model_switched",
   });
 
   const CHAPTER_STATUS_LABELS = Object.freeze({
@@ -116,6 +123,8 @@
     cpaModels: [],
     cpaBindings: {},
     captchaAlerts: new Map(),
+    modelQuotaAlerts: new Map(),
+    dismissedQuotaAlertIds: new Set(),
     liveEvents: [],
     sseConnected: false,
     sseConnecting: false,
@@ -455,6 +464,9 @@
     const isolatedCount = books.filter(function (b) {
       return b.status === "ISOLATED_GATE_FAILURE";
     }).length;
+    const quotaExhaustedCount = books.filter(function (b) {
+      return b.status === "PAUSED_QUOTA_EXHAUSTED";
+    }).length;
     const captchaCount = books.filter(function (b) {
       return b.status === "PAUSED_AUTH_CAPTCHA";
     }).length;
@@ -477,12 +489,15 @@
     if (kpiPausedIso) {
       kpiPausedIso.textContent = PRIVATE_STUDIO_MODE ? String(isolatedCount) : (captchaCount + " / " + isolatedCount);
     }
-    const alertTotal = PRIVATE_STUDIO_MODE ? isolatedCount : (criticalCushionBooks.length + captchaCount + isolatedCount);
+    const alertTotal = PRIVATE_STUDIO_MODE
+      ? (isolatedCount + quotaExhaustedCount)
+      : (criticalCushionBooks.length + captchaCount + isolatedCount + quotaExhaustedCount);
     if (navAlertBadge) {
       navAlertBadge.hidden = alertTotal === 0;
       navAlertBadge.textContent = String(alertTotal);
     }
 
+    syncQuotaAlertsFromBooks();
     renderBooksGrid();
   }
 
@@ -523,8 +538,16 @@
       const trackLabel = PRIVATE_STUDIO_MODE
         ? (book.author_level === "lv2_plus" ? "长篇连载" : "紧凑完本")
         : (book.author_level === "lv2_plus" ? "Lv2+ 连载赛马" : "Lv0/1 完本养号");
-      const isPaused = book.status === "PAUSED_AUTH_CAPTCHA" || book.status === "PAUSED_QUOTA_EXHAUSTED" || book.status === "ISOLATED_GATE_FAILURE" || book.status === "PAUSED";
-      const cardCls = "book-card" + (!PRIVATE_STUDIO_MODE && isCritical ? " is-low-cushion" : "") + (book.status === "ISOLATED_GATE_FAILURE" ? " is-isolated" : "");
+      const isPaused = book.status === "PAUSED_AUTH_CAPTCHA"
+        || book.status === "PAUSED_QUOTA_EXHAUSTED"
+        || book.status === "PAUSED_MANUAL"
+        || book.status === "ISOLATED_GATE_FAILURE"
+        || book.status === "PAUSED";
+      const cardCls = "book-card"
+        + (!PRIVATE_STUDIO_MODE && isCritical ? " is-low-cushion" : "")
+        + (book.status === "ISOLATED_GATE_FAILURE" ? " is-isolated" : "")
+        + (book.status === "PAUSED_QUOTA_EXHAUSTED" ? " is-quota-exhausted" : "")
+        + (book.status === "PAUSED_MANUAL" || book.status === "PAUSED" ? " is-paused-manual" : "");
 
       return (
         '<article class="' + escapeHtml(cardCls) + '" data-book-id="' + escapeHtml(bookId) + '">' +
@@ -714,6 +737,144 @@
     } catch (err) {
       showToast("确认切书失败：" + err.message, "err");
     }
+  }
+
+  /* ------------------------------------------------------------------
+   * Reusable Model Switch & Quota/Budget Alert Component (Q14 / P1-2)
+   * Supports both "quota_exhausted" (critical halt) and "model_switched" (rotation notice)
+   * ------------------------------------------------------------------ */
+  function upsertModelQuotaAlert(entry) {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    const kind = entry.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
+      ? MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
+      : MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
+    const bookId = String(entry.book_id || "");
+    const alertId = String(entry.id || (kind + ":" + (bookId || "global")));
+    state.dismissedQuotaAlertIds.delete(alertId);
+    state.modelQuotaAlerts.set(alertId, {
+      id: alertId,
+      kind: kind,
+      book_id: bookId,
+      book_title: String(entry.book_title || ""),
+      from_model: String(entry.from_model || ""),
+      to_model: String(entry.to_model || ""),
+      reason: String(entry.reason || ""),
+      error_type: String(entry.error_type || ""),
+      timestamp: String(entry.timestamp || ""),
+      source: String(entry.source || "event"),
+    });
+    renderModelQuotaAlerts();
+  }
+
+  function dismissModelQuotaAlert(alertId) {
+    if (!alertId) {
+      return;
+    }
+    state.modelQuotaAlerts.delete(alertId);
+    state.dismissedQuotaAlertIds.add(alertId);
+    renderModelQuotaAlerts();
+  }
+
+  function syncQuotaAlertsFromBooks() {
+    const activeQuotaIds = new Set();
+    state.books.forEach(function (book) {
+      if (book.status !== "PAUSED_QUOTA_EXHAUSTED") {
+        return;
+      }
+      const alertId = MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED + ":" + String(book.book_id || "");
+      activeQuotaIds.add(alertId);
+      if (state.dismissedQuotaAlertIds.has(alertId)) {
+        return;
+      }
+      state.modelQuotaAlerts.set(alertId, {
+        id: alertId,
+        kind: MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED,
+        book_id: String(book.book_id || ""),
+        book_title: String(book.title || book.book_id || ""),
+        from_model: "",
+        to_model: "",
+        reason: String(book.paused_reason || "全部额度用尽或触发预算熔断，已停机保护"),
+        error_type: "",
+        timestamp: String(book.updated_at || ""),
+        source: "book_status",
+      });
+    });
+    const booksById = new Map();
+    state.books.forEach(function (b) {
+      booksById.set(String(b.book_id || ""), b);
+    });
+    Array.from(state.modelQuotaAlerts.entries()).forEach(function (pair) {
+      const id = pair[0];
+      const item = pair[1];
+      if (item.kind !== MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED) {
+        return;
+      }
+      const matched = item.book_id ? booksById.get(item.book_id) : null;
+      const recovered = Boolean(matched) && matched.status !== "PAUSED_QUOTA_EXHAUSTED";
+      if ((item.source === "book_status" && !activeQuotaIds.has(id)) || recovered) {
+        state.modelQuotaAlerts.delete(id);
+        state.dismissedQuotaAlertIds.delete(id);
+      }
+    });
+    renderModelQuotaAlerts();
+  }
+
+  function renderModelQuotaAlerts() {
+    const region = document.getElementById("model-quota-alert-region");
+    if (!region) {
+      return;
+    }
+    const alerts = Array.from(state.modelQuotaAlerts.values());
+    if (alerts.length === 0) {
+      region.hidden = true;
+      region.innerHTML = "";
+      return;
+    }
+    region.hidden = false;
+    region.innerHTML = alerts.map(function (item) {
+      const isSwitch = item.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED;
+      const cls = isSwitch ? "model-alert-card is-warn" : "model-alert-card is-danger";
+      const ariaRole = isSwitch ? "status" : "alert";
+      const ariaLive = isSwitch ? "polite" : "assertive";
+      const heading = isSwitch ? "🔄 写作模型已切换" : "🚨 超预算 / 全部额度用尽 · 熔断停机";
+      const bookLabel = item.book_title || item.book_id;
+      const modelStep = (item.from_model || item.to_model)
+        ? ('<span class="tag tag-gold">' + escapeHtml(item.from_model || "原模型") + ' → ' + escapeHtml(item.to_model || "目标模型") + '</span>')
+        : "";
+      const detailParts = [];
+      if (bookLabel) {
+        detailParts.push("书目：" + bookLabel);
+      }
+      if (item.reason) {
+        detailParts.push("原因：" + item.reason);
+      }
+      const detailText = detailParts.join(" · ") || (isSwitch ? "已按白名单顺序切换写作模型" : "触发超预算或额度熔断，自动写作已停止");
+      const hintText = isSwitch
+        ? "已记录本次切换原因与对应章节所用模型，可继续观察写作进度。"
+        : "严禁悄悄降级：请先前往 CPA 配置页检查额度/预算，处理完成后再点击恢复写作。";
+      const resumeBtn = (!isSwitch && item.book_id)
+        ? ('<button type="button" class="btn btn-sm btn-primary" data-alert-action="resume-book" data-book-id="' + escapeHtml(item.book_id) + '" data-alert-id="' + escapeHtml(item.id) + '">▶ 恢复写作</button>')
+        : "";
+      return (
+        '<div class="' + escapeHtml(cls) + '" role="' + escapeHtml(ariaRole) + '" aria-live="' + escapeHtml(ariaLive) + '" data-alert-kind="' + escapeHtml(item.kind) + '" data-alert-id="' + escapeHtml(item.id) + '">' +
+          '<div class="model-alert-main">' +
+            '<div class="model-alert-title">' +
+              '<span>' + escapeHtml(heading) + '</span>' +
+              modelStep +
+            '</div>' +
+            '<div class="model-alert-detail">' + escapeHtml(detailText) + '</div>' +
+            '<div class="model-alert-hint">' + escapeHtml(hintText) + '</div>' +
+          '</div>' +
+          '<div class="model-alert-actions">' +
+            '<button type="button" class="btn btn-sm btn-outline" data-alert-action="goto-cpa">前往 CPA 配置</button>' +
+            resumeBtn +
+            '<button type="button" class="btn btn-sm btn-ghost" data-alert-action="dismiss" data-alert-id="' + escapeHtml(item.id) + '">' + escapeHtml(isSwitch ? "知道了" : "暂时收起") + '</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join("");
   }
 
   /* ------------------------------------------------------------------
@@ -1685,7 +1846,33 @@
     return { level: "warn", title: "赛马进化决策", detail: payload.message || JSON.stringify(payload.data || {}) };
   };
   SSE_HANDLERS[SSE_EVENTS.CPA_QUOTA_ALERT] = function (payload) {
-    return { level: "fail", title: "CPA 额度 / 429 告警", detail: payload.message || "同档凭据冷却或额度触顶" };
+    const d = payload.data || {};
+    const kind = d.kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
+      ? MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED
+      : MODEL_QUOTA_ALERT_KINDS.QUOTA_EXHAUSTED;
+    const matchedBook = state.books.find(function (b) {
+      return b.book_id === payload.book_id;
+    });
+    upsertModelQuotaAlert({
+      kind: kind,
+      book_id: payload.book_id || "",
+      book_title: matchedBook ? matchedBook.title : (d.book_title || payload.book_id || ""),
+      from_model: d.from_model || "",
+      to_model: d.to_model || "",
+      reason: d.reason || payload.message || "同档凭据冷却或额度触顶",
+      error_type: d.error_type || "",
+      timestamp: payload.timestamp || "",
+      source: "sse",
+    });
+    loadBooks();
+    if (kind === MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED) {
+      return {
+        level: "warn",
+        title: "写作模型已切换",
+        detail: (d.from_model && d.to_model ? (d.from_model + " → " + d.to_model + " · ") : "") + (d.reason || payload.message || "白名单模型轮换"),
+      };
+    }
+    return { level: "fail", title: "超预算 / 额度熔断告警", detail: payload.message || "同档凭据冷却或额度触顶，已停机保护" };
   };
 
   function dispatchSseFrame(eventName, rawData) {
@@ -2120,6 +2307,31 @@
           updateAuthUi("已清除本地令牌，请输入有效管理员 Bearer Token");
         }
         showToast("已清除本地令牌", "ok");
+      });
+    }
+
+    const alertRegion = document.getElementById("model-quota-alert-region");
+    if (alertRegion) {
+      alertRegion.addEventListener("click", async function (evt) {
+        const btn = evt.target.closest("[data-alert-action]");
+        if (!btn) {
+          return;
+        }
+        const action = btn.getAttribute("data-alert-action");
+        const alertId = btn.getAttribute("data-alert-id") || "";
+        const bookId = btn.getAttribute("data-book-id") || "";
+        if (action === "goto-cpa") {
+          switchView("cpa");
+        } else if (action === "dismiss") {
+          dismissModelQuotaAlert(alertId);
+        } else if (action === "resume-book" && bookId) {
+          await handleBookAction("resume", bookId);
+          if (alertId) {
+            state.modelQuotaAlerts.delete(alertId);
+            state.dismissedQuotaAlertIds.delete(alertId);
+            renderModelQuotaAlerts();
+          }
+        }
       });
     }
 

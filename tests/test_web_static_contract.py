@@ -631,6 +631,40 @@ class TestWebStaticContract(unittest.TestCase):
         self.assertIn('data-book-action="detail"', grid_body)
         self.assertIn('data-book-action="extend"', grid_body)
 
+    def test_p1_2_reusable_model_quota_alert_and_paused_manual_ui_contracts(self) -> None:
+        # 1. Prominent alert region & distinct filter chips in index.html
+        self.assertIn('id="model-quota-alert-region"', self.index_text)
+        self.assertIn('data-filter="PAUSED_MANUAL"', self.index_text)
+        self.assertIn('data-filter="PAUSED_QUOTA_EXHAUSTED"', self.index_text)
+
+        # 2. Reusable alert kinds support BOTH quota_exhausted and model_switched
+        self.assertIn('QUOTA_EXHAUSTED: "quota_exhausted"', self.app_text)
+        self.assertIn('MODEL_SWITCHED: "model_switched"', self.app_text)
+        self.assertRegex(self.app_text, r"function\s+upsertModelQuotaAlert\s*\(")
+        self.assertRegex(self.app_text, r"function\s+renderModelQuotaAlerts\s*\(")
+        self.assertRegex(self.app_text, r"function\s+syncQuotaAlertsFromBooks\s*\(")
+
+        # 3. CPA_QUOTA_ALERT SSE handler triggers prominent alert + loadBooks()
+        m_quota = re.search(
+            r"SSE_HANDLERS\[SSE_EVENTS\.CPA_QUOTA_ALERT\]\s*=\s*function\s*\(payload\)\s*\{(.*?)\n  \};",
+            self.app_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(m_quota, "SSE_HANDLERS[SSE_EVENTS.CPA_QUOTA_ALERT] missing in app.js")
+        self.assertIn("upsertModelQuotaAlert(", m_quota.group(1))
+        self.assertIn("loadBooks()", m_quota.group(1))
+        self.assertIn("MODEL_SWITCHED", m_quota.group(1))
+
+        # 4. PAUSED_MANUAL has distinct label/style from PAUSED_QUOTA_EXHAUSTED
+        self.assertIn('PAUSED_MANUAL: { text: "手动暂停", cls: "tag-slate" }', self.app_text)
+        self.assertIn('PAUSED_QUOTA_EXHAUSTED: { text: "超预算 / 额度熔断", cls: "tag-danger" }', self.app_text)
+        self.assertIn("is-quota-exhausted", self.app_text)
+        self.assertIn("is-paused-manual", self.app_text)
+        self.assertIn(".model-alert-card.is-danger", self.css_text)
+        self.assertIn(".model-alert-card.is-warn", self.css_text)
+        self.assertIn(".book-card.is-quota-exhausted", self.css_text)
+        self.assertIn(".book-card.is-paused-manual", self.css_text)
+
 
 if __name__ == "__main__":
     unittest.main()

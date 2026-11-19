@@ -990,7 +990,7 @@ class TestServerRoutesAndStaticAssets(unittest.TestCase):
                     headers=auth_h,
                 )
                 self.assertEqual(code_p, 200)
-                self.assertEqual(res_p["status"], BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value)
+                self.assertEqual(res_p["status"], BookRunStatus.PAUSED_MANUAL.value)
                 self.assertEqual(res_p["reason"], "控制台手动暂停")
 
                 code_r, res_r = _http_json(

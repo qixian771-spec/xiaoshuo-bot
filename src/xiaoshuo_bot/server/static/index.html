@@ -90,6 +90,9 @@
         <button type="button" class="btn btn-sm btn-primary" id="btn-banner-login">输入管理令牌</button>
       </div>
 
+      <!-- Global Reusable Model Switch & Quota/Budget Circuit-Breaker Alert Region (Q14 / P1-2) -->
+      <section class="model-quota-alert-region" id="model-quota-alert-region" role="region" aria-label="模型与额度告警" hidden></section>
+
       <!-- Global Companion Captcha / Auth Pause Banner -->
       <section class="alert-banner alert-danger" id="captcha-global-banner" hidden aria-live="polite">
         <div class="captcha-banner-grid">
@@ -140,6 +143,8 @@
             <div class="filter-tabs" role="group" aria-label="书籍状态筛选">
               <button type="button" class="filter-chip is-active" data-filter="all">全部书籍</button>
               <button type="button" class="filter-chip" data-filter="ACTIVE">写作中</button>
+              <button type="button" class="filter-chip" data-filter="PAUSED_MANUAL">手动暂停</button>
+              <button type="button" class="filter-chip" data-filter="PAUSED_QUOTA_EXHAUSTED">额度熔断</button>
               <button type="button" class="filter-chip" data-filter="LOW_CUSHION" hidden>安全垫 &lt;6 章</button>
               <button type="button" class="filter-chip" data-filter="PAUSED_AUTH_CAPTCHA" hidden>验证码挂起</button>
               <button type="button" class="filter-chip" data-filter="ISOLATED_GATE_FAILURE">门禁隔离</button>

@@ -514,7 +514,7 @@ class MatrixScheduler:
 
     def pause_book(self, book_id: str, reason: str = "") -> Dict[str, Any]:
         updated = self.db.update_book_status(
-            book_id, BookRunStatus.PAUSED_QUOTA_EXHAUSTED, paused_reason=reason or "Manually paused"
+            book_id, BookRunStatus.PAUSED_MANUAL, paused_reason=reason or "Manually paused"
         )
         return {"book_id": book_id, "status": updated["status"], "reason": updated["paused_reason"]}
 
@@ -735,7 +735,11 @@ class MatrixScheduler:
                 book_id=book_id,
                 chapter=next_scene.chapter,
                 message=str(exc),
-                data={"error_type": type(exc).__name__},
+                data={
+                    "error_type": type(exc).__name__,
+                    "kind": "quota_exhausted",
+                    "reason": str(exc),
+                },
             )
             return {"book_id": book_id, "status": BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value, "error": str(exc)}
 

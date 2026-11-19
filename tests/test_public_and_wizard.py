@@ -25,6 +25,7 @@ from xiaoshuo_bot.contracts import (
     SSE_CHAPTER_STOCKPILED,
     SSE_GATE_FAILED,
     AutoCreateBookRequest,
+    BookRunStatus,
     SSEEventPayload,
 )
 from xiaoshuo_bot.genres import list_genres
@@ -211,6 +212,25 @@ class TestPublicStudio(_ServerCase):
         pub = public_event(evt(SSE_CHAPTER_STOCKPILED), titles)
         self.assertEqual(pub["message"], "《白雾渡口》第 3 章成稿")
         self.assertNotIn(SECRET_ACCOUNT, json.dumps(pub, ensure_ascii=False))
+
+    def test_p1_2_public_status_text_distinguishes_manual_pause_from_quota_exhausted(self) -> None:
+        self.server.db.update_book_status(
+            "baiwu_dukou", BookRunStatus.PAUSED_MANUAL, paused_reason="控制台手动暂停"
+        )
+        code, _, body = _http(self.base + "/api/public/books")
+        self.assertEqual(code, 200)
+        b_manual = json.loads(body)["books"][0]
+        self.assertEqual(b_manual["status"], "PAUSED_MANUAL")
+        self.assertEqual(b_manual["status_text"], "手动暂停")
+
+        self.server.db.update_book_status(
+            "baiwu_dukou", BookRunStatus.PAUSED_QUOTA_EXHAUSTED, paused_reason="额度耗尽"
+        )
+        code2, _, body2 = _http(self.base + "/api/public/books")
+        self.assertEqual(code2, 200)
+        b_quota = json.loads(body2)["books"][0]
+        self.assertEqual(b_quota["status"], "PAUSED_QUOTA_EXHAUSTED")
+        self.assertEqual(b_quota["status_text"], "额度用完，暂停中")
 
 
 class TestWizardWithoutProvider(_ServerCase):
