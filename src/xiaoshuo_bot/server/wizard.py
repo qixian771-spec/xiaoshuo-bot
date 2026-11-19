@@ -11,15 +11,19 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 from typing import Any, Callable, Dict, List, Mapping, Optional
 import uuid
 
 from ..contracts import AutoCreateBookRequest
 from ..genres import list_genres
 from ..llm.base import LLMRequest
-from ..models import AUTHOR_LEVELS, SHANGHAI_TZ
+from ..models import AUTHOR_LEVELS, SHANGHAI_TZ, ProjectValidationError
 from ..planner import _invoke_planner, _parse_json_payload
 from .stockpile_db import StockpileDB
+
+
+logger = logging.getLogger(__name__)
 
 
 class WizardError(ValueError):
@@ -31,6 +35,9 @@ STATUS_READY = "READY_TO_CONFIRM"
 STATUS_CREATED = "CREATED"
 
 OPTIONS_PER_STEP = 3
+# Invalid proposals are fed back to the LLM with the exact validation error, at most this many
+# times in total; then the admin sees a WizardError (no silent acceptance, no default option).
+PROPOSAL_ATTEMPTS = 3
 LV0_1_CHAPTER_RANGE = (70, 95)
 
 
@@ -86,7 +93,7 @@ WIZARD_STEPS: List[Dict[str, Any]] = [
         "allow_custom": False,
         "fields": {
             "label": "方案名（不超过 12 字）",
-            "title": "书名（1~15 字，不带书名号）",
+            "title": "书名（硬性要求：1~15 个字符，含标点在内不得超过 15 个字符，不带书名号）",
             "author_level": "lv0_1（70~95 章紧凑完本）或 lv2_plus（长篇连载）",
             "target_chapters": "lv0_1 时为 70~95 的整数；lv2_plus 时填 0",
             "blurb": "三段式简介合并为一段（80~150 字）",
@@ -178,26 +185,40 @@ class NewBookWizard:
             f"每个候选对象必须包含以下字段：\n{field_lines}\n"
         )
         provider = self._provider_fn()
-        req = LLMRequest(
-            request_id=f"wizard-{step['key']}-{uuid.uuid4().hex[:8]}",
-            chapter=0,
-            attempt=1,
-            purpose="plan",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.8,
-            max_tokens=3000,
-            metadata={"stage": f"wizard_{step['key']}"},
-        )
-        resp = _invoke_planner(provider, req)
-        payload = _parse_json_payload(resp.content, f"wizard_{step['key']}")
-        raw_options = payload.get("options")
-        if not isinstance(raw_options, list) or len(raw_options) != OPTIONS_PER_STEP:
-            raise WizardError(
-                f"{step['key']}: LLM must return exactly {OPTIONS_PER_STEP} options, got "
-                f"{len(raw_options) if isinstance(raw_options, list) else type(raw_options).__name__}"
+        errors: List[str] = []
+        for attempt in range(1, PROPOSAL_ATTEMPTS + 1):
+            feedback = (
+                "\n[上一次输出不合格，必须全部修正后重新输出]：\n" + "\n".join(f"- {e}" for e in errors) + "\n"
+                if errors
+                else ""
             )
-        return [_validate_option(step["key"], o) for o in raw_options]
+            req = LLMRequest(
+                request_id=f"wizard-{step['key']}-{attempt}-{uuid.uuid4().hex[:8]}",
+                chapter=0,
+                attempt=attempt,
+                purpose="plan",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt + feedback,
+                temperature=0.8,
+                max_tokens=3000,
+                metadata={"stage": f"wizard_{step['key']}", "attempt": attempt},
+            )
+            resp = _invoke_planner(provider, req)
+            try:
+                payload = _parse_json_payload(resp.content, f"wizard_{step['key']}")
+                raw_options = payload.get("options")
+                if not isinstance(raw_options, list) or len(raw_options) != OPTIONS_PER_STEP:
+                    raise WizardError(
+                        f"{step['key']}: LLM must return exactly {OPTIONS_PER_STEP} options, got "
+                        f"{len(raw_options) if isinstance(raw_options, list) else type(raw_options).__name__}"
+                    )
+                return [_validate_option(step["key"], o) for o in raw_options]
+            except (WizardError, ProjectValidationError) as exc:
+                logger.warning("wizard %s proposal attempt %d rejected: %s", step["key"], attempt, exc)
+                errors.append(str(exc))
+        raise WizardError(
+            f"{step['key']}: LLM proposals failed validation {PROPOSAL_ATTEMPTS} times: " + " | ".join(errors)
+        )
 
     # ---------------------------------------------------------------- views
     def _view(self, session_id: str) -> Dict[str, Any]:

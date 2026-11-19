@@ -73,14 +73,21 @@ def _options_for(stage: str) -> List[Dict[str, Any]]:
 class FakeWizardLLM(LLMProvider):
     def __init__(self) -> None:
         self.calls: List[str] = []
+        self.prompts: List[str] = []
         self.broken_stage: Optional[str] = None
+        self.broken_times: Optional[int] = None  # None = always broken
+        self.long_title_once = False
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         stage = request.metadata["stage"]
         self.calls.append(stage)
+        self.prompts.append(request.user_prompt)
         options = _options_for(stage)
-        if stage == self.broken_stage:
+        if stage == self.broken_stage and (self.broken_times is None or self.calls.count(stage) <= self.broken_times):
             options = options[:2]
+        if stage == "wizard_scale" and self.long_title_once:
+            self.long_title_once = False
+            options[0] = dict(options[0], title="每日头条：我的外卖配送清单有BUG")
         return LLMResponse(
             request_id=request.request_id,
             content=json.dumps({"options": options}, ensure_ascii=False),
@@ -269,7 +276,32 @@ class TestWizardHttpFlow(_ServerCase):
         self.provider.broken_stage = "wizard_direction"
         code, err = self._post("/api/wizard/sessions", {"idea": "外卖小哥捡到能看见明天新闻的手机"})
         self.assertEqual(code, 400)
+        self.assertIn("failed validation 3 times", err["message"])
         self.assertIn("exactly 3 options", err["message"])
+        self.assertEqual(self.provider.calls, ["wizard_direction"] * 3)
+
+    def test_invalid_proposal_is_fed_back_and_fixed(self) -> None:
+        self.provider.broken_stage = "wizard_direction"
+        self.provider.broken_times = 1
+        code, view = self._post("/api/wizard/sessions", {"idea": "外卖小哥捡到能看见明天新闻的手机"})
+        self.assertEqual(code, 201)
+        self.assertEqual(len(view["options"]), 3)
+        self.assertEqual(self.provider.calls, ["wizard_direction", "wizard_direction"])
+        self.assertNotIn("上一次输出不合格", self.provider.prompts[0])
+        self.assertIn("上一次输出不合格", self.provider.prompts[1])
+        self.assertIn("exactly 3 options", self.provider.prompts[1])
+
+    def test_overlong_title_is_rejected_then_corrected(self) -> None:
+        code, view = self._post("/api/wizard/sessions", {"idea": "外卖小哥捡到能看见明天新闻的手机"})
+        sid = view["session_id"]
+        for _ in range(2):
+            self._post(f"/api/wizard/sessions/{sid}/answer", {"choice": 0})
+        self.provider.long_title_once = True
+        code, view = self._post(f"/api/wizard/sessions/{sid}/answer", {"choice": 0})
+        self.assertEqual(code, 200)
+        self.assertEqual(view["step"]["key"], "scale")
+        self.assertTrue(all(len(o["title"]) <= 15 for o in view["options"]))
+        self.assertIn("must be 1~15 chars", self.provider.prompts[-1])
 
 
 class TestWizardConfirm(unittest.TestCase):
