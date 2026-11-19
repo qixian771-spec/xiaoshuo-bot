@@ -34,6 +34,7 @@ from .base import (
 from .openai_compat import OpenAICompatibleProvider
 from .workbuddy_policy import (
     ModelSwitchEvent,
+    WorkBuddyModelCatalog,
     classify_workbuddy_quota_exhausted,
     validate_workbuddy_model_allowed,
     validate_workbuddy_rotation_chain,
@@ -465,6 +466,7 @@ class RoleModelRouter:
         monotonic_fn: Optional[Callable[[], float]] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
         now_fn: Optional[Callable[[], datetime]] = None,
+        workbuddy_catalog: Optional[WorkBuddyModelCatalog] = None,
     ) -> None:
         self._lock = threading.Lock()
         self._roles: Dict[str, RoleEndpointConfig] = {}
@@ -479,6 +481,7 @@ class RoleModelRouter:
         self.ledger = ledger or UsageBudgetLedger()
         self._monotonic = monotonic_fn or time.monotonic
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
+        self.workbuddy_catalog: Optional[WorkBuddyModelCatalog] = workbuddy_catalog
         if on_model_switched is not None:
             self._switch_listeners.append(on_model_switched)
 
@@ -501,16 +504,124 @@ class RoleModelRouter:
             self._model_key_cooldowns[cfg.role] = {}
 
     @classmethod
+    def from_workbuddy_catalog(
+        cls,
+        catalog: WorkBuddyModelCatalog,
+        *,
+        base_url: str,
+        api_keys: Sequence[str],
+        role_model_overrides: Optional[Mapping[str, Optional[str]]] = None,
+        role_base_url_overrides: Optional[Mapping[str, Optional[str]]] = None,
+        role_api_key_overrides: Optional[Mapping[str, Sequence[str]]] = None,
+        image_role: Optional[RoleEndpointConfig] = None,
+        ledger: Optional[UsageBudgetLedger] = None,
+        on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
+        timeout: int = 300,
+        stream: bool = True,
+        cooldown_sec: float = 60.0,
+        model_cooldown_sec: Optional[float] = None,
+    ) -> "RoleModelRouter":
+        overrides = role_model_overrides or {}
+        url_ov = role_base_url_overrides or {}
+        key_ov = role_api_key_overrides or {}
+        roles_cfg: Dict[str, RoleEndpointConfig] = {}
+        for role in ("planner", "writer", "critic", "polisher"):
+            primary_model, rotation_chain = catalog.default_role_model_and_rotation(
+                role,
+                override_model=overrides.get(role),
+            )
+            eff_url = (url_ov.get(role) or base_url or "").strip()
+            eff_keys = list(key_ov.get(role) or api_keys or ())
+            roles_cfg[role] = RoleEndpointConfig(
+                role=role,
+                base_url=eff_url,
+                model=primary_model,
+                api_keys=eff_keys,
+                provider_type="openai",
+                timeout=timeout,
+                stream=stream,
+                cooldown_sec=cooldown_sec,
+                model_whitelist=catalog.whitelist(),
+                rotation_models=rotation_chain,
+                manual_only_models=catalog.manual_only(),
+                model_cooldown_sec=model_cooldown_sec,
+                model_labels=catalog.labels(),
+            )
+        if image_role is not None:
+            roles_cfg["image"] = image_role
+        return cls(
+            roles=roles_cfg,
+            ledger=ledger,
+            on_model_switched=on_model_switched,
+            workbuddy_catalog=catalog,
+        )
+
+    @classmethod
     def from_dict(
         cls,
         config: Mapping[str, Any],
         ledger: Optional[UsageBudgetLedger] = None,
         on_model_switched: Optional[Callable[[ModelSwitchEvent], None]] = None,
     ) -> "RoleModelRouter":
+        catalog: Optional[WorkBuddyModelCatalog] = None
+        if "workbuddy_models" in config and config["workbuddy_models"] is not None:
+            catalog = WorkBuddyModelCatalog.from_mapping(config["workbuddy_models"])
+            if "roles" not in config:
+                raw_keys = config.get("api_keys")
+                if raw_keys is None and config.get("api_key") is not None:
+                    raw_keys = [str(config["api_key"])]
+                elif isinstance(raw_keys, str):
+                    raw_keys = [raw_keys]
+                return cls.from_workbuddy_catalog(
+                    catalog,
+                    base_url=str(config.get("base_url") or ""),
+                    api_keys=list(raw_keys or ()),
+                    role_model_overrides=config.get("role_model_overrides")
+                    if isinstance(config.get("role_model_overrides"), Mapping)
+                    else None,
+                    ledger=ledger,
+                    on_model_switched=on_model_switched,
+                    timeout=int(config.get("timeout", 300)),
+                    stream=bool(config.get("stream", True)),
+                    cooldown_sec=float(config.get("cooldown_sec", 60.0)),
+                    model_cooldown_sec=(
+                        float(config["model_cooldown_sec"])
+                        if config.get("model_cooldown_sec") is not None
+                        else None
+                    ),
+                )
+
         roles_raw = config.get("roles") if "roles" in config else config
         if not isinstance(roles_raw, Mapping):
             raise LLMConfigurationError("Router config must be a mapping of role -> endpoint config.")
-        return cls(roles=roles_raw, ledger=ledger, on_model_switched=on_model_switched)
+
+        if catalog is None:
+            return cls(roles=roles_raw, ledger=ledger, on_model_switched=on_model_switched)
+
+        enriched_roles: Dict[str, RoleEndpointConfig] = {}
+        for role_name, raw_cfg in roles_raw.items():
+            if not isinstance(raw_cfg, Mapping):
+                raise LLMConfigurationError(f"Role config for {role_name!r} must be a mapping.")
+            merged = dict(raw_cfg)
+            if role_name != "image":
+                explicit_model = str(merged.get("model") or "").strip() or None
+                primary, default_rotation = catalog.default_role_model_and_rotation(
+                    role_name, override_model=explicit_model
+                )
+                merged["model"] = primary
+                merged.setdefault("model_whitelist", list(catalog.whitelist()))
+                merged.setdefault("manual_only_models", list(catalog.manual_only()))
+                merged.setdefault("model_labels", dict(catalog.labels()))
+                if "rotation_models" not in merged or merged["rotation_models"] is None:
+                    merged["rotation_models"] = list(default_rotation)
+            enriched_roles[role_name] = RoleEndpointConfig.from_mapping(role_name, merged)
+
+        return cls(
+            roles=enriched_roles,
+            ledger=ledger,
+            on_model_switched=on_model_switched,
+            workbuddy_catalog=catalog,
+        )
 
     def add_model_switch_listener(self, callback: Callable[[ModelSwitchEvent], None]) -> None:
         with self._lock:

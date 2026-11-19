@@ -24,6 +24,7 @@
     CPA_USAGE: "/api/cpa/usage",
     CPA_OAUTH: "/api/cpa/oauth",
     CPA_BINDINGS: "/api/cpa/bindings",
+    MODEL_SWITCHES: "/api/model-switches",
     COMPANION_RESUME: "/api/companion/resume",
     EVENTS_STREAM: "/api/events/stream",
     PRODUCTION_KPI: "/api/production/kpi",
@@ -777,6 +778,39 @@
     renderModelQuotaAlerts();
   }
 
+  async function loadModelSwitches() {
+    try {
+      const payload = await apiRequest(API_ROUTES.MODEL_SWITCHES + "?limit=5", { method: "GET" });
+      const events = (payload && Array.isArray(payload.events)) ? payload.events : [];
+      events.slice(0, 3).forEach(function (ev) {
+        if (!ev || typeof ev !== "object") {
+          return;
+        }
+        const alertId = MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED + ":" + String(ev.id || "");
+        if (state.dismissedQuotaAlertIds.has(alertId)) {
+          return;
+        }
+        state.modelQuotaAlerts.set(alertId, {
+          id: alertId,
+          kind: MODEL_QUOTA_ALERT_KINDS.MODEL_SWITCHED,
+          book_id: String(ev.book_id || ""),
+          book_title: String(ev.book_title || ev.book_id || ""),
+          from_model: String(ev.from_model || ""),
+          to_model: String(ev.to_model || ""),
+          reason: String(ev.reason || ""),
+          error_type: "",
+          timestamp: String(ev.created_at || ""),
+          source: "db_event",
+        });
+      });
+      renderModelQuotaAlerts();
+    } catch (err) {
+      if (!state.authRequired) {
+        showToast("加载模型切换记录失败：" + err.message, "err");
+      }
+    }
+  }
+
   function syncQuotaAlertsFromBooks() {
     const activeQuotaIds = new Set();
     state.books.forEach(function (book) {
@@ -841,7 +875,7 @@
       const heading = isSwitch ? "🔄 写作模型已切换" : "🚨 超预算 / 全部额度用尽 · 熔断停机";
       const bookLabel = item.book_title || item.book_id;
       const modelStep = (item.from_model || item.to_model)
-        ? ('<span class="tag tag-gold">' + escapeHtml(item.from_model || "原模型") + ' → ' + escapeHtml(item.to_model || "目标模型") + '</span>')
+        ? ('<span class="tag tag-gold">从 ' + escapeHtml(item.from_model || "原模型") + ' 切到 ' + escapeHtml(item.to_model || "目标模型") + '</span>')
         : "";
       const detailParts = [];
       if (bookLabel) {
@@ -2087,6 +2121,7 @@
           '<div class="chapter-item-sub">' +
             '<span class="tag ' + escapeHtml(stMeta.cls) + '">' + escapeHtml(stMeta.text) + '</span>' +
             '<span class="mono">' + escapeHtml(ch.char_count || 0) + ' 字</span>' +
+            (ch.model ? '<span class="tag tag-model" data-chapter-model="' + escapeHtml(ch.model) + '">模型：' + escapeHtml(ch.model) + '</span>' : "") +
           '</div>' +
         '</button>'
       );
@@ -2118,9 +2153,11 @@
         titleEl.textContent = "第 " + targetChapter + " 章 · " + ((detail && detail.public_title) || "未命名");
       }
       if (metaEl) {
+        const chapterModel = String((detail && detail.model) || "").trim();
         metaEl.innerHTML =
           '<span>状态：<strong>' + escapeHtml((detail && detail.status) || "-") + '</strong></span>' +
           '<span>字数：<strong class="mono">' + escapeHtml((detail && detail.char_count) || 0) + '</strong></span>' +
+          '<span>模型：<strong class="mono chapter-model-value" id="reader-chapter-model">' + escapeHtml(chapterModel || "未记录") + '</strong></span>' +
           (detail && detail.sha256 ? '<span class="mono">SHA256: ' + escapeHtml(String(detail.sha256).slice(0, 12)) + '…</span>' : "") +
           (locked ? '<span class="tag tag-gold">🔒 已锁章保护</span>' : '<span class="tag">🔓 未锁定</span>');
       }
@@ -2602,6 +2639,7 @@
     }
     await loadBooks();
     if (!state.authRequired) {
+      loadModelSwitches();
       loadCpaUsage();
       loadProductionKpi();
       const isolated = state.books.find(function (b) { return b.status === "ISOLATED_GATE_FAILURE"; });

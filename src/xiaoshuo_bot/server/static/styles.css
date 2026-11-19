@@ -1413,12 +1413,22 @@ textarea:focus {
 
 .chapter-item-sub {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 6px;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.chapter-item-sub .tag {
+  white-space: nowrap;
+}
+
+.chapter-item-sub .tag-model {
+  flex: 1 0 100%;
+  justify-content: flex-start;
 }
 
 .chapter-viewer-head {
@@ -1569,6 +1579,22 @@ textarea:focus {
 
 .toast.is-err {
   border-left-color: var(--accent-danger);
+}
+
+.tag-model {
+  background: var(--accent-cyan-dim);
+  border-color: rgba(56, 189, 248, 0.42);
+  color: #7dd3fc;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chapter-model-value {
+  color: #7dd3fc;
 }
 
 .empty-state {

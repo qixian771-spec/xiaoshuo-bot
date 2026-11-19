@@ -714,6 +714,11 @@ class NovelGenerationEngine:
             SSE_CHAPTER_STARTED,
             {"chapter": scene.chapter, "scene_id": scene.scene_id, "volume": scene.volume},
         )
+        switch_idx_start = (
+            len(self.provider.get_model_switch_history())
+            if isinstance(self.provider, RoleModelRouter)
+            else 0
+        )
 
         sys_prompt, user_prompt = self.compiler.compile_scene_prompt(
             scene, self.state, memory_pyramid=self.memory
@@ -1007,9 +1012,25 @@ class NovelGenerationEngine:
                     locked=scene.locked,
                     scene_id=scene.scene_id,
                 )
+                chapter_switches = (
+                    [
+                        ev.to_dict()
+                        for ev in self.provider.get_model_switch_history()[switch_idx_start:]
+                        if ev.chapter in (0, scene.chapter)
+                    ]
+                    if isinstance(self.provider, RoleModelRouter)
+                    else []
+                )
+                actual_model = str(llm_resp.model or "").strip()
+                critic_model = str(critic_eval.model or "").strip() if critic_eval is not None else ""
+                polisher_model = str(polish_res.model or "").strip() if polish_res is not None else ""
                 meta_payload = {
                     **artifact.to_dict(),
-                    "model": llm_resp.model,
+                    "model": actual_model,
+                    "writer_model": actual_model,
+                    "critic_model": critic_model,
+                    "polisher_model": polisher_model,
+                    "model_switches": chapter_switches,
                     "updated_at": _now_shanghai_iso(),
                 }
                 if critic_eval is not None:
@@ -1051,6 +1072,7 @@ class NovelGenerationEngine:
                         "char_count": report.char_count,
                         "sha256": artifact.sha256,
                         "locked": artifact.locked,
+                        "model": actual_model,
                     },
                 )
 
@@ -1068,7 +1090,11 @@ class NovelGenerationEngine:
                     "first_char": candidate_text[0],
                     "opening_preview": candidate_text[:68].replace("\n", " "),
                     "ending_preview": candidate_text[-68:].replace("\n", " "),
-                    "model": llm_resp.model,
+                    "model": actual_model,
+                    "writer_model": actual_model,
+                    "critic_model": critic_model,
+                    "polisher_model": polisher_model,
+                    "model_switches": chapter_switches,
                     "latency_sec": llm_resp.latency_sec,
                     "chapter_file": str(ch_path),
                     "meta_file": str(meta_path),

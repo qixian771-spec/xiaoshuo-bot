@@ -817,6 +817,13 @@ class MatrixScheduler:
         author_note = str(ch_summary.get("author_note") or "")
         sha256_val = str(ch_summary.get("sha256") or "")
         locked_val = bool(ch_summary.get("locked", next_scene.locked))
+        actual_model = str(ch_summary.get("model") or "").strip()
+        if not actual_model:
+            meta_file = chapters_dir / f"chapter_{next_scene.chapter:04d}.meta.json"
+            if meta_file.is_file():
+                meta_obj = json.loads(meta_file.read_text(encoding="utf-8"))
+                if isinstance(meta_obj, dict):
+                    actual_model = str(meta_obj.get("model") or "").strip()
 
         item = self.db.add_stockpiled_chapter(
             book_id,
@@ -826,6 +833,7 @@ class MatrixScheduler:
             author_note=author_note,
             sha256=sha256_val,
             locked=locked_val,
+            model=actual_model,
         )
         self.db.record_production_stat(
             book_id,
@@ -834,6 +842,7 @@ class MatrixScheduler:
             attempts_used=int(ch_summary["attempts_used"]),
             rewrites_triggered=int(ch_summary["rewrites_triggered"]),
             char_count=item.char_count,
+            model=actual_model,
         )
         self.event_broker.notify_poll_waiters()
         return {
@@ -841,6 +850,7 @@ class MatrixScheduler:
             "status": "PRODUCED",
             "chapter": item.chapter,
             "char_count": item.char_count,
+            "model": item.model,
             "stockpiled_count": self.db.count_stockpiled(book_id),
         }
 

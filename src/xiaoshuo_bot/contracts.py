@@ -49,6 +49,7 @@ API_CPA_MODELS = "/api/cpa/models"
 API_CPA_USAGE = "/api/cpa/usage"
 API_CPA_OAUTH = "/api/cpa/oauth"
 API_CPA_BINDINGS = "/api/cpa/bindings"
+API_MODEL_SWITCHES = "/api/model-switches"
 
 API_COMPANION_POLL = "/api/companion/poll"
 API_COMPANION_LEASE = "/api/companion/lease"
@@ -93,6 +94,7 @@ ALL_API_ROUTES: Tuple[str, ...] = (
     API_CPA_USAGE,
     API_CPA_OAUTH,
     API_CPA_BINDINGS,
+    API_MODEL_SWITCHES,
     API_COMPANION_POLL,
     API_COMPANION_LEASE,
     API_COMPANION_RECEIPT,
@@ -606,6 +608,7 @@ class ChapterStatusItem:
     scheduled_at: str = ""
     published_at: str = ""
     error_message: str = ""
+    model: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -623,6 +626,7 @@ class ChapterStatusItem:
             scheduled_at=str(data.get("scheduled_at", "")),
             published_at=str(data.get("published_at", "")),
             error_message=str(data.get("error_message", "")),
+            model=str(data.get("model", "")),
         )
 
 
@@ -1017,6 +1021,7 @@ __all__ = [
     "API_CPA_OAUTH",
     "API_CPA_USAGE",
     "API_EVENTS_STREAM",
+    "API_MODEL_SWITCHES",
     "API_PRODUCTION_KPI",
     "API_PUBLIC_BOOK",
     "API_PUBLIC_BOOKS",

@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import os
 import re
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from .base import LLMConfigurationError, LLMRequestError, SHANGHAI_TZ, parse_model_reasoning_suffix
+from .base import LLMConfigurationError, LLMError, LLMRequestError, SHANGHAI_TZ, parse_model_reasoning_suffix
 
 # ---------------------------------------------------------------------------
 # Immutable WorkBuddy Whitelist & Rotation Policy (Owner Decisions)
@@ -42,6 +43,14 @@ WORKBUDDY_PLANNER_ROTATION_SLOTS: Tuple[str, ...] = (
     WORKBUDDY_SLOT_MIMO_V2_6_PRO,
 )
 WORKBUDDY_MANUAL_ONLY_SLOTS: Tuple[str, ...] = (WORKBUDDY_SLOT_HY4,)
+
+# Explicit environment variable names (zero hardcoded guessed upstream model IDs!)
+WORKBUDDY_MODEL_ENV_KEYS: Dict[str, str] = {
+    WORKBUDDY_SLOT_HY4_FLASH: "WORKBUDDY_MODEL_HY4_FLASH",
+    WORKBUDDY_SLOT_HY4: "WORKBUDDY_MODEL_HY4",
+    WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH: "WORKBUDDY_MODEL_DEEPSEEK_V4_1_FLASH",
+    WORKBUDDY_SLOT_MIMO_V2_6_PRO: "WORKBUDDY_MODEL_MIMO_V2_6_PRO",
+}
 
 # Forbidden model patterns:
 # - DeepSeek-V4-Pro (and prefix/separator variants)
@@ -334,9 +343,267 @@ def now_shanghai_iso() -> str:
     return datetime.now(SHANGHAI_TZ).isoformat()
 
 
+@dataclass(frozen=True)
+class WorkBuddyModelCatalog:
+    """Explicit configuration mapping the 4 whitelisted WorkBuddy logical slots to real CPA upstream IDs.
+
+    Zero hardcoded guessed upstream IDs: every slot MUST be explicitly configured by operator.
+    """
+
+    hy4_flash: str
+    hy4: str
+    deepseek_v4_1_flash: str
+    mimo_v2_6_pro: str
+
+    def __post_init__(self) -> None:
+        slot_values = {
+            WORKBUDDY_SLOT_HY4_FLASH: (self.hy4_flash or "").strip(),
+            WORKBUDDY_SLOT_HY4: (self.hy4 or "").strip(),
+            WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH: (self.deepseek_v4_1_flash or "").strip(),
+            WORKBUDDY_SLOT_MIMO_V2_6_PRO: (self.mimo_v2_6_pro or "").strip(),
+        }
+        missing = [
+            f"{slot} ({WORKBUDDY_SLOT_DISPLAY_NAMES[slot]} / env {WORKBUDDY_MODEL_ENV_KEYS[slot]})"
+            for slot, val in slot_values.items()
+            if not val
+        ]
+        if missing:
+            raise LLMConfigurationError(
+                "WorkBuddy 白名单模型配置缺失，严禁使用硬编码猜测值，请显式配置："
+                + "、".join(missing)
+            )
+        object.__setattr__(self, "hy4_flash", slot_values[WORKBUDDY_SLOT_HY4_FLASH])
+        object.__setattr__(self, "hy4", slot_values[WORKBUDDY_SLOT_HY4])
+        object.__setattr__(
+            self, "deepseek_v4_1_flash", slot_values[WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH]
+        )
+        object.__setattr__(self, "mimo_v2_6_pro", slot_values[WORKBUDDY_SLOT_MIMO_V2_6_PRO])
+
+        seen_ids: Dict[str, str] = {}
+        for slot in WORKBUDDY_WHITELIST_SLOTS:
+            model_id = slot_values[slot]
+            forbidden = find_forbidden_model_reason(model_id)
+            if forbidden:
+                raise LLMConfigurationError(
+                    f"WorkBuddy 白名单槽位 {slot!r}（{WORKBUDDY_SLOT_DISPLAY_NAMES[slot]}）"
+                    f"配置了禁止模型：{forbidden}。"
+                )
+            if model_id in seen_ids:
+                raise LLMConfigurationError(
+                    f"WorkBuddy 白名单槽位 {slot!r} 与 {seen_ids[model_id]!r} 重复映射到同一上游模型 ID {model_id!r}。"
+                )
+            seen_ids[model_id] = slot
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "WorkBuddyModelCatalog":
+        if not isinstance(data, Mapping):
+            raise LLMConfigurationError("workbuddy_models 配置必须是一个字典映射。")
+        allowed_keys = set(WORKBUDDY_WHITELIST_SLOTS)
+        unknown_keys = sorted(str(k) for k in data.keys() if str(k) not in allowed_keys)
+        if unknown_keys:
+            raise LLMConfigurationError(
+                f"workbuddy_models 包含白名单以外的非法配置项：{', '.join(unknown_keys)}。"
+                f"仅允许：{', '.join(WORKBUDDY_WHITELIST_SLOTS)}。"
+            )
+        return cls(
+            hy4_flash=str(data.get(WORKBUDDY_SLOT_HY4_FLASH) or ""),
+            hy4=str(data.get(WORKBUDDY_SLOT_HY4) or ""),
+            deepseek_v4_1_flash=str(data.get(WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH) or ""),
+            mimo_v2_6_pro=str(data.get(WORKBUDDY_SLOT_MIMO_V2_6_PRO) or ""),
+        )
+
+    @classmethod
+    def from_env(
+        cls,
+        environ: Optional[Mapping[str, str]] = None,
+        *,
+        overrides: Optional[Mapping[str, Optional[str]]] = None,
+    ) -> Optional["WorkBuddyModelCatalog"]:
+        env = environ if environ is not None else os.environ
+        ov = overrides or {}
+        resolved: Dict[str, str] = {}
+        any_present = False
+        for slot in WORKBUDDY_WHITELIST_SLOTS:
+            env_name = WORKBUDDY_MODEL_ENV_KEYS[slot]
+            raw = ov.get(slot)
+            if raw is None or not str(raw).strip():
+                raw = env.get(env_name)
+            cleaned = str(raw or "").strip()
+            if cleaned:
+                any_present = True
+            resolved[slot] = cleaned
+        if not any_present:
+            return None
+        return cls.from_mapping(resolved)
+
+    def slot_to_model(self) -> Dict[str, str]:
+        return {
+            WORKBUDDY_SLOT_HY4_FLASH: self.hy4_flash,
+            WORKBUDDY_SLOT_HY4: self.hy4,
+            WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH: self.deepseek_v4_1_flash,
+            WORKBUDDY_SLOT_MIMO_V2_6_PRO: self.mimo_v2_6_pro,
+        }
+
+    def whitelist(self) -> Tuple[str, ...]:
+        return (
+            self.hy4_flash,
+            self.hy4,
+            self.deepseek_v4_1_flash,
+            self.mimo_v2_6_pro,
+        )
+
+    def manual_only(self) -> Tuple[str, ...]:
+        return (self.hy4,)
+
+    def writer_rotation(self) -> Tuple[str, ...]:
+        return (
+            self.hy4_flash,
+            self.deepseek_v4_1_flash,
+            self.mimo_v2_6_pro,
+        )
+
+    def planner_rotation(self) -> Tuple[str, ...]:
+        return (
+            self.deepseek_v4_1_flash,
+            self.mimo_v2_6_pro,
+        )
+
+    def labels(self) -> Dict[str, str]:
+        return {
+            self.hy4_flash: WORKBUDDY_SLOT_DISPLAY_NAMES[WORKBUDDY_SLOT_HY4_FLASH],
+            self.hy4: WORKBUDDY_SLOT_DISPLAY_NAMES[WORKBUDDY_SLOT_HY4],
+            self.deepseek_v4_1_flash: WORKBUDDY_SLOT_DISPLAY_NAMES[WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH],
+            self.mimo_v2_6_pro: WORKBUDDY_SLOT_DISPLAY_NAMES[WORKBUDDY_SLOT_MIMO_V2_6_PRO],
+        }
+
+    def default_role_model_and_rotation(
+        self,
+        role: str,
+        *,
+        override_model: Optional[str] = None,
+    ) -> Tuple[str, Tuple[str, ...]]:
+        """Resolve (primary_model, rotation_models) for one text role under owner constraints."""
+        base_chain = self.planner_rotation() if role == "planner" else self.writer_rotation()
+        if not override_model or not str(override_model).strip():
+            return base_chain[0], base_chain
+
+        chosen = validate_workbuddy_model_allowed(
+            str(override_model).strip(),
+            self.whitelist(),
+            context=f"role={role}",
+        )
+        if chosen in self.manual_only():
+            return chosen, ()
+        if chosen in base_chain:
+            idx = base_chain.index(chosen)
+            return chosen, base_chain[idx:]
+        # e.g. planner explicitly overridden to hy4_flash -> start from hy4_flash forward along full rotation
+        full_chain = self.writer_rotation()
+        if chosen in full_chain:
+            idx = full_chain.index(chosen)
+            return chosen, full_chain[idx:]
+        return chosen, ()
+
+    def to_dict(self) -> Dict[str, str]:
+        return self.slot_to_model()
+
+
+def verify_router_models_against_cpa(
+    router: Any,
+    *,
+    catalog: Optional[WorkBuddyModelCatalog] = None,
+    probe_role: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Startup self-check: validate configured models against whitelist AND live CPA GET /v1/models.
+
+    Raises LLMConfigurationError (refusing service startup) whenever:
+    - Any configured role model or rotation model is forbidden or outside the allowed whitelist;
+    - CPA /v1/models cannot be queried or returns no models;
+    - Any configured whitelist/role model does not exist in CPA /v1/models (listing exact model IDs).
+    """
+    text_roles = ("planner", "writer", "critic", "polisher")
+    configured_roles = [r for r in text_roles if router.has_role(r)]
+    if not configured_roles:
+        raise LLMConfigurationError("启动自检失败：RoleModelRouter 未配置任何文本角色。")
+
+    effective_catalog = catalog or getattr(router, "workbuddy_catalog", None)
+    required_models: Dict[str, list[str]] = {}
+
+    if effective_catalog is not None:
+        whitelist = effective_catalog.whitelist()
+        for slot, model_id in effective_catalog.slot_to_model().items():
+            required_models.setdefault(model_id, []).append(
+                f"白名单槽位 {slot}（{WORKBUDDY_SLOT_DISPLAY_NAMES[slot]}）"
+            )
+    else:
+        whitelist = ()
+
+    for role in configured_roles:
+        cfg = router.get_role_config(role)
+        role_wl = whitelist or cfg.model_whitelist
+        if role_wl:
+            validate_workbuddy_model_allowed(
+                cfg.model, role_wl, context=f"启动自检 role={role} model"
+            )
+            for rot_model in cfg.rotation_models:
+                validate_workbuddy_model_allowed(
+                    rot_model, role_wl, context=f"启动自检 role={role} rotation_models"
+                )
+        else:
+            forbidden = find_forbidden_model_reason(cfg.model)
+            if forbidden:
+                raise LLMConfigurationError(f"启动自检拒绝启动 [role={role}]：{forbidden}。")
+
+        required_models.setdefault(cfg.model, []).append(f"角色 {role} 主模型")
+        for rot_model in cfg.rotation_models:
+            required_models.setdefault(rot_model, []).append(f"角色 {role} 轮换链")
+        for wl_model in cfg.model_whitelist:
+            required_models.setdefault(wl_model, []).append(f"角色 {role} 白名单")
+
+    selected_probe_role = (
+        probe_role
+        if probe_role and router.has_role(probe_role)
+        else ("writer" if router.has_role("writer") else configured_roles[0])
+    )
+    try:
+        available_list = list(router.list_models(role=selected_probe_role))
+    except LLMError as exc:
+        raise LLMConfigurationError(
+            f"启动自检拒绝启动：无法从 CPA /v1/models 获取可用模型清单（role={selected_probe_role}）：{exc}"
+        ) from None
+
+    available_set = {str(m).strip() for m in available_list if str(m).strip()}
+    if not available_set:
+        raise LLMConfigurationError(
+            f"启动自检拒绝启动：CPA /v1/models 返回空模型列表（role={selected_probe_role}），请先确认 WorkBuddy 登录状态。"
+        )
+
+    missing_details: list[str] = []
+    for model_id, usages in required_models.items():
+        if model_id not in available_set:
+            uniq_usages = "、".join(dict.fromkeys(usages))
+            missing_details.append(f"{model_id!r}（用于：{uniq_usages}）")
+
+    if missing_details:
+        raise LLMConfigurationError(
+            "启动自检拒绝启动：以下已配置模型在 CPA /v1/models 中不存在："
+            + "；".join(missing_details)
+            + f"。CPA 当前返回 {len(available_set)} 个模型：{', '.join(sorted(available_set)[:12])}"
+            + ("..." if len(available_set) > 12 else "")
+        )
+
+    return {
+        "verified": True,
+        "probe_role": selected_probe_role,
+        "checked_models": sorted(required_models.keys()),
+        "available_count": len(available_set),
+    }
+
+
 __all__ = [
     "ModelSwitchEvent",
     "WORKBUDDY_MANUAL_ONLY_SLOTS",
+    "WORKBUDDY_MODEL_ENV_KEYS",
     "WORKBUDDY_PLANNER_ROTATION_SLOTS",
     "WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH",
     "WORKBUDDY_SLOT_DISPLAY_NAMES",
@@ -345,9 +612,11 @@ __all__ = [
     "WORKBUDDY_SLOT_MIMO_V2_6_PRO",
     "WORKBUDDY_WHITELIST_SLOTS",
     "WORKBUDDY_WRITER_ROTATION_SLOTS",
+    "WorkBuddyModelCatalog",
     "classify_workbuddy_quota_exhausted",
     "find_forbidden_model_reason",
     "now_shanghai_iso",
     "validate_workbuddy_model_allowed",
     "validate_workbuddy_rotation_chain",
+    "verify_router_models_against_cpa",
 ]

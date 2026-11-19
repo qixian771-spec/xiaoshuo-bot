@@ -25,6 +25,7 @@ from .router import RoleEndpointConfig, RoleModelRouter, UsageBudgetLedger, VALI
 from .workbuddy_policy import (
     ModelSwitchEvent,
     WORKBUDDY_MANUAL_ONLY_SLOTS,
+    WORKBUDDY_MODEL_ENV_KEYS,
     WORKBUDDY_PLANNER_ROTATION_SLOTS,
     WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
     WORKBUDDY_SLOT_DISPLAY_NAMES,
@@ -33,10 +34,12 @@ from .workbuddy_policy import (
     WORKBUDDY_SLOT_MIMO_V2_6_PRO,
     WORKBUDDY_WHITELIST_SLOTS,
     WORKBUDDY_WRITER_ROTATION_SLOTS,
+    WorkBuddyModelCatalog,
     classify_workbuddy_quota_exhausted,
     find_forbidden_model_reason,
     validate_workbuddy_model_allowed,
     validate_workbuddy_rotation_chain,
+    verify_router_models_against_cpa,
 )
 
 __all__ = [
@@ -65,6 +68,7 @@ __all__ = [
     "UsageBudgetLedger",
     "VALID_ROLES",
     "WORKBUDDY_MANUAL_ONLY_SLOTS",
+    "WORKBUDDY_MODEL_ENV_KEYS",
     "WORKBUDDY_PLANNER_ROTATION_SLOTS",
     "WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH",
     "WORKBUDDY_SLOT_DISPLAY_NAMES",
@@ -73,10 +77,12 @@ __all__ = [
     "WORKBUDDY_SLOT_MIMO_V2_6_PRO",
     "WORKBUDDY_WHITELIST_SLOTS",
     "WORKBUDDY_WRITER_ROTATION_SLOTS",
+    "WorkBuddyModelCatalog",
     "classify_workbuddy_quota_exhausted",
     "find_forbidden_model_reason",
     "parse_model_reasoning_suffix",
     "redact_secrets",
     "validate_workbuddy_model_allowed",
     "validate_workbuddy_rotation_chain",
+    "verify_router_models_against_cpa",
 ]

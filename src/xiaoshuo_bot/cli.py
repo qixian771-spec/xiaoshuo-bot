@@ -40,6 +40,11 @@ from .llm import (
     RoleEndpointConfig,
     RoleModelRouter,
     UsageBudgetLedger,
+    WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
+    WORKBUDDY_SLOT_HY4,
+    WORKBUDDY_SLOT_HY4_FLASH,
+    WORKBUDDY_SLOT_MIMO_V2_6_PRO,
+    WorkBuddyModelCatalog,
 )
 from .loader import load_project
 from .models import ChapterArtifact, resolve_chapter_path
@@ -634,9 +639,18 @@ def _build_serve_router(
         "OPENAI_MODEL",
     )
 
+    wb_catalog = WorkBuddyModelCatalog.from_env(
+        overrides={
+            WORKBUDDY_SLOT_HY4_FLASH: getattr(args, "workbuddy_hy4_flash", None),
+            WORKBUDDY_SLOT_HY4: getattr(args, "workbuddy_hy4", None),
+            WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH: getattr(args, "workbuddy_deepseek_v4_1_flash", None),
+            WORKBUDDY_SLOT_MIMO_V2_6_PRO: getattr(args, "workbuddy_mimo_v2_6_pro", None),
+        }
+    )
+
     text_roles = ("planner", "writer", "critic", "polisher")
     role_overrides: Dict[str, Dict[str, Optional[str]]] = {}
-    any_llm_setting = bool(default_url or default_keys_raw or default_model)
+    any_llm_setting = bool(default_url or default_keys_raw or default_model or wb_catalog is not None)
     for role in (*text_roles, "image"):
         env_prefix = f"XIAOSHUO_{role.upper()}"
         r_url = _resolve_env_or_arg(getattr(args, f"{role}_base_url", None), f"{env_prefix}_BASE_URL")
@@ -657,6 +671,42 @@ def _build_serve_router(
 
     if not any_llm_setting:
         return None
+
+    if wb_catalog is not None:
+        wb_base_url = default_url or _resolve_env_or_arg(
+            getattr(args, "cpa_url", None),
+            "CPA_BASE_URL",
+            "XIAOSHUO_CPA_URL",
+            "CPA_MANAGEMENT_URL",
+        )
+        wb_keys = _split_csv(default_keys_raw)
+        role_model_ov = {role: role_overrides[role]["model"] for role in text_roles}
+        role_url_ov = {role: role_overrides[role]["base_url"] for role in text_roles}
+        role_key_ov = {
+            role: _split_csv(role_overrides[role]["api_keys"])
+            for role in text_roles
+            if role_overrides[role]["api_keys"]
+        }
+        img_ov = role_overrides["image"]
+        image_cfg: Optional[RoleEndpointConfig] = None
+        if any((img_ov["base_url"], img_ov["api_keys"], img_ov["model"])):
+            image_cfg = RoleEndpointConfig(
+                role="image",
+                base_url=(img_ov["base_url"] or wb_base_url) or "",
+                model=img_ov["model"] or "",
+                api_keys=_split_csv(img_ov["api_keys"] or default_keys_raw),
+                provider_type=img_ov["provider_type"] or "auto",
+            )
+        return RoleModelRouter.from_workbuddy_catalog(
+            wb_catalog,
+            base_url=wb_base_url or "",
+            api_keys=wb_keys,
+            role_model_overrides=role_model_ov,
+            role_base_url_overrides=role_url_ov,
+            role_api_key_overrides=role_key_ov,
+            image_role=image_cfg,
+            ledger=ledger,
+        )
 
     roles_cfg: Dict[str, RoleEndpointConfig] = {}
     for role in text_roles:
@@ -1351,6 +1401,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="CPA management key/secret (env CPA_MANAGEMENT_KEY)",
     )
     p_srv.add_argument("--router-config", help="Path to 5-role RoleModelRouter JSON/YAML config")
+    p_srv.add_argument("--workbuddy-hy4-flash", help="Configured CPA upstream ID for WorkBuddy Hy4 flash (env WORKBUDDY_MODEL_HY4_FLASH)")
+    p_srv.add_argument("--workbuddy-hy4", help="Configured CPA upstream ID for WorkBuddy Hy4 manual-only (env WORKBUDDY_MODEL_HY4)")
+    p_srv.add_argument("--workbuddy-deepseek-v4-1-flash", help="Configured CPA upstream ID for WorkBuddy DeepSeek-V4.1-Flash (env WORKBUDDY_MODEL_DEEPSEEK_V4_1_FLASH)")
+    p_srv.add_argument("--workbuddy-mimo-v2-6-pro", help="Configured CPA upstream ID for WorkBuddy Xiaomi MiMo-V2.6-Pro (env WORKBUDDY_MODEL_MIMO_V2_6_PRO)")
     p_srv.add_argument("--base-url", help="Default CPA/OpenAI base URL for RoleModelRouter")
     p_srv.add_argument("--api-key", help="Default CPA/OpenAI API key (or comma-separated pool)")
     p_srv.add_argument("--model", help="Default model for text roles")

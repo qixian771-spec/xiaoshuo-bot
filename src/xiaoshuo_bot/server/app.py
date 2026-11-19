@@ -37,6 +37,7 @@ from ..contracts import (
     API_EVENTS_STREAM,
     API_GENRES,
     API_HEALTH,
+    API_MODEL_SWITCHES,
     API_PRODUCTION_KPI,
     API_PUBLIC_BOOKS,
     API_PUBLIC_EVENTS_STREAM,
@@ -67,6 +68,8 @@ from ..exporter import ExportError
 from ..genres import UnknownGenreError, list_genres
 from ..llm.base import CPAManagementError, LLMConfigurationError, LLMRequestError, QuotaExhaustedError
 from ..llm.cpa_manager import CPAManagementClient
+from ..llm.router import RoleModelRouter
+from ..llm.workbuddy_policy import verify_router_models_against_cpa
 from ..models import ProjectValidationError, SHANGHAI_TZ
 from .auth import (
     AdminAuthManager,
@@ -583,6 +586,15 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                 channel = channel_list[0] if channel_list else None
                 recipes = list_genres(channel=channel)
                 self._send_json(HTTPStatus.OK, {"genres": [r.to_dict() for r in recipes]})
+                return
+
+            if method == "GET" and path == API_MODEL_SWITCHES:
+                book_vals = query.get("book_id")
+                book_filter = book_vals[0].strip() if book_vals and book_vals[0].strip() else None
+                limit_vals = query.get("limit")
+                limit = int(limit_vals[0]) if limit_vals and limit_vals[0].strip().isdigit() else 50
+                events = self.server.db.list_model_switch_events(book_id=book_filter, limit=limit)
+                self._send_json(HTTPStatus.OK, {"events": events})
                 return
 
             if method == "GET" and path == API_BOOKS:
@@ -1197,14 +1209,46 @@ def create_server(
     telegram_bot: Optional[Any] = None,
     allow_insecure_loopback_no_auth: Optional[bool] = None,
     export_only: bool = False,
+    verify_cpa_models: Optional[bool] = None,
 ) -> MatrixHTTPServer:
-    """Create and validate a configured MatrixHTTPServer (enforces InsecureBindError)."""
+    """Create and validate a configured MatrixHTTPServer (enforces InsecureBindError & CPA model check)."""
     resolved_token = validate_bind_security(
         host,
         admin_token,
         allow_insecure_loopback_no_auth=allow_insecure_loopback_no_auth,
     )
     resolved_secret = validate_companion_secret(resolve_companion_secret(companion_secret))
+
+    router_obj: Optional[RoleModelRouter] = None
+    if isinstance(provider, RoleModelRouter):
+        router_obj = provider
+    elif scheduler is not None and isinstance(scheduler.provider, RoleModelRouter):
+        router_obj = scheduler.provider
+
+    should_verify_models = (
+        bool(verify_cpa_models)
+        if verify_cpa_models is not None
+        else (
+            router_obj is not None
+            and (
+                router_obj.workbuddy_catalog is not None
+                or any(
+                    router_obj.has_role(r)
+                    and bool(
+                        router_obj.get_role_config(r).model_whitelist
+                        or router_obj.get_role_config(r).rotation_models
+                    )
+                    for r in ("planner", "writer", "critic", "polisher")
+                )
+            )
+        )
+    )
+    if should_verify_models:
+        if router_obj is None:
+            raise LLMConfigurationError(
+                "启动自检拒绝启动：已要求核对 CPA /v1/models，但未配置 RoleModelRouter。"
+            )
+        verify_router_models_against_cpa(router_obj, catalog=router_obj.workbuddy_catalog)
 
     if scheduler is None:
         db = StockpileDB(db_path, now_fn=now_fn)

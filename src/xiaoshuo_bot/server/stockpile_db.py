@@ -238,6 +238,7 @@ class StockpileDB:
                     quota_deferred_to_date TEXT NOT NULL DEFAULT '',
                     error_code TEXT NOT NULL DEFAULT '',
                     error_message TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (book_id, chapter),
@@ -359,6 +360,7 @@ class StockpileDB:
                     attempts_used INTEGER NOT NULL,
                     rewrites_triggered INTEGER NOT NULL,
                     char_count INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
                     produced_at TEXT NOT NULL,
                     PRIMARY KEY (book_id, chapter)
                 );
@@ -406,6 +408,21 @@ class StockpileDB:
             if "error_message" not in wizard_cols:
                 cur.execute(
                     "ALTER TABLE wizard_sessions ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"
+                )
+            # Legacy schema migration: per-chapter model recording on chapters & production_stats.
+            chapter_cols = {
+                row[1] for row in cur.execute("PRAGMA table_info(chapters)").fetchall()
+            }
+            if "model" not in chapter_cols:
+                cur.execute(
+                    "ALTER TABLE chapters ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+                )
+            prod_stat_cols = {
+                row[1] for row in cur.execute("PRAGMA table_info(production_stats)").fetchall()
+            }
+            if "model" not in prod_stat_cols:
+                cur.execute(
+                    "ALTER TABLE production_stats ADD COLUMN model TEXT NOT NULL DEFAULT ''"
                 )
             self._migrate_legacy_manual_pause_books_unlocked()
 
@@ -584,18 +601,20 @@ class StockpileDB:
         attempts_used: int,
         rewrites_triggered: int,
         char_count: int,
+        model: str = "",
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO production_stats
-                    (book_id, chapter, duration_sec, attempts_used, rewrites_triggered, char_count, produced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (book_id, chapter, duration_sec, attempts_used, rewrites_triggered, char_count, model, produced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(book_id, chapter) DO UPDATE SET
                     duration_sec = excluded.duration_sec,
                     attempts_used = excluded.attempts_used,
                     rewrites_triggered = excluded.rewrites_triggered,
                     char_count = excluded.char_count,
+                    model = excluded.model,
                     produced_at = excluded.produced_at
                 """,
                 (
@@ -605,6 +624,7 @@ class StockpileDB:
                     int(attempts_used),
                     int(rewrites_triggered),
                     int(char_count),
+                    str(model or "").strip(),
                     self._now_iso(),
                 ),
             )
@@ -1109,6 +1129,7 @@ class StockpileDB:
         locked: bool = False,
         char_count: Optional[int] = None,
         overwrite_if_stockpiled: bool = True,
+        model: str = "",
     ) -> ChapterStatusItem:
         if chapter <= 0:
             raise ValueError(f"chapter must be positive, got {chapter}")
@@ -1116,6 +1137,7 @@ class StockpileDB:
             raise ValueError(f"Chapter {chapter} body cannot be empty")
         computed_sha = sha256.strip() or hashlib.sha256(body.encode("utf-8")).hexdigest()
         computed_chars = int(char_count) if char_count is not None else count_non_ws_chars(body)
+        cleaned_model = str(model or "").strip()
         now_iso = self._now_iso()
 
         with self._lock:
@@ -1135,7 +1157,7 @@ class StockpileDB:
                     """
                     UPDATE chapters
                     SET public_title = ?, body = ?, author_note = ?, char_count = ?,
-                        sha256 = ?, locked = ?, updated_at = ?
+                        sha256 = ?, locked = ?, model = ?, updated_at = ?
                     WHERE book_id = ? AND chapter = ?
                     """,
                     (
@@ -1145,6 +1167,7 @@ class StockpileDB:
                         computed_chars,
                         computed_sha,
                         1 if locked else 0,
+                        cleaned_model,
                         now_iso,
                         book_id,
                         chapter,
@@ -1155,8 +1178,8 @@ class StockpileDB:
                     """
                     INSERT INTO chapters (
                         book_id, chapter, public_title, body, author_note, char_count,
-                        sha256, locked, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        sha256, locked, status, model, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         book_id,
@@ -1168,6 +1191,7 @@ class StockpileDB:
                         computed_sha,
                         1 if locked else 0,
                         StockpileStatus.STOCKPILED.value,
+                        cleaned_model,
                         now_iso,
                         now_iso,
                     ),
@@ -1179,6 +1203,7 @@ class StockpileDB:
             return self._row_to_chapter_item(row)
 
     def _row_to_chapter_item(self, row: sqlite3.Row) -> ChapterStatusItem:
+        row_keys = set(row.keys())
         return ChapterStatusItem(
             chapter=int(row["chapter"]),
             public_title=str(row["public_title"]),
@@ -1190,6 +1215,7 @@ class StockpileDB:
             scheduled_at=str(row["scheduled_at"]),
             published_at=str(row["published_at"]),
             error_message=str(row["error_message"]),
+            model=str(row["model"] or "") if "model" in row_keys else "",
         )
 
     def list_chapters(self, book_id: str) -> List[ChapterStatusItem]:
