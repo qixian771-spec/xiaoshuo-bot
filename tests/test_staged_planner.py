@@ -1642,6 +1642,107 @@ class TestTask2PlanningGenreBlueprintsAndGoldenThree(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
+    def test_unfulfilled_expectation_rejected_at_planning_time_and_fixed_on_retry(self) -> None:
+        from xiaoshuo_bot.planner import find_unfulfilled_expectations
+
+        bible = _make_valid_bible(self.safe_names, author_level="lv0_1", target_chapters=72)
+        recipe = get_genre("urban_brainhole")
+
+        # 1. Intra-batch open (ch12, due=16) without fulfill on/before ch16 is rejected
+        bad_batch = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(11, 21)]
+        bad_batch[1]["expectation_directives"] = [
+            {
+                "id": "exp_pencil_note_who",
+                "title": "存根背面“表在潘”是谁写的",
+                "due_chapter": 16,
+                "description": "第16章前揭晓存根笔迹来源",
+                "action": "open",
+            }
+        ]
+        errs = _collect_scene_batch_errors(bad_batch, bible, (11, 20), recipe=recipe)
+        self.assertTrue(
+            any("STATE_EXPECTATION_OVERDUE" in e and "exp_pencil_note_who" in e and "Chapter 16" in e for e in errs),
+            errs,
+        )
+
+        # 2. Audit helper detects the unfulfilled expectation, then clears once paired with fulfill
+        unfulfilled = find_unfulfilled_expectations(bad_batch)
+        self.assertEqual(len(unfulfilled), 1)
+        self.assertEqual(unfulfilled[0]["id"], "exp_pencil_note_who")
+        bad_batch[5]["expectation_directives"] = [
+            {
+                "id": "exp_pencil_note_who",
+                "title": "存根背面“表在潘”是谁写的",
+                "due_chapter": 16,
+                "description": "核销笔迹来源",
+                "action": "fulfill",
+                "evidence_keywords": ["表在潘", "铅笔"],
+            }
+        ]
+        self.assertEqual(_collect_scene_batch_errors(bad_batch, bible, (11, 20), recipe=recipe), [])
+        self.assertEqual(find_unfulfilled_expectations(bad_batch), [])
+
+        # 3. Cross-batch: Batch 1 opens due=18 -> Batch 2 receives reminder in prompt, rejects miss, passes on retry
+        def inject_cross_batch_exp(req: LLMRequest) -> Optional[Dict[str, Any]]:
+            meta = dict(req.metadata or {})
+            if meta.get("stage") == "scenes" and meta.get("batch") == 1 and meta.get("attempt") == 1:
+                scenes = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(1, 11)]
+                scenes[1]["expectation_directives"] = [
+                    {
+                        "id": "exp_neighbor_watch",
+                        "title": "邻居为何认得这只怀表",
+                        "due_chapter": 18,
+                        "description": "第18章前揭晓",
+                        "action": "open",
+                    }
+                ]
+                return {"scenes": scenes}
+            if meta.get("stage") == "scenes" and meta.get("batch") == 2 and meta.get("attempt") == 2:
+                scenes = [_make_valid_scene(ch, genre_id="urban_brainhole") for ch in range(11, 21)]
+                scenes[7]["expectation_directives"] = [
+                    {
+                        "id": "exp_neighbor_watch",
+                        "title": "邻居为何认得这只怀表",
+                        "due_chapter": 18,
+                        "description": "第18章揭晓",
+                        "action": "fulfill",
+                        "evidence_keywords": ["怀表", "认得"],
+                    }
+                ]
+                return {"scenes": scenes}
+            return None
+
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_exp_retry_"))
+        try:
+            llm = ScriptedStagedPlannerLLM(
+                safe_names=self.safe_names,
+                author_level="lv0_1",
+                target_chapters=72,
+                fault_injector=inject_cross_batch_exp,
+            )
+            planner = AutoNovelPlanner(llm, max_consecutive_same_location=2)
+            res = planner.plan_new_project(
+                project_id="exp_retry_book",
+                genre_id="urban_brainhole",
+                output_dir=tmp / "exp_retry_book",
+                author_level="lv0_1",
+                target_chapters=72,
+            )
+            self.assertEqual(len(res.project.scenes), 72)
+            self.assertEqual(find_unfulfilled_expectations(res.project.scenes), [])
+            b2_reqs = [
+                r for r in llm.requests
+                if (r.metadata or {}).get("stage") == "scenes" and (r.metadata or {}).get("batch") == 2
+            ]
+            self.assertEqual(len(b2_reqs), 2)
+            # Batch 2 attempt 1 already got the due expectation reminder in prompt
+            self.assertIn("exp_neighbor_watch", b2_reqs[0].user_prompt)
+            # Batch 2 attempt 2 got exact STATE_EXPECTATION_OVERDUE retry feedback
+            self.assertIn("STATE_EXPECTATION_OVERDUE", b2_reqs[1].user_prompt)
+            self.assertIn("exp_neighbor_watch", b2_reqs[1].user_prompt)
+        finally:
+            shutil.rmtree(tmp)
+
 
 if __name__ == "__main__":
     unittest.main()

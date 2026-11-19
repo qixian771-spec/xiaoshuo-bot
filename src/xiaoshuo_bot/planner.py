@@ -592,6 +592,7 @@ def _collect_scene_batch_errors(
     prior_trailing_suppress: int = 0,
     prior_trailing_location: Tuple[str, int] = ("", 0),
     max_consecutive_same_location: Optional[int] = None,
+    prior_open_expectations: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> List[str]:
     """Collect ALL validation errors for a Stage 2 scene batch without stopping at the first error."""
     start_ch, end_ch = chapter_range
@@ -843,6 +844,51 @@ def _collect_scene_batch_errors(
                 consec_loc = 1
                 loc_run = [ch]
 
+    # Expectation open <-> fulfill deadline consistency check (prevents STATE_EXPECTATION_OVERDUE deadlocks)
+    open_exps: Dict[str, Dict[str, Any]] = {
+        str(eid): dict(info)
+        for eid, info in (prior_open_expectations or {}).items()
+        if str(eid).strip()
+    }
+    reported_overdue: set[str] = set()
+    for ch in sorted(valid_scenes_by_ch):
+        raw_eds = valid_scenes_by_ch[ch].get("expectation_directives") or []
+        if isinstance(raw_eds, list):
+            for ed in raw_eds:
+                if not isinstance(ed, Mapping):
+                    continue
+                eid = _nonempty_str(ed.get("id"))
+                act = str(ed.get("action") or "open").strip()
+                due_raw = ed.get("due_chapter")
+                if not eid or not _is_strict_int(due_raw):
+                    continue
+                due_ch = int(due_raw)
+                if act == "open":
+                    if due_ch < ch:
+                        errors.append(
+                            f"Chapter {ch}: expectation {eid!r} action='open' has due_chapter={due_ch} < {ch}"
+                        )
+                    else:
+                        open_exps[eid] = {
+                            "id": eid,
+                            "title": _nonempty_str(ed.get("title")),
+                            "opened_chapter": ch,
+                            "due_chapter": due_ch,
+                        }
+                elif act == "fulfill":
+                    open_exps.pop(eid, None)
+                    reported_overdue.discard(eid)
+        for eid, info in list(open_exps.items()):
+            due_ch = int(info.get("due_chapter") or 0)
+            if due_ch > 0 and due_ch <= ch and eid not in reported_overdue:
+                reported_overdue.add(eid)
+                errors.append(
+                    f"Chapter {ch}: expectation {eid!r} ({info.get('title')!r}, opened Ch.{info.get('opened_chapter', '?')}, "
+                    f"due Ch.{due_ch}) has no matching action='fulfill' directive on or before Ch.{due_ch} "
+                    f"(would trigger STATE_EXPECTATION_OVERDUE deadlock at Ch.{due_ch + 1}); "
+                    f"add action='fulfill' with evidence_keywords on Ch.{due_ch} (or earlier)"
+                )
+
     # Golden-three-chapter beat alignment check (chapters 1..3 must match genre recipe beats)
     if recipe is not None and recipe.golden_three_beats:
         golden_beats_by_ch = {b.chapter: b for b in recipe.golden_three_beats}
@@ -1030,6 +1076,135 @@ def find_stale_location_runs(
         else:
             cur_loc = loc
             run_chapters = [ch]
+    return violations
+
+
+def _collect_open_expectations(
+    scenes: Sequence[Any],
+    *,
+    snapshot: Optional[WorldStateSnapshot] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Compute currently unfulfilled open expectations from optional snapshot + ordered scenes."""
+    open_exps: Dict[str, Dict[str, Any]] = {}
+    if snapshot is not None and getattr(snapshot, "active_expectations", None):
+        for eid, exp in snapshot.active_expectations.items():
+            if getattr(exp, "status", "") != "fulfilled":
+                open_exps[str(eid)] = {
+                    "id": str(eid),
+                    "title": str(getattr(exp, "title", "")),
+                    "opened_chapter": int(getattr(exp, "planted_chapter", 0) or 0),
+                    "due_chapter": int(getattr(exp, "due_chapter", 0) or 0),
+                }
+    ordered = sorted(
+        scenes,
+        key=lambda sc: int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0)),
+    )
+    for sc in ordered:
+        ch = int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0))
+        eds = sc.get("expectation_directives") if isinstance(sc, Mapping) else getattr(sc, "expectation_directives", [])
+        for ed in (eds or []):
+            if isinstance(ed, Mapping):
+                eid = str(ed.get("id") or "").strip()
+                act = str(ed.get("action") or "open").strip()
+                title = str(ed.get("title") or "").strip()
+                due = int(ed.get("due_chapter") or 0) if _is_strict_int(ed.get("due_chapter")) else 0
+            else:
+                eid = str(getattr(ed, "id", "") or "").strip()
+                act = str(getattr(ed, "action", "open") or "open").strip()
+                title = str(getattr(ed, "title", "") or "").strip()
+                due = int(getattr(ed, "due_chapter", 0) or 0)
+            if not eid:
+                continue
+            if act == "open":
+                open_exps[eid] = {
+                    "id": eid,
+                    "title": title,
+                    "opened_chapter": ch,
+                    "due_chapter": due,
+                }
+            elif act == "fulfill":
+                open_exps.pop(eid, None)
+    return open_exps
+
+
+def _format_due_expectations_block(
+    open_exps: Mapping[str, Mapping[str, Any]],
+    start_ch: int,
+    end_ch: int,
+) -> str:
+    due_items = [
+        info
+        for info in open_exps.values()
+        if int(info.get("due_chapter") or 0) <= end_ch
+    ]
+    due_items.sort(key=lambda x: (int(x.get("due_chapter") or 0), str(x.get("id") or "")))
+    if not due_items:
+        return "（本批无前序到期需核销的期待感承诺；若本批内新开 action='open' 且 due_chapter 落在本批内，必须在本批对应章配齐 action='fulfill'）"
+    lines = [
+        f"- [最晚第{int(info['due_chapter'])}章必须核销] id={info['id']}｜标题={info.get('title', '')}｜"
+        f"开启于第{info.get('opened_chapter', '?')}章｜必须在 <= 第{int(info['due_chapter'])}章写 action='fulfill' 及 evidence_keywords"
+        for info in due_items
+    ]
+    return "\n".join(lines)
+
+
+def find_unfulfilled_expectations(
+    scenes: Sequence[Any],
+    *,
+    through_chapter: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Audit ordered scenes and return all open expectations due <= through_chapter lacking fulfill."""
+    ordered = sorted(
+        scenes,
+        key=lambda sc: int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0)),
+    )
+    if not ordered:
+        return []
+    max_ch = int(
+        through_chapter
+        if through_chapter is not None
+        else (
+            ordered[-1].get("chapter", 0)
+            if isinstance(ordered[-1], Mapping)
+            else getattr(ordered[-1], "chapter", 0)
+        )
+    )
+    open_exps: Dict[str, Dict[str, Any]] = {}
+    violations: List[Dict[str, Any]] = []
+    reported: set[str] = set()
+    for sc in ordered:
+        ch = int(sc.get("chapter", 0) if isinstance(sc, Mapping) else getattr(sc, "chapter", 0))
+        if ch > max_ch:
+            break
+        eds = sc.get("expectation_directives") if isinstance(sc, Mapping) else getattr(sc, "expectation_directives", [])
+        for ed in (eds or []):
+            if isinstance(ed, Mapping):
+                eid = str(ed.get("id") or "").strip()
+                act = str(ed.get("action") or "open").strip()
+                title = str(ed.get("title") or "").strip()
+                due = int(ed.get("due_chapter") or 0) if _is_strict_int(ed.get("due_chapter")) else 0
+            else:
+                eid = str(getattr(ed, "id", "") or "").strip()
+                act = str(getattr(ed, "action", "open") or "open").strip()
+                title = str(getattr(ed, "title", "") or "").strip()
+                due = int(getattr(ed, "due_chapter", 0) or 0)
+            if not eid:
+                continue
+            if act == "open":
+                open_exps[eid] = {
+                    "id": eid,
+                    "title": title,
+                    "opened_chapter": ch,
+                    "due_chapter": due,
+                }
+            elif act == "fulfill":
+                open_exps.pop(eid, None)
+                reported.discard(eid)
+        for eid, info in list(open_exps.items()):
+            due = int(info.get("due_chapter") or 0)
+            if 0 < due <= ch and eid not in reported:
+                reported.add(eid)
+                violations.append(dict(info))
     return violations
 
 
@@ -1871,7 +2046,7 @@ class AutoNovelPlanner:
             "4. emotion_polarity 只能取 suppress / burst / neutral / mixed，且全书（含跨批衔接）连续 suppress 绝对不超过 2 章；同一 location_id 绝对不可连续出现超过 2 章（否则触发 STATE_STALE_LOCATION 场景僵化门禁），若剧情围绕同一大区域请细分子空间（如 *_front / *_backroom / *_alley）或切换新场景。\n"
             "5. 本批要求埋设或回收的伏笔，必须在对应章节的 events 中显式体现该伏笔 id 及物理关键词。\n"
             "6. 若本批包含第 1~3 章，必须严格对齐下方【题材黄金三章节拍】：第 1、2、3 章的 beat_type 必须包含对应章节的必填节拍定位名称，cliffhanger_hook 必须非空并贴合章末断章方向，events 必须落实开篇钩子、核心冲突与爽点/反转；所有章节情节须遵守下方【题材硬常识防穿帮卡】。\n"
-            "7. 四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；有变化时每一项都必须照样例的字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。\n"
+            "7. 四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；有变化时每一项都必须照样例的字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。特别红线：凡在本批到期（due_chapter <= 本批末章）的已开启期待感，必须在对应 due_chapter 或更早章节配对写出完全相同 id 的 action='fulfill' 及 evidence_keywords（严禁漏配或改名，否则下章触发 STATE_EXPECTATION_OVERDUE 拦截）。\n"
             "8. 必须严格遵循以下完整 JSON 格式样例：\n"
             f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
@@ -1887,6 +2062,8 @@ class AutoNovelPlanner:
         for batch_idx, (start_ch, end_ch) in enumerate(ranges, start=1):
             prior_trailing_suppress = _trailing_suppress_count(all_scenes)
             prior_trailing_loc = _trailing_location_run(all_scenes)
+            prior_open_exps = _collect_open_expectations(all_scenes)
+            batch_exp_block = _format_due_expectations_block(prior_open_exps, start_ch, end_ch)
             prior_summary_lines = [
                 f"- 第{s['chapter']}章《{s.get('public_title') or s.get('internal_title')}》："
                 f"{'；'.join(str(e) for e in (s.get('events') or [])[:2])}"
@@ -1955,6 +2132,7 @@ class AutoNovelPlanner:
                     f"{golden_three_section}"
                     f"{common_sense_block}\n\n"
                     f"本批必须埋设/回收的伏笔:\n{batch_fs_block}\n"
+                    f"本批到期必须核销的期待感承诺（严禁漏写 action='fulfill'）:\n{batch_exp_block}\n"
                     f"此前各章梗概:\n{prior_summary_block}\n"
                     f"{brief_section}"
                     f"{feedback_section}"
@@ -1996,6 +2174,7 @@ class AutoNovelPlanner:
                     prior_trailing_suppress=prior_trailing_suppress,
                     prior_trailing_location=prior_trailing_loc,
                     max_consecutive_same_location=self.max_consecutive_same_location,
+                    prior_open_expectations=prior_open_exps,
                 )
                 if not errors:
                     assert isinstance(raw_batch, list)
@@ -2552,6 +2731,11 @@ class AutoNovelPlanner:
                 )
 
             prior_summary = _format_prior_scene_summaries(existing_ordered, normalized_new_scenes)
+            prior_open_exps = _collect_open_expectations(
+                list(existing_ordered) + list(normalized_new_scenes),
+                snapshot=effective_snapshot,
+            )
+            due_exp_block = _format_due_expectations_block(prior_open_exps, b_start, b_end)
             if is_first_batch:
                 map_instruction = (
                     f"【强制触发 60~80 章换地图与身份软重启】进入第 {target_vol} 卷！\n"
@@ -2584,6 +2768,7 @@ class AutoNovelPlanner:
                     f"deceased_characters={deceased_ids}, forbidden_titles={effective_snapshot.get_all_forbidden_titles() if effective_snapshot else []}\n"
                     f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
                     f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
+                    f"本批到期必须核销的期待感承诺:\n{due_exp_block}\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"章评舆情调优指令（必须严格注入第 {start_chapter} 章及之后，严禁触碰 <={project.meta.max_published_chapter} 的已发章节）:\n"
                     f"{directives_text or '无'}\n"
@@ -2647,6 +2832,7 @@ class AutoNovelPlanner:
                     prior_trailing_suppress=trailing_suppress,
                     prior_trailing_location=trailing_loc,
                     max_consecutive_same_location=self.max_consecutive_same_location,
+                    prior_open_expectations=prior_open_exps,
                 )
                 batch_errors.extend(scene_errs)
 
@@ -2972,6 +3158,8 @@ class AutoNovelPlanner:
                 )
 
             prior_summary = _format_prior_scene_summaries(existing_ordered, normalized_scenes)
+            prior_open_exps = _collect_open_expectations(normalized_scenes)
+            due_exp_block = _format_due_expectations_block(prior_open_exps, b_start, b_end)
             if is_first_batch:
                 schedule_block = (
                     f"待清账未收伏笔清单:\n{json.dumps(fs_summary, ensure_ascii=False, indent=2)}\n"
@@ -3010,6 +3198,7 @@ class AutoNovelPlanner:
                     f"{valid_ids_block}\n"
                     f"前序紧邻章节末尾连续纯压抑章数: {trailing_suppress}（衔接本批后连续纯压抑严禁超过 2 章）\n"
                     f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
+                    f"本批到期必须核销的期待感承诺:\n{due_exp_block}\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"{schedule_block}\n"
                     f"{feedback_section}"
@@ -3072,6 +3261,7 @@ class AutoNovelPlanner:
                     prior_trailing_suppress=trailing_suppress,
                     prior_trailing_location=trailing_loc,
                     max_consecutive_same_location=self.max_consecutive_same_location,
+                    prior_open_expectations=prior_open_exps,
                 )
                 batch_errors.extend(scene_errs)
 
@@ -3229,4 +3419,5 @@ __all__ = [
     "FinaleVolumeResult",
     "AutoNovelPlanner",
     "find_stale_location_runs",
+    "find_unfulfilled_expectations",
 ]
