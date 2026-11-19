@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,7 @@ CPA_CONFIG = DEPLOY_DIR / "cpa.config.example.yaml"
 CPA_SERVICE = DEPLOY_DIR / "cpa.service"
 BOT_SERVICE = DEPLOY_DIR / "xiaoshuo-bot.service"
 CADDYFILE = DEPLOY_DIR / "Caddyfile.example"
+NGINX_SITE_CONF = DEPLOY_DIR / "nginx-baogongtou.vip.conf"
 ENV_EXAMPLE = DEPLOY_DIR / "env.example"
 DEPLOY_SCRIPT = DEPLOY_DIR / "deploy_remote.sh"
 TUNNEL_SCRIPT = DEPLOY_DIR / "ssh_cpa_tunnel.ps1"
@@ -27,6 +29,7 @@ ALL_DEPLOY_FILES = (
     CPA_SERVICE,
     BOT_SERVICE,
     CADDYFILE,
+    NGINX_SITE_CONF,
     ENV_EXAMPLE,
     DEPLOY_SCRIPT,
     TUNNEL_SCRIPT,
@@ -39,6 +42,36 @@ _REAL_SECRET_PATTERNS = (
     re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{25,}\b"),
 )
 _CONCRETE_43_IP_RE = re.compile(r"\b43\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+_IPV4_CANDIDATE_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_RFC5737_DOC_NETS = (
+    ipaddress.IPv4Network("192.0.2.0/24"),
+    ipaddress.IPv4Network("198.51.100.0/24"),
+    ipaddress.IPv4Network("203.0.113.0/24"),
+)
+
+
+def _find_concrete_public_ipv4s(text: str) -> list[str]:
+    """Return any concrete public IPv4 addresses (excluding loopback, RFC1918, link-local, RFC5737 doc nets)."""
+    found: list[str] = []
+    for match in _IPV4_CANDIDATE_RE.finditer(text):
+        raw = match.group(0)
+        try:
+            addr = ipaddress.IPv4Address(raw)
+        except ValueError:
+            continue
+        if (
+            addr.is_loopback
+            or addr.is_unspecified
+            or addr.is_private
+            or addr.is_reserved
+            or addr.is_link_local
+            or addr.is_multicast
+        ):
+            continue
+        if any(addr in net for net in _RFC5737_DOC_NETS):
+            continue
+        found.append(raw)
+    return found
 
 
 def _find_working_bash() -> str | None:
@@ -431,6 +464,56 @@ class TestDeployConfigs(unittest.TestCase):
                 _CONCRETE_43_IP_RE.search(text),
                 f"Detected concrete 43.x.x.x IP address in {path}; must use parameters/placeholders only",
             )
+
+    def test_p1_4_every_deploy_file_is_scanned_and_zero_public_ipv4_in_repo(self) -> None:
+        # 1. Every file inside deploy/ must be registered in ALL_DEPLOY_FILES so none escapes scanning
+        actual_deploy_files = {p for p in DEPLOY_DIR.iterdir() if p.is_file()}
+        self.assertEqual(
+            actual_deploy_files,
+            set(ALL_DEPLOY_FILES),
+            f"Unregistered files in deploy/: {sorted(p.name for p in actual_deploy_files - set(ALL_DEPLOY_FILES))}",
+        )
+        # 2. nginx site config must use placeholder instead of real server IP
+        nginx_text = NGINX_SITE_CONF.read_text(encoding="utf-8")
+        self.assertIn("__REPLACE_WITH_SERVER_IP__", nginx_text)
+        self.assertEqual(_find_concrete_public_ipv4s(nginx_text), [])
+
+        # 3. Scan deploy/, src/, scripts/ (plus top-level configs) for any leaked public IPv4
+        scan_roots = (DEPLOY_DIR, REPO_ROOT / "src", REPO_ROOT / "scripts")
+        leaks: list[str] = []
+        for root in scan_roots:
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                hits = _find_concrete_public_ipv4s(text)
+                if hits:
+                    leaks.append(f"{path.relative_to(REPO_ROOT)}: {hits}")
+        self.assertEqual(leaks, [], f"Detected concrete public IPv4 addresses in repository: {leaks}")
+
+    def test_p1_4_public_ip_scanner_catches_concrete_ips_and_allows_safe_addresses(self) -> None:
+        # Concrete public IPs must be caught (constructed without hardcoding any real server IP)
+        sample_public = ".".join(("43", "131", "0", "1"))
+        sample_dns = ".".join(("8", "8", "4", "4"))
+        self.assertEqual(
+            _find_concrete_public_ipv4s(f"server_name example.com {sample_public};"),
+            [sample_public],
+        )
+        self.assertEqual(
+            _find_concrete_public_ipv4s(f"upstream={sample_dns}"),
+            [sample_dns],
+        )
+        # Loopback, private RFC1918, RFC5737 doc nets, and placeholders must pass cleanly
+        safe_text = (
+            "127.0.0.1 0.0.0.0 10.0.0.5 192.168.1.10 172.16.0.9 "
+            "192.0.2.1 198.51.100.2 203.0.113.3 __REPLACE_WITH_SERVER_IP__"
+        )
+        self.assertEqual(_find_concrete_public_ipv4s(safe_text), [])
 
 
 if __name__ == "__main__":
