@@ -57,6 +57,11 @@ WORKBUDDY_MODEL_ENV_KEYS: Dict[str, str] = {
 # - Exhausted models cool down for 1 hour (3600s) by default (not 60s).
 DEFAULT_RATE_LIMIT_BACKOFF_SEC: Tuple[float, ...] = (30.0, 60.0, 120.0)
 DEFAULT_MODEL_QUOTA_COOLDOWN_SEC: float = 3600.0
+# WorkBuddy models think before answering and the hidden reasoning counts against max_tokens.
+# Measured 2026-11-19 on wb/hy4flash-free (only 'high' effort offered): one 2,324-char chapter
+# used 27,728 reasoning + ~1,800 visible tokens. Every WorkBuddy call therefore gets this much
+# extra output headroom on top of the caller's visible-text budget. Billing follows actual tokens.
+WORKBUDDY_REASONING_HEADROOM_TOKENS: int = 32768
 WORKBUDDY_RATE_LIMIT_BACKOFF_ENV = "WORKBUDDY_RATE_LIMIT_BACKOFF_SEC"
 WORKBUDDY_MODEL_COOLDOWN_ENV = "WORKBUDDY_MODEL_COOLDOWN_SEC"
 
@@ -665,6 +670,7 @@ def verify_router_models_against_cpa(
 
 __all__ = [
     "DEFAULT_MODEL_QUOTA_COOLDOWN_SEC",
+    "WORKBUDDY_REASONING_HEADROOM_TOKENS",
     "DEFAULT_RATE_LIMIT_BACKOFF_SEC",
     "ModelSwitchEvent",
     "RateLimitRetryEvent",

@@ -1232,3 +1232,44 @@ class TestWorkBuddyRateLimitAndCooldownRecovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWorkBuddyReasoningHeadroom(unittest.TestCase):
+    def test_workbuddy_calls_add_reasoning_headroom_to_max_tokens(self) -> None:
+        """WorkBuddy models think before answering; the caller's visible-text budget must survive."""
+        from xiaoshuo_bot.llm.workbuddy_policy import WORKBUDDY_REASONING_HEADROOM_TOKENS
+
+        def handler(payload: Dict[str, Any], _seq: int):
+            return 200, _sse_ok(payload.get("model"), "正文"), True
+
+        server, base_url, calls = _start_scripted_cpa_server(handler)
+        try:
+            router = RoleModelRouter(
+                roles={
+                    "writer": RoleEndpointConfig(
+                        role="writer",
+                        base_url=base_url,
+                        model="wb/test-hy4-flash",
+                        api_keys=["sk-cpa-client-key"],
+                        model_whitelist=SAMPLE_WHITELIST,
+                        rotation_models=(
+                            "wb/test-hy4-flash",
+                            "wb/test-ds-v41-flash",
+                            "wb/test-mimo-v26-pro",
+                        ),
+                        manual_only_models=("wb/test-hy4-manual",),
+                        model_labels=SAMPLE_LABELS,
+                    ),
+                },
+                sleep_fn=lambda _s: None,
+            )
+            req = _make_req(chapter=1)
+            req.max_tokens = 7750
+            router.generate("writer", req)
+            self.assertEqual(WORKBUDDY_REASONING_HEADROOM_TOKENS, 32768)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["payload"]["max_tokens"], 7750 + 32768)
+            self.assertEqual(req.max_tokens, 7750, "caller's request object must not be mutated")
+        finally:
+            server.shutdown()
+            server.server_close()

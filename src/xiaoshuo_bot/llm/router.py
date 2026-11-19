@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import base64
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -40,6 +42,7 @@ from .workbuddy_policy import (
     WorkBuddyModelCatalog,
     classify_workbuddy_failure_kind,
     classify_workbuddy_quota_exhausted,
+    WORKBUDDY_REASONING_HEADROOM_TOKENS,
     parse_rate_limit_backoff_sec,
     validate_workbuddy_model_allowed,
     validate_workbuddy_rotation_chain,
@@ -1068,6 +1071,14 @@ class RoleModelRouter:
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
                     metadata=cleaned_meta,
+                )
+
+            if policy_active:
+                # WorkBuddy models spend part of max_tokens on hidden reasoning; add headroom so the
+                # visible text budget the caller asked for is not eaten by thinking.
+                req_for_model = dataclasses.replace(
+                    req_for_model,
+                    max_tokens=int(req_for_model.max_tokens) + WORKBUDDY_REASONING_HEADROOM_TOKENS,
                 )
 
             # Bug 1 fix: HTTP 429 rate_limit_exceeded retries on the SAME model using configured
