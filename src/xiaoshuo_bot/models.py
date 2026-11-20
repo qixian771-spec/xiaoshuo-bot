@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import timedelta, timezone
 import hashlib
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -118,13 +119,24 @@ class AssetState:
         )
 
 
+_KEYWORD_SPLIT_RE = re.compile(r"[,，、;；|\n]+")
+
+
 def _clean_keywords(raw: Any) -> List[str]:
-    """Normalize a keyword list: drop None/blank entries so checker & state agree on evidence."""
+    """Normalize a keyword list: drop None/blank entries and split packed comma-delimited strings."""
     if not raw:
         return []
     if isinstance(raw, str):
         raw = [raw]
-    return [str(k).strip() for k in raw if k is not None and str(k).strip()]
+    out: List[str] = []
+    for k in raw:
+        if k is None:
+            continue
+        for part in _KEYWORD_SPLIT_RE.split(str(k)):
+            cleaned = part.strip()
+            if cleaned and cleaned not in out:
+                out.append(cleaned)
+    return out
 
 
 @dataclass

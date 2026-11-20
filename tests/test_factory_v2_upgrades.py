@@ -220,6 +220,70 @@ class TestPillar1LedgerOverdraftGuard(unittest.TestCase):
             self.assertNotIn("第 15 章", sliced)
             self.assertNotIn("第 26 章", sliced)
 
+    def test_clean_keywords_splits_comma_packed_evidence_keywords_and_checker_hint(self) -> None:
+        from xiaoshuo_bot.models import ExpectationDirective, ExpectationState, ForeshadowItem
+
+        ed = ExpectationDirective.from_dict(
+            {
+                "id": "exp_zhou",
+                "title": "老周下落",
+                "due_chapter": 18,
+                "action": "fulfill",
+                "evidence_keywords": ["冯念慈电话,城郊仓库,老周活着、袖口银扣；潘园管事"],
+            }
+        )
+        self.assertEqual(
+            ed.evidence_keywords,
+            ["冯念慈电话", "城郊仓库", "老周活着", "袖口银扣", "潘园管事"],
+        )
+        fs = ForeshadowItem.from_dict(
+            {
+                "id": "FS-X",
+                "title": "铁函",
+                "plant_chapter": 1,
+                "due_chapter": 28,
+                "plant_instruction": "p",
+                "payoff_instruction": "q",
+                "plant_keywords": ["铜钱，月牙缺口"],
+                "payoff_keywords": ["祖祠铁函,同炉三十七枚"],
+            }
+        )
+        self.assertEqual(fs.plant_keywords, ["铜钱", "月牙缺口"])
+        self.assertEqual(fs.payoff_keywords, ["祖祠铁函", "同炉三十七枚"])
+
+        scene = SceneOutline(
+            chapter=18,
+            scene_id="ch0018",
+            internal_title="连麦",
+            pov_character="mc",
+            active_characters=["mc"],
+            active_assets=[],
+            style_profile_ids=[],
+            location_time="直播间",
+            events=["接电话"],
+            stop_condition="结束",
+            min_chars=10,
+            max_chars=500,
+            expectation_directives=[ed],
+        )
+        snap = WorldStateSnapshot(
+            current_chapter=17,
+            active_expectations={
+                "exp_zhou": ExpectationState(
+                    id="exp_zhou", title="老周下落", planted_chapter=11, due_chapter=18, status="active"
+                )
+            },
+        )
+        checker = AITicChecker(contract_track="legacy")
+        # Matches when a single split keyword appears naturally in text
+        ok_rep = checker.scan("电话响起，城郊仓库里果然找到了人。", scene=scene, world_state=snap, chapter=18)
+        self.assertFalse(any(v.rule_id == "STATE_EXPECTATION_OVERDUE" for v in ok_rep.violations))
+        # Fails with actionable keyword fix_hint when none appear
+        bad_rep = checker.scan("直播间一片热闹，没人提起任何旧人。", scene=scene, world_state=snap, chapter=18)
+        exp_viols = [v for v in bad_rep.violations if v.rule_id == "STATE_EXPECTATION_OVERDUE"]
+        self.assertEqual(len(exp_viols), 1)
+        self.assertIn("城郊仓库", exp_viols[0].fix_hint)
+
 
 class TestPillar2CommercialTitlesAndWizardLongForm(unittest.TestCase):
     def test_wizard_scale_prompt_injects_genre_templates_long_form_and_supports_title_override(self) -> None:

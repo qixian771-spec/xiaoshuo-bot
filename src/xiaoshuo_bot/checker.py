@@ -1166,13 +1166,20 @@ class AITicChecker:
             if exp.status == "fulfilled":
                 continue
             is_overdue = exp.status == "overdue" or exp.due_chapter < check_ch
+            missing_evidence_kws: List[str] = []
             if not is_overdue and exp.due_chapter == check_ch and exp.id in scene_fulfill_directives:
                 keywords = [
                     kw for kw in scene_fulfill_directives[exp.id].evidence_keywords if kw and str(kw).strip()
                 ]
                 if keywords and not any(kw in text for kw in keywords):
                     is_overdue = True
+                    missing_evidence_kws = keywords
             if is_overdue:
+                kw_hint = (
+                    f"（本章正文必须自然包含以下至少 1 个证据词：{'、'.join(missing_evidence_kws)}）"
+                    if missing_evidence_kws
+                    else ""
+                )
                 out.append(
                     Violation(
                         rule_id="STATE_EXPECTATION_OVERDUE",
@@ -1181,7 +1188,7 @@ class AITicChecker:
                         matched_text=f"{exp.id}: {exp.title} (due Ch.{exp.due_chapter})",
                         line_number=1,
                         context_snippet=f"Expectation '{exp.title}' overdue at chapter {check_ch}",
-                        fix_hint=f"期待感兑现逾期：承诺 [{exp.id}]‘{exp.title}’应于第 {exp.due_chapter} 章前兑现，请立即在本章完成兑现核销",
+                        fix_hint=f"期待感兑现逾期：承诺 [{exp.id}]‘{exp.title}’应于第 {exp.due_chapter} 章前兑现，请立即在本章完成兑现核销{kw_hint}",
                     )
                 )
 

@@ -579,6 +579,15 @@ class TomatoCriticPolisher:
                 for kw in kws:
                     if kw not in all_required_keywords:
                         all_required_keywords.append(kw)
+        if scene is not None and scene.expectation_directives:
+            for ed in scene.expectation_directives:
+                if ed.action == "fulfill":
+                    kws = [str(k).strip() for k in (ed.evidence_keywords or []) if str(k).strip()]
+                    if kws:
+                        required_fs_groups.append((f"[核销期待 {ed.id} {ed.title}]", kws))
+                        for kw in kws:
+                            if kw not in all_required_keywords:
+                                all_required_keywords.append(kw)
 
         # Build minimal local context window: ONLY flagged paragraphs plus 1 preceding and 1 following context paragraph
         target_set = set(target_indices)
