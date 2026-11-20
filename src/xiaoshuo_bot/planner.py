@@ -1294,6 +1294,30 @@ def _format_balances_summary(balances: Mapping[str, float]) -> str:
     return ", ".join(parts)
 
 
+def _load_master_outline_slice(project_root: Path, start_ch: int, end_ch: int) -> str:
+    """Load chapters start_ch..end_ch from master_outline.yaml when present for rolling continuity."""
+    mo_path = project_root / "master_outline.yaml"
+    if not mo_path.is_file():
+        return "无（按前序剧情与本卷主线自然延展）"
+    try:
+        raw = yaml.safe_load(mo_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "无（按前序剧情与本卷主线自然延展）"
+    items = raw.get("master_outline", raw) if isinstance(raw, Mapping) else raw
+    if not isinstance(items, list):
+        return "无（按前序剧情与本卷主线自然延展）"
+    lines: List[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        ch = item.get("chapter")
+        if _is_strict_int(ch) and start_ch <= int(ch) <= end_ch:
+            title = str(item.get("title") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            lines.append(f"- 第 {int(ch)} 章《{title}》：{summary}")
+    return "\n".join(lines) if lines else "无（已超出百章总纲范围，按长篇大地图自由滚动延展）"
+
+
 def find_ledger_overdrafts(
     scenes: Sequence[Any],
     initial_balances: Optional[Mapping[str, Any]] = None,
@@ -2834,6 +2858,14 @@ class AutoNovelPlanner:
         chapter_batches = _make_chapter_batches(start_chapter, end_chapter, SCENE_BATCH_SIZE)
         total_batches = len(chapter_batches)
 
+        _mutation_rules_block = (
+            "四个变化数组（post_scene_asset_mutations / ledger_mutations / character_mutations / expectation_directives）本章无变化就写 []；"
+            "有变化时每一项都照样例字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文，且任何支出后余额严禁小于 0；"
+            "due_chapter 必须是整数；status 只能取 alive / deceased / missing；expectation_directives 的 action 只能取 open / fulfill。\n"
+            "【期待感配对红线（必守）】：① 下方列出的前序到期期待感，必须在对应 due_chapter 或更早章节写出完全相同 id 的 action='fulfill' 及非空 evidence_keywords；"
+            "② 本批内新开（action='open'）的期待感，如果 due_chapter <= 本批末章，也必须在本批对应 due_chapter 或更早章节配对写出相同 id 的 action='fulfill' 及 evidence_keywords（若想留到下一批再回收，请把 due_chapter 设为 > 本批末章）！\n"
+            "【场景防僵化红线】：同一 location_id（含与前批衔接）绝对不可连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁，请合理切换子空间或新场景。\n"
+        )
         first_batch_sys = (
             "你是番茄长篇滚动续纲策划师。请严格输出单个 JSON 对象（严禁 Markdown 以外多余文字）：\n"
             "- map_name: 本批次主地图名称\n"
@@ -2842,6 +2874,7 @@ class AutoNovelPlanner:
             "- volume_cap_locks: 数组（包含本卷更高阶数值上限锁：{ledger_key, volume, max_value, unit}）\n"
             "- scenes: 数组（仅输出本批章号范围的连续章节大纲，符合 SceneOutline 结构，"
             "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
+            f"{_mutation_rules_block}"
             f"JSON 模板示例（所有尖括号为占位说明）：\n"
             f"{json.dumps(_EXTEND_VOLUME_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
@@ -2849,7 +2882,7 @@ class AutoNovelPlanner:
             "你是番茄长篇滚动续纲策划师。本阶段仅生成后续批次的连续章纲，请严格输出单个 JSON 对象：\n"
             "- scenes: 数组（仅输出本批章号范围的连续章节大纲，承接已锁定的本卷地图与前序章节，"
             "所有角色/器物/文风 id 必须来自项目既有 id，public_title 严禁带 '第X章' 前缀，连续纯压抑<=2章）\n\n"
-            "四个变化数组本章无变化就写 []；有变化时每一项都照样例字段写：ledger_mutations 的 delta 必须是 JSON 数字（如 3、-1、0.5），不能加引号、不能写「+」号或中文；due_chapter 必须是整数；status 只能取 alive / deceased / missing；action 只能取 open / fulfill。\n"
+            f"{_mutation_rules_block}"
             f"JSON 模板示例（所有尖括号为占位说明）：\n"
             f"{json.dumps(_SCENES_BATCH_JSON_EXAMPLE, ensure_ascii=False, indent=2)}"
         )
@@ -2894,6 +2927,18 @@ class AutoNovelPlanner:
                 snapshot=effective_snapshot,
             )
             due_exp_block = _format_due_expectations_block(prior_open_exps, b_start, b_end)
+            fs_source = (
+                effective_snapshot.foreshadows
+                if effective_snapshot is not None and effective_snapshot.foreshadows
+                else project.foreshadows
+            )
+            due_fs_lines = [
+                f"- [第{fs.due_chapter}章必须回收伏笔] {fs.id}《{fs.title}》｜必含关键词={fs.payoff_keywords}｜回收指令={fs.payoff_instruction}"
+                for fs in fs_source.values()
+                if fs.status != "resolved" and b_start <= fs.due_chapter <= b_end
+            ]
+            due_fs_block = "\n".join(due_fs_lines) if due_fs_lines else "（本批无到期必收伏笔）"
+            master_outline_slice = _load_master_outline_slice(root, b_start, b_end)
             if is_first_batch:
                 map_instruction = (
                     f"【强制触发 60~80 章换地图与身份软重启】进入第 {target_vol} 卷！\n"
@@ -2928,6 +2973,8 @@ class AutoNovelPlanner:
                     f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
                     f"进入本批前的账本余额（任何支出后余额绝对不得小于 0，否则触发 STATE_OVERDRAFT 拦截）: {_format_balances_summary(prior_balances)}\n"
                     f"本批到期必须核销的期待感承诺:\n{due_exp_block}\n"
+                    f"本批到期必须回收的伏笔（必须在对应章 events 落实并体现必含关键词）:\n{due_fs_block}\n"
+                    f"百章总纲中本批章号主线指引（人物 id 仍须严格使用上方已有 id）:\n{master_outline_slice}\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"章评舆情调优指令（必须严格注入第 {start_chapter} 章及之后，严禁触碰 <={project.meta.max_published_chapter} 的已发章节）:\n"
                     f"{directives_text or '无'}\n"
@@ -3325,6 +3372,18 @@ class AutoNovelPlanner:
                 snapshot=effective_snapshot,
             )
             due_exp_block = _format_due_expectations_block(prior_open_exps, b_start, b_end)
+            fs_source = (
+                effective_snapshot.foreshadows
+                if effective_snapshot is not None and effective_snapshot.foreshadows
+                else project.foreshadows
+            )
+            due_fs_lines = [
+                f"- [第{fs.due_chapter}章必须回收伏笔] {fs.id}《{fs.title}》｜必含关键词={fs.payoff_keywords}｜回收指令={fs.payoff_instruction}"
+                for fs in fs_source.values()
+                if fs.status != "resolved" and b_start <= fs.due_chapter <= b_end
+            ]
+            due_fs_block = "\n".join(due_fs_lines) if due_fs_lines else "（本批无到期必收伏笔）"
+            master_outline_slice = _load_master_outline_slice(root, b_start, b_end)
             if is_first_batch:
                 schedule_block = (
                     f"待清账未收伏笔清单:\n{json.dumps(fs_summary, ensure_ascii=False, indent=2)}\n"
@@ -3365,6 +3424,8 @@ class AutoNovelPlanner:
                     f"前序紧邻章节末尾场景 location_id: {trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接后同一 location_id 严禁连续超过 2 章，否则触发 STATE_STALE_LOCATION 门禁）\n"
                     f"进入本批前的账本余额（任何支出后余额绝对不得小于 0，否则触发 STATE_OVERDRAFT 拦截）: {_format_balances_summary(prior_balances)}\n"
                     f"本批到期必须核销的期待感承诺:\n{due_exp_block}\n"
+                    f"本批到期必须回收的伏笔（必须在对应章 events 落实并体现必含关键词）:\n{due_fs_block}\n"
+                    f"百章总纲中本批章号主线指引（人物 id 仍须严格使用上方已有 id）:\n{master_outline_slice}\n"
                     f"前序章节梗概:\n{prior_summary}\n"
                     f"{schedule_block}\n"
                     f"{feedback_section}"

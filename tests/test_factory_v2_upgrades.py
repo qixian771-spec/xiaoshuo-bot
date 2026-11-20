@@ -36,6 +36,7 @@ from xiaoshuo_bot.models import (
 from xiaoshuo_bot.planner import (
     _collect_scene_batch_errors,
     _format_recipe_title_and_blurb_block,
+    _load_master_outline_slice,
     find_ledger_overdrafts,
 )
 from xiaoshuo_bot.server.stockpile_db import StockpileDB
@@ -200,6 +201,24 @@ class TestPillar1LedgerOverdraftGuard(unittest.TestCase):
         self.assertEqual(len(overdrafts), 1)
         self.assertEqual(overdrafts[0]["chapter"], 3)
         self.assertEqual(overdrafts[0]["after"], -50.0)
+
+    def test_load_master_outline_slice_returns_matching_chapters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertIn("无", _load_master_outline_slice(root, 16, 25))
+            (root / "master_outline.yaml").write_text(
+                "master_outline:\n"
+                "  - chapter: 15\n    title: 卷末钩子\n    summary: 十五章\n"
+                "  - chapter: 16\n    title: 顺藤摸瓜\n    summary: 十六章新线索\n"
+                "  - chapter: 25\n    title: 水落石出\n    summary: 二十五章破局\n"
+                "  - chapter: 26\n    title: 下一卷\n    summary: 二十六章\n",
+                encoding="utf-8",
+            )
+            sliced = _load_master_outline_slice(root, 16, 25)
+            self.assertIn("第 16 章《顺藤摸瓜》：十六章新线索", sliced)
+            self.assertIn("第 25 章《水落石出》：二十五章破局", sliced)
+            self.assertNotIn("第 15 章", sliced)
+            self.assertNotIn("第 26 章", sliced)
 
 
 class TestPillar2CommercialTitlesAndWizardLongForm(unittest.TestCase):

@@ -645,6 +645,7 @@ class MatrixScheduler:
             )
         return AutoNovelPlanner(
             self.provider,
+            max_validation_retries=5,
             max_consecutive_same_location=self.planner_max_consecutive_same_location,
         )
 
