@@ -549,5 +549,219 @@ class TestPillar4SurgicalTargetingAndPostPolishReEval(unittest.TestCase):
             self.assertTrue(any("POLISH_SCORE_REGRESSION" in i.incident_id for i in engine_b.incidents))
 
 
+class TestSelfHealingAndAntiPingPongLength(unittest.TestCase):
+    def test_compiler_uses_surgical_micro_adjust_for_small_length_gaps(self) -> None:
+        from xiaoshuo_bot.models import Violation
+        from xiaoshuo_bot.state import WorldStateManager
+
+        proj = _sample_project("serial_20k")
+        compiler = PromptCompiler(proj)
+        state = WorldStateManager(proj)
+
+        short_rep = ScanReport(
+            passed=False,
+            char_count=1951,
+            paragraph_count=50,
+            violations=[
+                Violation(
+                    rule_id="LEN_001",
+                    category="LENGTH_VIOLATION",
+                    severity="CRITICAL",
+                    matched_text="1951 chars < min 2050",
+                    line_number=50,
+                    context_snippet="",
+                    fix_hint="不足",
+                )
+            ],
+        )
+        _, short_user = compiler.compile_rewrite_prompt(proj.scenes[0], state, "原稿", short_rep)
+        self.assertIn("轻量精准补足", short_user)
+        self.assertIn("切勿大幅重写或过度扩写", short_user)
+
+        long_rep = ScanReport(
+            passed=False,
+            char_count=2383,
+            paragraph_count=55,
+            violations=[
+                Violation(
+                    rule_id="LEN_002",
+                    category="LENGTH_VIOLATION",
+                    severity="CRITICAL",
+                    matched_text="2383 chars > max 2300",
+                    line_number=55,
+                    context_snippet="",
+                    fix_hint="超限",
+                )
+            ],
+        )
+        _, long_user = compiler.compile_rewrite_prompt(proj.scenes[0], state, "原稿", long_rep)
+        self.assertIn("轻量精准微裁", long_user)
+        self.assertIn("切勿大段删减", long_user)
+
+    def test_scheduler_self_healing_recovers_stochastic_prose_and_blocks_structural_deadlocks(self) -> None:
+        from datetime import datetime, timedelta
+        from xiaoshuo_bot.contracts import BookRunStatus
+        from xiaoshuo_bot.models import SHANGHAI_TZ
+        from xiaoshuo_bot.server.matrix_scheduler import (
+            MatrixScheduler,
+            classify_self_heal_eligibility,
+        )
+
+        # 1. Classification checks
+        ok_len, r_len, ch_len, max_len = classify_self_heal_eligibility(
+            {
+                "status": BookRunStatus.ISOLATED_GATE_FAILURE.value,
+                "paused_reason": "Chapter 308 gate failure",
+                "isolation_detail": {
+                    "chapter": 308,
+                    "error_type": "ProductionGateFailure",
+                    "violations": [
+                        {"rule_id": "LEN_001", "severity": "CRITICAL"},
+                        {"rule_id": "RHYTHM_BURSTINESS", "severity": "WARNING"},
+                    ],
+                },
+            }
+        )
+        self.assertTrue(ok_len)
+        self.assertIn("LEN_001", r_len)
+        self.assertEqual(ch_len, 308)
+        self.assertEqual(max_len, 3)
+
+        bad_state, r_state, _, _ = classify_self_heal_eligibility(
+            {
+                "status": BookRunStatus.ISOLATED_GATE_FAILURE.value,
+                "paused_reason": "Chapter 18 gate failure",
+                "isolation_detail": {
+                    "chapter": 18,
+                    "error_type": "ProductionGateFailure",
+                    "violations": [{"rule_id": "STATE_EXPECTATION_OVERDUE", "severity": "CRITICAL"}],
+                },
+            }
+        )
+        self.assertFalse(bad_state)
+        self.assertIn("structural_STATE_EXPECTATION_OVERDUE", r_state)
+
+        bad_manual, _, _, _ = classify_self_heal_eligibility(
+            {
+                "status": BookRunStatus.PAUSED_MANUAL.value,
+                "paused_reason": "Manually paused",
+                "isolation_detail": {},
+            }
+        )
+        self.assertFalse(bad_manual)
+
+        # 2. End-to-end cooldown, retry cap (3/3), and manual-pause protection
+        clock = [datetime(2026, 11, 21, 8, 0, 0, tzinfo=SHANGHAI_TZ)]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = StockpileDB(Path(tmp) / "m.db", now_fn=lambda: clock[0])
+            db.register_book(book_id="b_len", project_dir=Path(tmp) / "p1", title="算卦长篇", total_chapters=315)
+            db.register_book(book_id="b_state", project_dir=Path(tmp) / "p2", title="状态死锁书", total_chapters=30)
+            db.register_book(book_id="b_manual", project_dir=Path(tmp) / "p3", title="手动暂停书", total_chapters=30)
+
+            db.update_book_status(
+                "b_len",
+                BookRunStatus.ISOLATED_GATE_FAILURE,
+                paused_reason="Chapter 308 gate failure",
+                isolation_detail={
+                    "chapter": 308,
+                    "error_type": "ProductionGateFailure",
+                    "violations": [{"rule_id": "LEN_001", "severity": "CRITICAL"}],
+                    "isolated_at": clock[0].isoformat(),
+                },
+            )
+            db.update_book_status(
+                "b_state",
+                BookRunStatus.ISOLATED_GATE_FAILURE,
+                paused_reason="Chapter 18 gate failure",
+                isolation_detail={
+                    "chapter": 18,
+                    "error_type": "ProductionGateFailure",
+                    "violations": [{"rule_id": "STATE_OVERDRAFT", "severity": "CRITICAL"}],
+                    "isolated_at": clock[0].isoformat(),
+                },
+            )
+            db.update_book_status("b_manual", BookRunStatus.PAUSED_MANUAL, paused_reason="Manually paused")
+
+            sched = MatrixScheduler(
+                db=db,
+                projects_root=Path(tmp),
+                export_only=True,
+                now_fn=lambda: clock[0],
+                auto_heal_cooldown_secs=(120, 300, 900),
+            )
+
+            # Before 120s cooldown -> nothing healed yet
+            clock[0] += timedelta(seconds=60)
+            self.assertEqual(sched.run_self_healing_pass(), [])
+            self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
+
+            # After 125s -> attempt 1/3 heals b_len only; b_state & b_manual stay untouched!
+            clock[0] += timedelta(seconds=65)
+            res1 = sched.run_self_healing_pass()
+            self.assertEqual(len(res1), 1)
+            self.assertEqual(res1[0]["book_id"], "b_len")
+            self.assertEqual(res1[0]["attempt"], 1)
+            self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ACTIVE.value)
+            self.assertEqual(db.get_book("b_state")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
+            self.assertEqual(db.get_book("b_manual")["status"], BookRunStatus.PAUSED_MANUAL.value)
+
+            # Simulate failing 2 more times -> heals on 300s and 900s, then caps permanently at 3/3
+            for wait_s, expected_attempt in ((305, 2), (905, 3)):
+                db.update_book_status(
+                    "b_len",
+                    BookRunStatus.ISOLATED_GATE_FAILURE,
+                    paused_reason="Chapter 308 gate failure",
+                    isolation_detail={
+                        "chapter": 308,
+                        "error_type": "ProductionGateFailure",
+                        "violations": [{"rule_id": "LEN_002", "severity": "CRITICAL"}],
+                        "isolated_at": clock[0].isoformat(),
+                    },
+                )
+                clock[0] += timedelta(seconds=wait_s)
+                r = sched.run_self_healing_pass()
+                self.assertEqual(len(r), 1)
+                self.assertEqual(r[0]["attempt"], expected_attempt)
+
+            # 4th failure on same ch 308 -> hits hard ceiling 3/3 and stays isolated permanently
+            db.update_book_status(
+                "b_len",
+                BookRunStatus.ISOLATED_GATE_FAILURE,
+                paused_reason="Chapter 308 gate failure",
+                isolation_detail={
+                    "chapter": 308,
+                    "error_type": "ProductionGateFailure",
+                    "violations": [{"rule_id": "LEN_001", "severity": "CRITICAL"}],
+                    "isolated_at": clock[0].isoformat(),
+                },
+            )
+            clock[0] += timedelta(seconds=3600)
+            self.assertEqual(sched.run_self_healing_pass(), [])
+            self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
+            self.assertIn("自愈已达上限 3/3", db.get_book("b_len")["paused_reason"])
+
+            # 3. Quota reset auto-resume (when reset_at has passed by >= 60s)
+            db.upsert_model_quota(
+                model="wb/hy4flash-free",
+                percent=100.0,
+                reset_at=(clock[0] - timedelta(minutes=5)).isoformat(),
+                reset_at_raw="",
+                raw_model="hy4-flash",
+                shared_models=[],
+                role="writer",
+            )
+            db.register_book(book_id="b_quota", project_dir=Path(tmp) / "p4", title="额度恢复书", total_chapters=30)
+            db.update_book_status(
+                "b_quota",
+                BookRunStatus.PAUSED_QUOTA_EXHAUSTED,
+                paused_reason="All whitelist models exhausted (HTTP 429)",
+            )
+            clock[0] += timedelta(seconds=90)
+            rq = sched.run_self_healing_pass()
+            self.assertEqual(len(rq), 1)
+            self.assertEqual(rq[0]["book_id"], "b_quota")
+            self.assertEqual(db.get_book("b_quota")["status"], BookRunStatus.ACTIVE.value)
+
+
 if __name__ == "__main__":
     unittest.main()

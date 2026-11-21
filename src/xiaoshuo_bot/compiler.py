@@ -545,26 +545,49 @@ class PromptCompiler:
             target_chars = target_chapter_chars(scene)
             shortfall = scene.min_chars - report.char_count
             event_lines = "\n".join(f"   {i}. {e}" for i, e in enumerate(scene.events, start=1))
-            length_gap_block += (
-                "### 篇幅缺口（本次重写的首要任务）\n"
-                f"上一版只有 {report.char_count} 字，比硬性下限 {scene.min_chars} 字还少 {shortfall} 字。"
-                f"本次必须写到约 {target_chars} 字。\n"
-                "做法：保留上一版里已经合格的段落，不得删减；逐个把下面的章纲事件展开写透——"
-                "优先补足人物立场博弈、锋利对话交锋、证据/底牌亮出后的当场反应与利益兑现（长短句错落）；"
-                "严禁用反复摆弄道具、重复前段已说过的话、空泛议论或心理独白注水。\n"
-                f"{event_lines}\n\n"
-            )
+            if shortfall <= 220:
+                add_lo = shortfall + 25
+                add_hi = max(add_lo + 30, min(scene.max_chars - report.char_count - 30, shortfall + 120))
+                length_gap_block += (
+                    "### 篇幅缺口（轻量精准补足，严禁大改扩写过头触发超限！）\n"
+                    f"上一版只有 {report.char_count} 字，比硬性下限 {scene.min_chars} 字还少 {shortfall} 字。"
+                    f"本次必须写到约 {target_chars} 字（安全区间 {scene.min_chars}～{scene.max_chars} 字）。\n"
+                    f"做法：请**原样保留上版绝大多数合格段落**，仅在 2～3 处关键对白交锋或现场反应段里**净增约 {add_lo}～{add_hi} 字**；"
+                    f"切勿大幅重写或过度扩写导致超过 {scene.max_chars} 字引起反复震荡！\n"
+                    "严禁用反复摆弄道具、重复前段已说过的话、空泛议论或心理独白注水。\n"
+                    f"{event_lines}\n\n"
+                )
+            else:
+                length_gap_block += (
+                    "### 篇幅缺口（本次重写的首要任务）\n"
+                    f"上一版只有 {report.char_count} 字，比硬性下限 {scene.min_chars} 字还少 {shortfall} 字。"
+                    f"本次必须写到约 {target_chars} 字（严禁超过 {scene.max_chars} 字）。\n"
+                    "做法：保留上一版里已经合格的段落，不得删减；逐个把下面的章纲事件展开写透——"
+                    "优先补足人物立场博弈、锋利对话交锋、证据/底牌亮出后的当场反应与利益兑现（长短句错落）；"
+                    "严禁用反复摆弄道具、重复前段已说过的话、空泛议论或心理独白注水。\n"
+                    f"{event_lines}\n\n"
+                )
         if any(v.rule_id == "LEN_002" for v in report.violations):
             target_chars = target_chapter_chars(scene)
             excess = report.char_count - scene.max_chars
-            trim_target = max(excess + 40, report.char_count - target_chars)
-            length_gap_block += (
-                "### 篇幅超限裁剪（本次重写的首要任务）\n"
-                f"上一版共 {report.char_count} 字，超出硬性上限 {scene.max_chars} 字共 {excess} 字。"
-                f"本次必须压缩到约 {target_chars} 字（安全区间 {scene.min_chars}～{scene.max_chars} 字，建议净删减约 {trim_target} 字）。\n"
-                "做法：完整保留所有章纲核心事件、全部必保伏笔关键词以及用于打断纯旁白墙的引号句；"
-                "精准删减重复环境铺陈、冗余修饰词与重复动作，严禁删减过度导致跌破下限。\n\n"
-            )
+            if excess <= 280:
+                trim_lo = excess + 25
+                trim_hi = max(trim_lo + 30, min(report.char_count - scene.min_chars - 30, excess + 120))
+                length_gap_block += (
+                    "### 篇幅超限裁剪（轻量精准微裁，严禁大删过头跌破下限！）\n"
+                    f"上一版共 {report.char_count} 字，仅超出硬性上限 {scene.max_chars} 字共 {excess} 字（安全区间 {scene.min_chars}～{scene.max_chars} 字）。\n"
+                    f"本次请**完整保留所有核心剧情段落、全部必保伏笔关键词与引号对话**，仅精准删减 2～3 处冗余修饰/重复短句**净减约 {trim_lo}～{trim_hi} 字**（使终稿稳落在约 {target_chars} 字）；"
+                    f"切勿大段删减导致跌破 {scene.min_chars} 字引起反复震荡！\n\n"
+                )
+            else:
+                trim_target = max(excess + 40, report.char_count - target_chars)
+                length_gap_block += (
+                    "### 篇幅超限裁剪（本次重写的首要任务）\n"
+                    f"上一版共 {report.char_count} 字，超出硬性上限 {scene.max_chars} 字共 {excess} 字。"
+                    f"本次必须压缩到约 {target_chars} 字（安全区间 {scene.min_chars}～{scene.max_chars} 字，建议净删减约 {trim_target} 字）。\n"
+                    "做法：完整保留所有章纲核心事件、全部必保伏笔关键词以及用于打断纯旁白墙的引号句；"
+                    "精准删减重复环境铺陈、冗余修饰词与重复动作，严禁删减过度导致跌破下限。\n\n"
+                )
         if any(v.rule_id == "RHYTHM_NARRATION_WALL" for v in report.violations):
             solo_hint = (
                 "当前为单人独角戏，可通过主角低声自语/复核发现（如“外层新油，内层旧垢。”）、手机来电/短信屏幕引文、账本/刻字引文自然带出双引号。"

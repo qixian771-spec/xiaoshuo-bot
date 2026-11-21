@@ -88,6 +88,113 @@ from .stockpile_db import (
 
 logger = logging.getLogger(__name__)
 
+# Server-side bounded autonomous self-healing policy (zero gate weakening).
+AUTO_HEAL_COOLDOWN_SECS: Tuple[int, ...] = (120, 300, 900)
+AUTO_HEAL_PLANNER_MAX_ATTEMPTS = 2
+_RECOVERABLE_PROSE_RULE_PREFIXES: Tuple[str, ...] = (
+    "LEN_",
+    "RHYTHM_",
+    "TIC_",
+    "AI_TIC_",
+    "HOOK_",
+    "STYLE_",
+)
+_NON_RECOVERABLE_RULE_PREFIXES: Tuple[str, ...] = (
+    "STATE_",
+    "FORESHADOW",
+    "SAFE_",
+    "POV_",
+    "PANEL_",
+)
+_RECOVERABLE_ERROR_TYPES = frozenset(
+    {
+        "LLMRequestError",
+        "LLMStreamTruncatedError",
+        "TimeoutError",
+        "ConnectionError",
+    }
+)
+
+
+def _parse_iso_dt(raw: Any) -> Optional[datetime]:
+    if not raw or not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=SHANGHAI_TZ)
+    return dt
+
+
+def classify_self_heal_eligibility(book: Mapping[str, Any]) -> Tuple[bool, str, int, int]:
+    """Classify whether an isolated book can safely undergo bounded server-side self-healing.
+
+    Returns (eligible, reason_code, chapter, max_attempts).
+    Strictly rejects manual pauses, deterministic world-state/foreshadow/safety deadlocks,
+    and budget/quota stops without reset confirmation.
+    """
+    status = str(book.get("status") or "")
+    if status != BookRunStatus.ISOLATED_GATE_FAILURE.value:
+        return (False, f"status={status}", 0, 0)
+
+    detail = book.get("isolation_detail")
+    if not isinstance(detail, Mapping):
+        detail = {}
+    paused_reason = str(book.get("paused_reason") or "")
+    if "自愈已达上限" in paused_reason:
+        return (False, "heal_exhausted", int(detail.get("chapter") or 0), 0)
+
+    chapter = int(detail.get("chapter") or 0)
+    if chapter <= 0:
+        m = re.search(r"Chapter\s+(\d+)", paused_reason)
+        if m:
+            chapter = int(m.group(1))
+
+    err_type = str(detail.get("error_type") or "").strip()
+    if err_type in _RECOVERABLE_ERROR_TYPES:
+        return (True, f"transient_{err_type}", chapter, len(AUTO_HEAL_COOLDOWN_SECS))
+
+    if err_type == "PlanningValidationError":
+        return (True, "transient_planner_validation", chapter, AUTO_HEAL_PLANNER_MAX_ATTEMPTS)
+
+    if err_type == "ProductionGateFailure":
+        raw_viols = detail.get("violations")
+        crit_rules: List[str] = []
+        if isinstance(raw_viols, list):
+            for v in raw_viols:
+                if not isinstance(v, Mapping):
+                    continue
+                sev = str(v.get("severity") or "CRITICAL").upper()
+                rid = str(v.get("rule_id") or "").strip().upper()
+                if sev == "CRITICAL" and rid:
+                    crit_rules.append(rid)
+        if not crit_rules:
+            # Fallback to parsing paused_reason when isolation_detail lacked structured violations
+            for m in re.finditer(r"['\"]rule_id['\"]:\s*['\"]([A-Z0-9_]+)['\"]", paused_reason):
+                rid = m.group(1).upper()
+                if rid not in crit_rules:
+                    crit_rules.append(rid)
+            # Exclude WARNING-only RHYTHM_BURSTINESS when parsed from string fallback
+            crit_rules = [r for r in crit_rules if r != "RHYTHM_BURSTINESS"]
+
+        if not crit_rules:
+            return (False, "unknown_gate_violations", chapter, 0)
+        for rid in crit_rules:
+            if any(rid.startswith(p) for p in _NON_RECOVERABLE_RULE_PREFIXES):
+                return (False, f"structural_{rid}", chapter, 0)
+            if not any(rid.startswith(p) for p in _RECOVERABLE_PROSE_RULE_PREFIXES):
+                return (False, f"unclassified_{rid}", chapter, 0)
+        return (True, f"stochastic_prose:{'+'.join(sorted(set(crit_rules)))}", chapter, len(AUTO_HEAL_COOLDOWN_SECS))
+
+    return (False, f"non_recoverable_{err_type or 'unknown'}", chapter, 0)
+
 
 class SchedulerConfigurationError(RuntimeError):
     """Raised when a required router/provider/planner/CPA dependency is not configured."""
@@ -249,6 +356,8 @@ class MatrixScheduler:
         now_fn: Optional[Callable[[], datetime]] = None,
         export_only: bool = False,
         planner_max_consecutive_same_location: Optional[int] = None,
+        auto_heal_enabled: bool = True,
+        auto_heal_cooldown_secs: Sequence[int] = AUTO_HEAL_COOLDOWN_SECS,
     ) -> None:
         self.db = db
         self.projects_root = Path(projects_root).resolve()
@@ -270,6 +379,11 @@ class MatrixScheduler:
             if planner_max_consecutive_same_location is not None
             else None
         )
+        self.auto_heal_enabled = bool(auto_heal_enabled)
+        self.auto_heal_cooldown_secs: Tuple[int, ...] = tuple(
+            max(0, int(s)) for s in (auto_heal_cooldown_secs or AUTO_HEAL_COOLDOWN_SECS)
+        ) or AUTO_HEAL_COOLDOWN_SECS
+        self._heal_attempts: Dict[str, Tuple[int, int]] = {}
 
         self._prod_lock = threading.Lock()
         self._bg_stop = threading.Event()
@@ -905,6 +1019,7 @@ class MatrixScheduler:
         return {"book_id": book_id, "status": updated["status"], "reason": updated["paused_reason"]}
 
     def resume_book(self, book_id: str) -> Dict[str, Any]:
+        self._heal_attempts.pop(book_id, None)
         updated = self.db.update_book_status(
             book_id, BookRunStatus.ACTIVE, paused_reason="", isolation_detail={}
         )
@@ -1243,6 +1358,116 @@ class MatrixScheduler:
             "stockpiled_count": self.db.count_stockpiled(book_id),
         }
 
+    def run_self_healing_pass(self) -> List[Dict[str, Any]]:
+        """Autonomously recover transient/stochastic book isolations after exponential cooldown.
+
+        Never weakens any quality gate, never resumes PAUSED_MANUAL or structural STATE_* deadlocks,
+        and enforces a strict per-chapter retry ceiling so failed books cannot loop endlessly.
+        """
+        if not self.auto_heal_enabled:
+            return []
+
+        now = shanghai_now(self._now_fn)
+        healed: List[Dict[str, Any]] = []
+        with self._prod_lock:
+            for book in self.db.list_books():
+                bid = str(book["book_id"])
+                status = str(book["status"])
+
+                # Clear heal counter once the book progresses past the previously failing chapter
+                if bid in self._heal_attempts:
+                    prev_ch, _ = self._heal_attempts[bid]
+                    if status == BookRunStatus.ACTIVE.value:
+                        existing = self.db.get_existing_chapter_numbers(bid)
+                        if prev_ch in existing or (existing and max(existing) >= prev_ch):
+                            self._heal_attempts.pop(bid, None)
+
+                # Also allow PAUSED_QUOTA_EXHAUSTED (not BudgetCircuitBreaker) to self-heal once quota resets
+                if status == BookRunStatus.PAUSED_QUOTA_EXHAUSTED.value:
+                    paused_reason = str(book.get("paused_reason") or "")
+                    if "BudgetCircuitBreaker" in paused_reason or "budget" in paused_reason.lower():
+                        continue
+                    quotas = self.db.list_model_quotas()
+                    reset_times = [
+                        _parse_iso_dt(q.get("reset_at"))
+                        for q in quotas
+                        if q.get("reset_at")
+                    ]
+                    valid_resets = [dt for dt in reset_times if dt is not None]
+                    if valid_resets and any((now - dt).total_seconds() >= 60 for dt in valid_resets):
+                        iso_dt = _parse_iso_dt(book.get("updated_at"))
+                        if iso_dt is None or (now - iso_dt).total_seconds() >= 60:
+                            self.db.update_book_status(bid, BookRunStatus.ACTIVE, paused_reason="")
+                            msg = f"[SelfHeal] 免费/轮换模型额度已重置，自动恢复《{book['title']}》生产"
+                            logger.info(msg)
+                            self._emit(
+                                SSE_PIPELINE_MODEL_EVENT,
+                                book_id=bid,
+                                message=msg,
+                                data={"kind": "self_heal", "reason": "quota_reset_elapsed"},
+                            )
+                            healed.append({"book_id": bid, "chapter": 0, "reason": "quota_reset_elapsed", "attempt": 1})
+                    continue
+
+                eligible, reason_code, chapter, cap_max = classify_self_heal_eligibility(book)
+                if not eligible:
+                    continue
+
+                effective_max = min(cap_max, len(self.auto_heal_cooldown_secs))
+                prev_ch, attempts_done = self._heal_attempts.get(bid, (chapter, 0))
+                if prev_ch != chapter:
+                    attempts_done = 0
+
+                if attempts_done >= effective_max:
+                    paused_reason = str(book.get("paused_reason") or "")
+                    if "自愈已达上限" not in paused_reason:
+                        self.db.update_book_status(
+                            bid,
+                            BookRunStatus.ISOLATED_GATE_FAILURE,
+                            paused_reason=f"[自愈已达上限 {effective_max}/{effective_max}，待人工排查] {paused_reason}",
+                        )
+                    continue
+
+                detail = book.get("isolation_detail") if isinstance(book.get("isolation_detail"), Mapping) else {}
+                iso_dt = _parse_iso_dt(detail.get("isolated_at")) or _parse_iso_dt(book.get("updated_at"))
+                required_wait = self.auto_heal_cooldown_secs[min(attempts_done, len(self.auto_heal_cooldown_secs) - 1)]
+                elapsed = (now - iso_dt).total_seconds() if iso_dt is not None else required_wait
+                if elapsed < required_wait:
+                    continue
+
+                next_attempt = attempts_done + 1
+                self._heal_attempts[bid] = (chapter, next_attempt)
+                self.db.update_book_status(bid, BookRunStatus.ACTIVE, paused_reason="")
+                msg = (
+                    f"[SelfHeal] 检测到可恢复隔离（{reason_code}），冷却 {int(elapsed)}s 后自动恢复"
+                    f"《{book['title']}》第 {chapter} 章（自愈第 {next_attempt}/{effective_max} 轮）"
+                )
+                logger.info(msg)
+                print(msg, flush=True)
+                self._emit(
+                    SSE_PIPELINE_MODEL_EVENT,
+                    book_id=bid,
+                    chapter=chapter,
+                    message=msg,
+                    data={
+                        "kind": "self_heal",
+                        "reason": reason_code,
+                        "heal_attempt": next_attempt,
+                        "max_heal_attempts": effective_max,
+                        "cooldown_elapsed_sec": round(elapsed, 1),
+                    },
+                )
+                healed.append(
+                    {
+                        "book_id": bid,
+                        "chapter": chapter,
+                        "reason": reason_code,
+                        "attempt": next_attempt,
+                        "max_attempts": effective_max,
+                    }
+                )
+        return healed
+
     def run_production_cycle(self, *, max_chapters_per_cycle: Optional[int] = None) -> Dict[str, Any]:
         """Inspect cushion levels and produce chapters in priority order (<6 first) with fault isolation."""
         with self._prod_lock:
@@ -1273,6 +1498,7 @@ class MatrixScheduler:
         def _loop() -> None:
             while not self._bg_stop.is_set():
                 try:
+                    self.run_self_healing_pass()
                     self.run_production_cycle(max_chapters_per_cycle=5)
                 except SchedulerConfigurationError as exc:
                     logger.warning("Scheduler cycle skipped (unconfigured): %s", exc)
