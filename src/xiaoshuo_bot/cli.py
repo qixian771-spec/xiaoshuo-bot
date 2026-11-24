@@ -200,7 +200,41 @@ def _cmd_compile_prompt(args: argparse.Namespace) -> int:
     if not matching:
         print(f"Error: Chapter {args.chapter} not found.", file=sys.stderr)
         return 1
-    sys_p, usr_p = compiler.compile_scene_prompt(matching[0], state)
+    scene = matching[0]
+    if scene.chapter == 1:
+        recent_texts: List[str] = []
+    else:
+        output_dir_arg = getattr(args, "output_dir", None)
+        if not output_dir_arg or not str(output_dir_arg).strip():
+            print(
+                f"Error: --output-dir is required when compiling chapter {scene.chapter} (> 1) "
+                "to load recent chapter texts for anchor cooldown.",
+                file=sys.stderr,
+            )
+            return 1
+        chapters_dir = Path(output_dir_arg).resolve() / "chapters"
+        if not chapters_dir.is_dir():
+            print(
+                f"Error: Chapters directory does not exist: '{chapters_dir}'",
+                file=sys.stderr,
+            )
+            return 1
+        recent_texts = []
+        for prev_ch in range(max(1, scene.chapter - 3), scene.chapter):
+            prev_path = resolve_chapter_path(chapters_dir, prev_ch)
+            if prev_path is None or not prev_path.is_file():
+                print(
+                    f"Error: Missing preceding chapter {prev_ch:04d} text in '{chapters_dir}' "
+                    f"(required to compile chapter {scene.chapter}).",
+                    file=sys.stderr,
+                )
+                return 1
+            recent_texts.append(prev_path.read_text(encoding="utf-8"))
+    sys_p, usr_p = compiler.compile_scene_prompt(
+        scene,
+        state,
+        recent_chapter_texts=tuple(recent_texts),
+    )
     print(sys_p)
     print()
     print(usr_p)
@@ -1272,6 +1306,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_comp = sub.add_parser("compile-prompt", help="Compile and print the dynamic prompt for a chapter")
     p_comp.add_argument("--project", required=True, help="Path to novel project directory")
     p_comp.add_argument("--chapter", type=int, required=True, help="Chapter number")
+    p_comp.add_argument(
+        "--output-dir",
+        help="Output directory containing chapters/ (required when --chapter > 1)",
+    )
     p_comp.set_defaults(func=_cmd_compile_prompt)
 
     for chk_name in ("check-text", "check"):

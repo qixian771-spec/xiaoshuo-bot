@@ -503,29 +503,21 @@ class MemoryPyramid:
         self,
         scene: Optional[SceneOutline] = None,
         *,
+        current_virtual_day: int,
         active_character_ids: Optional[Iterable[str]] = None,
         active_asset_ids: Optional[Iterable[str]] = None,
         active_entity_ids: Optional[Iterable[str]] = None,
         max_chars: Optional[int] = None,
-        # TODO(T5b): 下轮 T5b 接入 compiler.py 传入 state.virtual_day 后，此参数将改为必填。
-        current_virtual_day: Optional[int] = None,
     ) -> str:
-        """Compile L0-L3 memory pyramid context strictly bounded by <= max_chars (default 5200).
-
-        Transitional note (T6):
-            ``current_virtual_day`` is temporarily Optional because ``compiler.py`` is not
-            updated in this task. Once T5b wires ``compiler.py`` to pass ``state.virtual_day``,
-            ``current_virtual_day`` MUST be made mandatory.
-        """
-        if current_virtual_day is not None:
-            if (
-                isinstance(current_virtual_day, bool)
-                or not isinstance(current_virtual_day, int)
-                or current_virtual_day < 1
-            ):
-                raise ValueError(
-                    f"current_virtual_day must be an int >= 1, got {current_virtual_day!r}"
-                )
+        """Compile L0-L3 memory pyramid context strictly bounded by <= max_chars (default 5200)."""
+        if (
+            isinstance(current_virtual_day, bool)
+            or not isinstance(current_virtual_day, int)
+            or current_virtual_day < 1
+        ):
+            raise ValueError(
+                f"current_virtual_day must be an int >= 1, got {current_virtual_day!r}"
+            )
 
         budget = self.max_context_chars if max_chars is None else int(max_chars)
         if budget <= 0:
@@ -550,10 +542,7 @@ class MemoryPyramid:
         l2_budget = min(1050, int(budget * 0.20))
         l3_budget = max(200, budget - l0_budget - recall_budget - l1_budget - l2_budget - 80)
 
-        sections: List[str] = []
-
-        if current_virtual_day is not None:
-            sections.append(f"### [时间锚点] 当前第{current_virtual_day}天")
+        sections: List[str] = [f"### [时间锚点] 当前第{current_virtual_day}天"]
 
         # L0: Immediate previous chapter tail
         if self.l0_tail:
@@ -583,11 +572,7 @@ class MemoryPyramid:
             l1_lines: List[str] = []
             per_ch_cap = max(120, (l1_budget - 24) // len(self.l1_recent))
             for entry in self.l1_recent:
-                day_tag = (
-                    f"（第{entry.virtual_day}天，距今{current_virtual_day - entry.virtual_day}天）"
-                    if current_virtual_day is not None
-                    else ""
-                )
+                day_tag = f"（第{entry.virtual_day}天，距今{current_virtual_day - entry.virtual_day}天）"
                 line = _truncate(f"- 第{entry.chapter}章{day_tag}：{entry.summary}", per_ch_cap)
                 l1_lines.append(line)
             l1_block = "### [L1 近五章摘要]\n" + "\n".join(l1_lines)
@@ -602,7 +587,7 @@ class MemoryPyramid:
         for st in recent_stages:
             day_tag = (
                 f"（第{st.start_day}–{st.end_day}天）"
-                if current_virtual_day is not None and st.start_day is not None and st.end_day is not None
+                if st.start_day is not None and st.end_day is not None
                 else ""
             )
             l2_lines.append(f"- 第{st.start_chapter}-{st.end_chapter}章阶段{day_tag}：{st.summary}")
@@ -610,9 +595,7 @@ class MemoryPyramid:
             st_temp = self._merge_to_stage(unmerged_older)
             day_tag = (
                 f"（第{st_temp.start_day}–{st_temp.end_day}天）"
-                if current_virtual_day is not None
-                and st_temp.start_day is not None
-                and st_temp.end_day is not None
+                if st_temp.start_day is not None and st_temp.end_day is not None
                 else ""
             )
             l2_lines.append(
@@ -630,9 +613,7 @@ class MemoryPyramid:
             for vol in self.l3_volumes:
                 day_tag = (
                     f"（第{vol.start_day}–{vol.end_day}天）"
-                    if current_virtual_day is not None
-                    and vol.start_day is not None
-                    and vol.end_day is not None
+                    if vol.start_day is not None and vol.end_day is not None
                     else ""
                 )
                 vol_lines.append(

@@ -515,6 +515,7 @@ class TestWorldStateV2(unittest.TestCase):
         ctx_120 = pyramid.compile_context(
             active_character_ids=["hero", "ch05_mentor"],
             active_asset_ids=["jade_seal"],
+            current_virtual_day=122,
         )
         self.assertLessEqual(len(ctx_120), 5200)
         self.assertIn("沈老(ch05_mentor)", ctx_120)
@@ -540,6 +541,7 @@ class TestWorldStateV2(unittest.TestCase):
         ctx_500 = pyramid.compile_context(
             active_character_ids=["hero", "ch05_mentor"],
             active_asset_ids=["jade_seal"],
+            current_virtual_day=502,
         )
         self.assertLessEqual(len(ctx_500), 5200)
         self.assertIn("沈老(ch05_mentor)", ctx_500)
@@ -555,6 +557,7 @@ class TestWorldStateV2(unittest.TestCase):
                 loaded.compile_context(
                     active_character_ids=["hero", "ch05_mentor"],
                     active_asset_ids=["jade_seal"],
+                    current_virtual_day=502,
                 ),
                 ctx_500,
             )

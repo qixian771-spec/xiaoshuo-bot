@@ -354,6 +354,7 @@ cloud_tests=(
   tests/test_t6_memory_and_state.py
   tests/test_llm_router_cpa.py
   tests/test_compiler_polisher.py
+  tests/test_t5b_compiler.py
   tests/test_pipeline.py
   tests/test_e2e_matrix_engine.py
   tests/test_server_stockpile.py

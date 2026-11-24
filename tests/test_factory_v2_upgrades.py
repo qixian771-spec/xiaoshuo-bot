@@ -379,7 +379,9 @@ class TestPillar3CompilerProseUpgrades(unittest.TestCase):
         from xiaoshuo_bot.state import WorldStateManager
 
         state = WorldStateManager(proj)
-        sys_ch2, _ = compiler.compile_scene_prompt(proj.scenes[1], state)
+        sys_ch2, _ = compiler.compile_scene_prompt(
+            proj.scenes[1], state, recent_chapter_texts=("第1章正文。",)
+        )
         self.assertIn("给道具做体检", sys_ch2)
         self.assertIn("每写 250～350 字", sys_ch2)
         self.assertIn("严禁连续 4 句以上全是 6～12 字的碎片短句", sys_ch2)
@@ -399,7 +401,9 @@ class TestPillar3CompilerProseUpgrades(unittest.TestCase):
                 fix_hint="补足字数",
             )
         )
-        _, rewrite_user = compiler.compile_rewrite_prompt(proj.scenes[1], state, "草稿", bad_report)
+        _, rewrite_user = compiler.compile_rewrite_prompt(
+            proj.scenes[1], state, "草稿", bad_report, recent_chapter_texts=("第1章正文。",)
+        )
         self.assertIn("严禁用反复摆弄道具", rewrite_user)
 
 
@@ -574,7 +578,9 @@ class TestSelfHealingAndAntiPingPongLength(unittest.TestCase):
                 )
             ],
         )
-        _, short_user = compiler.compile_rewrite_prompt(proj.scenes[0], state, "原稿", short_rep)
+        _, short_user = compiler.compile_rewrite_prompt(
+            proj.scenes[0], state, "原稿", short_rep, recent_chapter_texts=()
+        )
         self.assertIn("轻量精准补足", short_user)
         self.assertIn("切勿大幅重写或过度扩写", short_user)
 
@@ -594,7 +600,9 @@ class TestSelfHealingAndAntiPingPongLength(unittest.TestCase):
                 )
             ],
         )
-        _, long_user = compiler.compile_rewrite_prompt(proj.scenes[0], state, "原稿", long_rep)
+        _, long_user = compiler.compile_rewrite_prompt(
+            proj.scenes[0], state, "原稿", long_rep, recent_chapter_texts=()
+        )
         self.assertIn("轻量精准微裁", long_user)
         self.assertIn("切勿大段删减", long_user)
 
