@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +26,9 @@ from .models import (
     StyleProfile,
     VolumeCapLock,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -136,7 +140,12 @@ def load_project(
     project_dir: str | Path,
     *,
     is_final_volume: Optional[bool] = None,
+    allow_legacy_defaults: bool = False,
 ) -> NovelProject:
+    if not isinstance(allow_legacy_defaults, bool):
+        raise ProjectValidationError(
+            f"allow_legacy_defaults must be a boolean, got {allow_legacy_defaults!r}"
+        )
     root = Path(project_dir).resolve()
     if not root.is_dir():
         raise ProjectValidationError(f"Project directory does not exist: {root}")
@@ -215,13 +224,30 @@ def load_project(
         else (meta_is_final or outline_final_flag)
     )
 
+    if "max_rewrite_retries" in meta_raw:
+        raw_retries = meta_raw["max_rewrite_retries"]
+        if isinstance(raw_retries, bool) or not isinstance(raw_retries, int) or raw_retries < 0:
+            raise ProjectValidationError(
+                f"project.yaml: max_rewrite_retries must be a non-negative integer, got {raw_retries!r}"
+            )
+        max_rewrite_retries = raw_retries
+    elif contract_track == "legacy" and allow_legacy_defaults:
+        logger.warning(
+            "project.yaml in %s is missing 'max_rewrite_retries'; applying legacy default 3 "
+            "(allow_legacy_defaults=True)",
+            root,
+        )
+        max_rewrite_retries = 3
+    else:
+        raise ProjectValidationError("project.yaml missing required field: max_rewrite_retries")
+
     meta = ProjectMeta(
         project_id=str(_require_key(meta_raw, "project_id", "project.yaml")),
         title=str(_require_key(meta_raw, "title", "project.yaml")),
         genre=str(meta_raw.get("genre", "现实悬疑")),
         synopsis=str(meta_raw.get("synopsis", "")),
         default_pov_character=default_pov,
-        max_rewrite_retries=int(meta_raw.get("max_rewrite_retries", 3)),
+        max_rewrite_retries=max_rewrite_retries,
         author_level=author_level,
         contract_track=contract_track,
         pov_mode=pov_mode,
