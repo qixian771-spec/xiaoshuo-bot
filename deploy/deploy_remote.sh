@@ -343,6 +343,7 @@ cloud_tests=(
   tests/test_web_static_contract.py
   tests/test_cover_exporter.py
   tests/test_evolution.py
+  tests/test_blueprint.py
   tests/test_planner_deconstruct.py
   tests/test_checker.py
   tests/test_tomato_checker.py
