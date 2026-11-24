@@ -29,6 +29,7 @@ from .engine import NovelGenerationEngine
 from .evolution import MotifWeightStore
 from .exporter import export_project_bundle
 from .genres import get_genre, list_genres
+from .judge import _check_same_or_same_family_models
 from .llm import (
     AnthropicProvider,
     CPAManagementClient,
@@ -51,6 +52,7 @@ from .llm import (
 )
 from .loader import load_project
 from .models import ChapterArtifact, resolve_chapter_path
+from .pilot import load_case_summaries, parse_chapters_arg, run_pilot
 from .planner import AutoNovelPlanner
 from .server import MatrixHTTPServer, create_server
 from .state import WorldStateManager
@@ -1278,6 +1280,173 @@ def _cmd_companion(args: argparse.Namespace) -> int:
     return run_companion_daemon(args)
 
 
+_parse_chapters_arg = parse_chapters_arg
+
+
+def _build_pilot_workbuddy_catalog(args: argparse.Namespace) -> WorkBuddyModelCatalog:
+    wb_catalog = WorkBuddyModelCatalog.from_env(
+        overrides={
+            WORKBUDDY_SLOT_HY4_FLASH: getattr(args, "workbuddy_hy4_flash", None),
+            WORKBUDDY_SLOT_HY4: getattr(args, "workbuddy_hy4", None),
+            WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH: getattr(args, "workbuddy_deepseek_v4_1_flash", None),
+            WORKBUDDY_SLOT_MIMO_V2_6_PRO: getattr(args, "workbuddy_mimo_v2_6_pro", None),
+        }
+    )
+    if wb_catalog is None:
+        raise LLMConfigurationError(
+            "pilot requires WorkBuddy model catalog configuration "
+            "(set WORKBUDDY_MODEL_* environment variables or --workbuddy-* flags)."
+        )
+    return wb_catalog
+
+
+def _build_workbuddy_slot_provider(
+    args: argparse.Namespace,
+    slot_name: str,
+    *,
+    role: str,
+    catalog: Optional[WorkBuddyModelCatalog] = None,
+    ledger: Optional[UsageBudgetLedger] = None,
+) -> tuple[LLMProvider, str]:
+    wb_catalog = catalog if catalog is not None else _build_pilot_workbuddy_catalog(args)
+    slot_map = wb_catalog.slot_to_model()
+    cleaned_slot = str(slot_name or "").strip()
+    if cleaned_slot not in slot_map:
+        raise LLMConfigurationError(
+            f"Unknown WorkBuddy slot {slot_name!r}; expected one of {', '.join(slot_map.keys())}."
+        )
+    upstream_model = slot_map[cleaned_slot]
+
+    default_url = _resolve_env_or_arg(
+        getattr(args, "base_url", None),
+        "XIAOSHUO_BASE_URL",
+        "OPENAI_BASE_URL",
+    )
+    wb_base_url = default_url or _resolve_env_or_arg(
+        getattr(args, "cpa_url", None),
+        "CPA_BASE_URL",
+        "XIAOSHUO_CPA_URL",
+        "CPA_MANAGEMENT_URL",
+    )
+    default_keys_raw = _resolve_env_or_arg(
+        getattr(args, "api_key", None),
+        "XIAOSHUO_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    wb_keys = _split_csv(default_keys_raw)
+
+    raw_wb_backoff = _resolve_env_or_arg(
+        getattr(args, "workbuddy_rate_limit_backoff", None),
+        WORKBUDDY_RATE_LIMIT_BACKOFF_ENV,
+    )
+    wb_backoff = (
+        parse_rate_limit_backoff_sec(raw_wb_backoff)
+        if raw_wb_backoff is not None
+        else None
+    )
+    raw_wb_cooldown = _resolve_env_or_arg(
+        getattr(args, "workbuddy_model_cooldown_sec", None),
+        WORKBUDDY_MODEL_COOLDOWN_ENV,
+    )
+    wb_model_cooldown: Optional[float] = None
+    if raw_wb_cooldown is not None:
+        try:
+            wb_model_cooldown = float(raw_wb_cooldown)
+        except ValueError as exc:
+            raise LLMConfigurationError(
+                f"Invalid {WORKBUDDY_MODEL_COOLDOWN_ENV}={raw_wb_cooldown!r}: must be a positive number."
+            ) from exc
+
+    endpoint = RoleEndpointConfig(
+        role=role,
+        base_url=wb_base_url or "",
+        model=upstream_model,
+        api_keys=wb_keys,
+        provider_type="openai",
+        model_whitelist=wb_catalog.whitelist(),
+        rotation_models=(),
+        manual_only_models=wb_catalog.manual_only(),
+        model_cooldown_sec=wb_model_cooldown,
+        rate_limit_backoff_sec=wb_backoff,
+        model_labels=wb_catalog.labels(),
+    )
+    router = RoleModelRouter(
+        {role: endpoint},
+        ledger=ledger,
+        workbuddy_catalog=wb_catalog,
+    )
+    return router.as_provider(role), upstream_model
+
+
+def _cmd_pilot(args: argparse.Namespace) -> int:
+    chapters = _parse_chapters_arg(args.chapters)
+    case_summaries = load_case_summaries(args.case_summaries)
+    wb_catalog = _build_pilot_workbuddy_catalog(args)
+
+    out_dir = Path(args.out).resolve()
+    budget_raw = getattr(args, "daily_budget_limit", None)
+    if budget_raw is None:
+        env_budget = os.environ.get("XIAOSHUO_DAILY_BUDGET_LIMIT", "").strip()
+        budget_limit = float(env_budget) if env_budget else None
+    else:
+        budget_limit = float(budget_raw)
+
+    chapter_raw = getattr(args, "daily_chapter_limit", None)
+    if chapter_raw is None:
+        env_chap = os.environ.get("XIAOSHUO_DAILY_CHAPTER_LIMIT", "").strip()
+        chapter_limit = int(env_chap) if env_chap else None
+    else:
+        chapter_limit = int(chapter_raw)
+
+    ledger_path = _resolve_env_or_arg(
+        getattr(args, "ledger_path", None),
+        "XIAOSHUO_LEDGER_PATH",
+    ) or str(out_dir / "pilot_usage_ledger.json")
+    ledger = UsageBudgetLedger(
+        daily_budget_limit=budget_limit,
+        daily_chapter_limit=chapter_limit,
+        state_path=ledger_path,
+    )
+
+    judge_slot = str(args.judge or "").strip()
+    judge_provider, judge_upstream = _build_workbuddy_slot_provider(
+        args,
+        judge_slot,
+        role="critic",
+        catalog=wb_catalog,
+        ledger=ledger,
+    )
+
+    writers: Dict[str, LLMProvider] = {}
+    for raw_slot in args.writer:
+        slot = str(raw_slot or "").strip()
+        if slot in writers:
+            raise LLMConfigurationError(f"Duplicate --writer slot {slot!r}.")
+        writer_provider, _ = _build_workbuddy_slot_provider(
+            args,
+            slot,
+            role="writer",
+            catalog=wb_catalog,
+            ledger=ledger,
+        )
+        _check_same_or_same_family_models(judge_slot, slot)
+        writers[slot] = writer_provider
+
+    payload = run_pilot(
+        project_dir=args.project,
+        chapters=chapters,
+        writers=writers,
+        judge_provider=judge_provider,
+        judge_model=judge_upstream,
+        benchmark_path=args.benchmark_text,
+        case_summaries=case_summaries,
+        out_dir=out_dir,
+        blueprint_path=getattr(args, "blueprint", None),
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _add_provider_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--provider",
@@ -1554,6 +1723,75 @@ def build_parser() -> argparse.ArgumentParser:
         "cover uploads are disabled when unset",
     )
     p_cmp.set_defaults(func=_cmd_companion)
+
+    p_pilot = sub.add_parser(
+        "pilot",
+        help="Run golden-three-chapters multi-writer pilot benchmark with cross-family judging",
+    )
+    p_pilot.add_argument("--project", required=True, help="Path to novel project directory")
+    p_pilot.add_argument(
+        "--blueprint",
+        help="Optional path to blueprint.yaml (defaults to <project>/blueprint.yaml)",
+    )
+    p_pilot.add_argument(
+        "--chapters",
+        default="1-3",
+        help="Target chapter range or CSV, e.g. '1-3' or '1,2,3' (default: '1-3')",
+    )
+    p_pilot.add_argument(
+        "--writer",
+        action="append",
+        required=True,
+        help="WorkBuddy writer slot name (repeatable), e.g. hy4_flash, deepseek_v4_1_flash, mimo_v2_6_pro",
+    )
+    p_pilot.add_argument(
+        "--judge",
+        required=True,
+        help="WorkBuddy judge slot name (must be cross-family with every --writer)",
+    )
+    p_pilot.add_argument(
+        "--benchmark-text",
+        required=True,
+        help="Path to benchmark chapter text file (e.g. book1_ch1_3.txt)",
+    )
+    p_pilot.add_argument(
+        "--case-summaries",
+        required=True,
+        help="Path to YAML mapping chapter number (int) to case summary string",
+    )
+    p_pilot.add_argument("--out", required=True, help="Output directory for pilot runs and scorecards")
+    p_pilot.add_argument("--base-url", help="Default CPA/OpenAI base URL for WorkBuddy router")
+    p_pilot.add_argument("--api-key", help="Default CPA/OpenAI API key (or comma-separated pool)")
+    p_pilot.add_argument("--cpa-url", help="CPA base/management URL fallback (env CPA_BASE_URL)")
+    p_pilot.add_argument(
+        "--workbuddy-hy4-flash",
+        help="Configured CPA upstream ID for WorkBuddy Hy4 flash (env WORKBUDDY_MODEL_HY4_FLASH)",
+    )
+    p_pilot.add_argument(
+        "--workbuddy-hy4",
+        help="Configured CPA upstream ID for WorkBuddy Hy4 manual-only (env WORKBUDDY_MODEL_HY4)",
+    )
+    p_pilot.add_argument(
+        "--workbuddy-deepseek-v4-1-flash",
+        help="Configured CPA upstream ID for WorkBuddy DeepSeek-V4.1-Flash (env WORKBUDDY_MODEL_DEEPSEEK_V4_1_FLASH)",
+    )
+    p_pilot.add_argument(
+        "--workbuddy-mimo-v2-6-pro",
+        help="Configured CPA upstream ID for WorkBuddy Xiaomi MiMo-V2.6-Pro (env WORKBUDDY_MODEL_MIMO_V2_6_PRO)",
+    )
+    p_pilot.add_argument(
+        "--workbuddy-rate-limit-backoff",
+        help="Comma-separated HTTP 429 backoff retry delays in seconds (env WORKBUDDY_RATE_LIMIT_BACKOFF_SEC)",
+    )
+    p_pilot.add_argument(
+        "--workbuddy-model-cooldown-sec",
+        type=float,
+        help="Cooldown seconds for a quota-exhausted WorkBuddy model (env WORKBUDDY_MODEL_COOLDOWN_SEC)",
+    )
+    p_pilot.add_argument("--daily-budget-limit", type=float, help="Daily USD budget circuit breaker")
+    p_pilot.add_argument("--daily-chapter-limit", type=int, help="Daily chapter count circuit breaker")
+    p_pilot.add_argument("--ledger-path", help="UsageBudgetLedger JSON path")
+    p_pilot.set_defaults(func=_cmd_pilot)
 
     return parser
 

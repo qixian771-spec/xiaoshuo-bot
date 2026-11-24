@@ -358,6 +358,7 @@ cloud_tests=(
   tests/test_t5b_compiler.py
   tests/test_pipeline.py
   tests/test_e2e_matrix_engine.py
+  tests/test_pilot.py
   tests/test_server_stockpile.py
   tests/test_telegram_bot.py
   tests/test_audit_server_security.py
