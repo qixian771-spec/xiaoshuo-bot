@@ -444,7 +444,7 @@ class PairwiseJudge:
             '- 若判定 "verdict": "PASS"，则 "problems" 必须严格为空数组 []（轻微改进建议只能写在 "summary" 中）；\n'
             '- 只要 "problems" 列出任意 1 条结构性病灶，"verdict" 必须为 "FAIL"；\n'
             '- 若判定 "verdict": "FAIL"，则 "problems" 必须至少列出 1 条具体病灶。\n'
-            "只允许输出严格 JSON 对象（每条 evidence 控制在 120 字以内、summary 控制在 150 字以内，保证 JSON 完整闭合）：\n"
+            "只允许输出严格 JSON 对象（每条 evidence 控制在 120 字以内、summary 控制在 150 字以内，JSON 字符串值内部严禁使用英文双引号 \"，引用字词一律用中文单引号 ‘’，保证 JSON 完整闭合）：\n"
             '{"verdict": "PASS"|"FAIL", '
             '"problems": [{"type": "同质化"|"原地踏步"|"爽感疲劳"|"工具人"|"跑偏", '
             '"chapters": [int, ...], "evidence": "具体依据（非空）"}], '
@@ -479,7 +479,23 @@ class PairwiseJudge:
                 },
             )
 
-            parsed = _parse_strict_json_object(raw_content, context=ctx_label)
+            try:
+                parsed = _parse_strict_json_object(raw_content, context=ctx_label)
+            except JudgeResponseError as parse_exc:
+                if contract_attempt < max_contract_attempts:
+                    logger.warning(
+                        "%s malformed JSON on attempt %d/%d (%s); retrying once with explicit JSON syntax correction.",
+                        ctx_label,
+                        contract_attempt,
+                        max_contract_attempts,
+                        parse_exc,
+                    )
+                    retry_hint = (
+                        f"【JSON语法纠偏重审】你上一次输出不是合法 JSON：{parse_exc}\n"
+                        '请重新输出严格合法的 JSON 对象，字符串值内部严禁包含未转义英文双引号 "（引用字词请改用中文单引号 ‘’）。'
+                    )
+                    continue
+                raise
             verdict = _require_non_empty_str(parsed, "verdict", context=ctx_label)
             if verdict not in VALID_ARC_VERDICTS:
                 raise JudgeResponseError(

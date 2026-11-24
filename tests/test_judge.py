@@ -429,6 +429,26 @@ class TestArcReview(unittest.TestCase):
         self.assertEqual(len(provider.requests), 2)
         self.assertIn("格式纠偏重审", provider.requests[1].user_prompt)
 
+    def test_arc_review_retries_once_on_malformed_json_unescaped_quote(self) -> None:
+        def _responder(req, n: int) -> str:
+            if n == 1:
+                return '{"verdict":"PASS","problems":[],"summary":"提到"未转义"双引号"}'
+            return json.dumps(
+                {"verdict": "PASS", "problems": [], "summary": "提到‘已改用单引号’且合法闭合。"},
+                ensure_ascii=False,
+            )
+
+        provider = _FakeProvider(_responder)
+        judge = PairwiseJudge(
+            provider,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        res = judge.arc_review(["第一章正文。"], {"index": 2, "protagonist_goal": "拆字打假"})
+        self.assertEqual(res.verdict, "PASS")
+        self.assertEqual(len(provider.requests), 2)
+        self.assertIn("JSON语法纠偏重审", provider.requests[1].user_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
