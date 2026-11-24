@@ -361,6 +361,8 @@ cloud_tests=(
   tests/test_public_and_wizard.py
   tests/test_export_only_scheduler.py
   tests/test_length_target.py
+  tests/test_quality_rules.py
+  tests/test_judge.py
   tests/test_staged_planner.py
   tests/test_workbuddy_routing.py
   tests/test_workbuddy_config_and_tracking.py
