@@ -264,6 +264,7 @@ class TestPromptCompilerV2(unittest.TestCase):
             pyramid.record_chapter(
                 ch,
                 f"第{ch}章，陈牧在海城推进收购计划。\n他收好加密公文包，记下关键时间戳。",
+                virtual_day=ch + 1,
                 title=f"第{ch}章测试",
                 character_ids=["chen_mu", "lin_wei"] if ch == 1 else ["chen_mu"],
                 asset_ids=["briefcase"],

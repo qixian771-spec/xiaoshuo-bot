@@ -248,6 +248,7 @@ class CharacterMutation:
     injury: Optional[str] = None
     injury_recovery_chapters: int = 0
     note: str = ""
+    role: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.status is not None and self.status not in CHARACTER_STATUSES:
@@ -255,12 +256,17 @@ class CharacterMutation:
                 f"CharacterMutation '{self.character_id}': unknown status {self.status!r}; "
                 f"expected one of {CHARACTER_STATUSES}"
             )
+        if self.role is not None and not str(self.role).strip():
+            raise ProjectValidationError(
+                f"CharacterMutation '{self.character_id}': role cannot be empty or whitespace"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> CharacterMutation:
+        raw_role = data.get("role")
         return cls(
             character_id=str(data["character_id"]),
             status=data.get("status"),
@@ -271,6 +277,7 @@ class CharacterMutation:
             injury=data.get("injury"),
             injury_recovery_chapters=int(data.get("injury_recovery_chapters", 0)),
             note=str(data.get("note", "")),
+            role=str(raw_role) if raw_role is not None else None,
         )
 
 
@@ -435,6 +442,7 @@ class CharacterWorldState:
     forbidden_titles: List[str] = field(default_factory=list)
     injuries: Dict[str, int] = field(default_factory=dict)
     deceased_chapter: Optional[int] = None
+    current_role: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.status not in CHARACTER_STATUSES:
@@ -448,6 +456,7 @@ class CharacterWorldState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> CharacterWorldState:
+        raw_role = data.get("current_role")
         return cls(
             character_id=str(data["character_id"]),
             name=str(data["name"]),
@@ -459,6 +468,7 @@ class CharacterWorldState:
             deceased_chapter=(
                 int(data["deceased_chapter"]) if data.get("deceased_chapter") is not None else None
             ),
+            current_role=str(raw_role) if raw_role is not None else None,
         )
 
 

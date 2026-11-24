@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .models import SceneOutline
+
+
+_logger = logging.getLogger(__name__)
+
+
+class MemoryMigrationError(ValueError):
+    """Raised when legacy memory data lacks required virtual_day or cannot be migrated."""
 
 
 DEFAULT_MAX_CONTEXT_CHARS = 5200
@@ -14,6 +23,14 @@ L0_MAX_TAIL_CHARS = 260
 L1_WINDOW_SIZE = 5
 L2_BLOCK_SIZE = 10
 L3_BLOCK_SIZE = 100
+
+
+def _validate_positive_day(value: Any, field_name: str, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise MemoryMigrationError(
+            f"{context}: '{field_name}' must be an int >= 1, got {value!r}"
+        )
+    return value
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -41,6 +58,7 @@ def _dedupe_list(items: Iterable[str]) -> List[str]:
 @dataclass
 class ChapterMemoryEntry:
     chapter: int
+    virtual_day: int
     title: str = ""
     summary: str = ""
     character_ids: List[str] = field(default_factory=list)
@@ -49,13 +67,45 @@ class ChapterMemoryEntry:
     key_events: List[str] = field(default_factory=list)
     tail: str = ""
 
+    def __post_init__(self) -> None:
+        if isinstance(self.chapter, bool) or not isinstance(self.chapter, int) or self.chapter < 1:
+            raise ValueError(f"ChapterMemoryEntry chapter must be an int >= 1, got {self.chapter!r}")
+        if (
+            isinstance(self.virtual_day, bool)
+            or not isinstance(self.virtual_day, int)
+            or self.virtual_day < 1
+        ):
+            raise ValueError(
+                f"ChapterMemoryEntry virtual_day must be an int >= 1, got {self.virtual_day!r}"
+            )
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ChapterMemoryEntry:
+        if not isinstance(data, Mapping):
+            raise MemoryMigrationError(
+                f"ChapterMemoryEntry expects mapping, got {type(data).__name__}"
+            )
+        if "chapter" not in data:
+            raise MemoryMigrationError("ChapterMemoryEntry missing required 'chapter' field")
+        raw_ch = data["chapter"]
+        if isinstance(raw_ch, bool) or not isinstance(raw_ch, int) or raw_ch < 1:
+            raise MemoryMigrationError(
+                f"ChapterMemoryEntry invalid 'chapter' (must be int >= 1): {raw_ch!r}"
+            )
+        if "virtual_day" not in data:
+            raise MemoryMigrationError(
+                f"Chapter {raw_ch}: ChapterMemoryEntry missing required 'virtual_day' field; "
+                "use migrate_legacy_memory() to migrate legacy memory JSON"
+            )
+        virtual_day = _validate_positive_day(
+            data["virtual_day"], "virtual_day", f"ChapterMemoryEntry(chapter={raw_ch})"
+        )
         return cls(
-            chapter=int(data["chapter"]),
+            chapter=raw_ch,
+            virtual_day=virtual_day,
             title=str(data.get("title", "")),
             summary=str(data.get("summary", "")),
             character_ids=[str(x) for x in data.get("character_ids", [])],
@@ -72,17 +122,39 @@ class StageChronicle:
     end_chapter: int
     summary: str
     entity_ids: List[str] = field(default_factory=list)
+    start_day: Optional[int] = None
+    end_day: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> StageChronicle:
+        start_ch = int(data["start_chapter"])
+        end_ch = int(data["end_chapter"])
+        raw_start_day = data.get("start_day")
+        raw_end_day = data.get("end_day")
+        start_day = (
+            _validate_positive_day(
+                raw_start_day, "start_day", f"StageChronicle({start_ch}-{end_ch})"
+            )
+            if raw_start_day is not None
+            else None
+        )
+        end_day = (
+            _validate_positive_day(
+                raw_end_day, "end_day", f"StageChronicle({start_ch}-{end_ch})"
+            )
+            if raw_end_day is not None
+            else None
+        )
         return cls(
-            start_chapter=int(data["start_chapter"]),
-            end_chapter=int(data["end_chapter"]),
+            start_chapter=start_ch,
+            end_chapter=end_ch,
             summary=str(data["summary"]),
             entity_ids=[str(x) for x in data.get("entity_ids", [])],
+            start_day=start_day,
+            end_day=end_day,
         )
 
 
@@ -92,17 +164,39 @@ class VolumeChronicle:
     end_chapter: int
     summary: str
     entity_ids: List[str] = field(default_factory=list)
+    start_day: Optional[int] = None
+    end_day: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> VolumeChronicle:
+        start_ch = int(data["start_chapter"])
+        end_ch = int(data["end_chapter"])
+        raw_start_day = data.get("start_day")
+        raw_end_day = data.get("end_day")
+        start_day = (
+            _validate_positive_day(
+                raw_start_day, "start_day", f"VolumeChronicle({start_ch}-{end_ch})"
+            )
+            if raw_start_day is not None
+            else None
+        )
+        end_day = (
+            _validate_positive_day(
+                raw_end_day, "end_day", f"VolumeChronicle({start_ch}-{end_ch})"
+            )
+            if raw_end_day is not None
+            else None
+        )
         return cls(
-            start_chapter=int(data["start_chapter"]),
-            end_chapter=int(data["end_chapter"]),
+            start_chapter=start_ch,
+            end_chapter=end_ch,
             summary=str(data["summary"]),
             entity_ids=[str(x) for x in data.get("entity_ids", [])],
+            start_day=start_day,
+            end_day=end_day,
         )
 
 
@@ -116,6 +210,8 @@ class EntityMemoryRecord:
     appearances: List[Dict[str, Any]] = field(default_factory=list)
 
     def record_appearance(self, chapter: int, fact: str, max_kept: int = 8) -> None:
+        if max_kept < 1:
+            raise ValueError(f"max_kept must be >= 1, got {max_kept}")
         if self.first_chapter == 0 or chapter < self.first_chapter:
             self.first_chapter = chapter
         if chapter > self.last_chapter:
@@ -134,11 +230,9 @@ class EntityMemoryRecord:
         self.appearances.append({"chapter": chapter, "fact": clean_fact})
         self.appearances.sort(key=lambda x: int(x["chapter"]))
 
-        # Bound stored records per entity while always preserving first appearance & recent milestones
+        # Keep only the most recent max_kept appearances (do not permanently pin appearances[0])
         if len(self.appearances) > max_kept:
-            first = self.appearances[0]
-            tail = self.appearances[-(max_kept - 1) :]
-            self.appearances = [first] + tail
+            self.appearances = self.appearances[-max_kept:]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -229,6 +323,7 @@ class MemoryPyramid:
         chapter: int,
         chapter_text: str = "",
         *,
+        virtual_day: int,
         title: str = "",
         summary: str = "",
         character_ids: Optional[List[str]] = None,
@@ -239,8 +334,10 @@ class MemoryPyramid:
         entity_names: Optional[Dict[str, str]] = None,
         scene: Optional[SceneOutline] = None,
     ) -> ChapterMemoryEntry:
-        if chapter < 1:
-            raise ValueError(f"Chapter number must be >= 1, got {chapter}")
+        if isinstance(chapter, bool) or not isinstance(chapter, int) or chapter < 1:
+            raise ValueError(f"Chapter number must be >= 1, got {chapter!r}")
+        if isinstance(virtual_day, bool) or not isinstance(virtual_day, int) or virtual_day < 1:
+            raise ValueError(f"virtual_day must be an int >= 1, got {virtual_day!r}")
 
         if scene is not None:
             if not title:
@@ -266,6 +363,7 @@ class MemoryPyramid:
 
         entry = ChapterMemoryEntry(
             chapter=chapter,
+            virtual_day=virtual_day,
             title=title,
             summary=resolved_summary,
             character_ids=chars,
@@ -342,6 +440,8 @@ class MemoryPyramid:
     def _merge_to_stage(entries: List[ChapterMemoryEntry]) -> StageChronicle:
         start_ch = entries[0].chapter
         end_ch = entries[-1].chapter
+        start_day = min(e.virtual_day for e in entries)
+        end_day = max(e.virtual_day for e in entries)
         all_entities = _dedupe_list(
             ent for e in entries for ent in (e.character_ids + e.asset_ids)
         )
@@ -358,12 +458,18 @@ class MemoryPyramid:
             end_chapter=end_ch,
             summary=_truncate(raw_summary, 320),
             entity_ids=all_entities[:24],
+            start_day=start_day,
+            end_day=end_day,
         )
 
     @staticmethod
     def _merge_to_volume(stages: List[StageChronicle]) -> VolumeChronicle:
         start_ch = stages[0].start_chapter
         end_ch = stages[-1].end_chapter
+        start_days = [st.start_day for st in stages if st.start_day is not None]
+        end_days = [st.end_day for st in stages if st.end_day is not None]
+        start_day = min(start_days) if len(start_days) == len(stages) and start_days else None
+        end_day = max(end_days) if len(end_days) == len(stages) and end_days else None
         all_entities = _dedupe_list(ent for st in stages for ent in st.entity_ids)
         parts = [
             f"Ch.{st.start_chapter}-{st.end_chapter}:{_truncate(st.summary, 48)}"
@@ -374,6 +480,8 @@ class MemoryPyramid:
             end_chapter=end_ch,
             summary=_truncate("；".join(parts), 460),
             entity_ids=all_entities[:36],
+            start_day=start_day,
+            end_day=end_day,
         )
 
     def recall_entity(self, entity_id: str, max_chars: int = 320) -> str:
@@ -381,16 +489,15 @@ class MemoryPyramid:
         if rec is None or not rec.appearances:
             return ""
         label = f"{rec.name}({rec.entity_id})" if rec.name else rec.entity_id
-        # Always include first appearance + most recent appearances
-        selected: List[Dict[str, Any]] = [rec.appearances[0]]
-        if len(rec.appearances) > 1:
-            for item in rec.appearances[-2:]:
-                if item not in selected:
-                    selected.append(item)
+        # Only retain recent 3 appearances; first_chapter is kept numerically in the label
+        selected = rec.appearances[-3:]
         facts = "；".join(
             f"第{item['chapter']}章:{_truncate(str(item['fact']), 90)}" for item in selected
         )
-        return _truncate(f"- [{rec.entity_type}] {label}（首现Ch.{rec.first_chapter}，最近Ch.{rec.last_chapter}）：{facts}", max_chars)
+        return _truncate(
+            f"- [{rec.entity_type}] {label}（首现Ch.{rec.first_chapter}，最近Ch.{rec.last_chapter}）：{facts}",
+            max_chars,
+        )
 
     def compile_context(
         self,
@@ -400,8 +507,26 @@ class MemoryPyramid:
         active_asset_ids: Optional[Iterable[str]] = None,
         active_entity_ids: Optional[Iterable[str]] = None,
         max_chars: Optional[int] = None,
+        # TODO(T5b): 下轮 T5b 接入 compiler.py 传入 state.virtual_day 后，此参数将改为必填。
+        current_virtual_day: Optional[int] = None,
     ) -> str:
-        """Compile L0-L3 memory pyramid context strictly bounded by <= max_chars (default 5200)."""
+        """Compile L0-L3 memory pyramid context strictly bounded by <= max_chars (default 5200).
+
+        Transitional note (T6):
+            ``current_virtual_day`` is temporarily Optional because ``compiler.py`` is not
+            updated in this task. Once T5b wires ``compiler.py`` to pass ``state.virtual_day``,
+            ``current_virtual_day`` MUST be made mandatory.
+        """
+        if current_virtual_day is not None:
+            if (
+                isinstance(current_virtual_day, bool)
+                or not isinstance(current_virtual_day, int)
+                or current_virtual_day < 1
+            ):
+                raise ValueError(
+                    f"current_virtual_day must be an int >= 1, got {current_virtual_day!r}"
+                )
+
         budget = self.max_context_chars if max_chars is None else int(max_chars)
         if budget <= 0:
             return ""
@@ -426,6 +551,9 @@ class MemoryPyramid:
         l3_budget = max(200, budget - l0_budget - recall_budget - l1_budget - l2_budget - 80)
 
         sections: List[str] = []
+
+        if current_virtual_day is not None:
+            sections.append(f"### [时间锚点] 当前第{current_virtual_day}天")
 
         # L0: Immediate previous chapter tail
         if self.l0_tail:
@@ -455,7 +583,12 @@ class MemoryPyramid:
             l1_lines: List[str] = []
             per_ch_cap = max(120, (l1_budget - 24) // len(self.l1_recent))
             for entry in self.l1_recent:
-                line = _truncate(f"- 第{entry.chapter}章：{entry.summary}", per_ch_cap)
+                day_tag = (
+                    f"（第{entry.virtual_day}天，距今{current_virtual_day - entry.virtual_day}天）"
+                    if current_virtual_day is not None
+                    else ""
+                )
+                line = _truncate(f"- 第{entry.chapter}章{day_tag}：{entry.summary}", per_ch_cap)
                 l1_lines.append(line)
             l1_block = "### [L1 近五章摘要]\n" + "\n".join(l1_lines)
             sections.append(_truncate(l1_block, l1_budget))
@@ -467,11 +600,23 @@ class MemoryPyramid:
         # Include most recent 3 stage chronicles so medium-term arc stays sharp
         recent_stages = self.l2_stages[-3:]
         for st in recent_stages:
-            l2_lines.append(f"- 第{st.start_chapter}-{st.end_chapter}章阶段：{st.summary}")
+            day_tag = (
+                f"（第{st.start_day}–{st.end_day}天）"
+                if current_virtual_day is not None and st.start_day is not None and st.end_day is not None
+                else ""
+            )
+            l2_lines.append(f"- 第{st.start_chapter}-{st.end_chapter}章阶段{day_tag}：{st.summary}")
         if unmerged_older:
             st_temp = self._merge_to_stage(unmerged_older)
+            day_tag = (
+                f"（第{st_temp.start_day}–{st_temp.end_day}天）"
+                if current_virtual_day is not None
+                and st_temp.start_day is not None
+                and st_temp.end_day is not None
+                else ""
+            )
             l2_lines.append(
-                f"- 第{st_temp.start_chapter}-{st_temp.end_chapter}章近期阶段：{st_temp.summary}"
+                f"- 第{st_temp.start_chapter}-{st_temp.end_chapter}章近期阶段{day_tag}：{st_temp.summary}"
             )
         if l2_lines:
             per_l2 = max(120, (l2_budget - 24) // len(l2_lines))
@@ -483,9 +628,16 @@ class MemoryPyramid:
             vol_lines: List[str] = []
             per_vol = max(80, (l3_budget - 24) // len(self.l3_volumes))
             for vol in self.l3_volumes:
+                day_tag = (
+                    f"（第{vol.start_day}–{vol.end_day}天）"
+                    if current_virtual_day is not None
+                    and vol.start_day is not None
+                    and vol.end_day is not None
+                    else ""
+                )
                 vol_lines.append(
                     _truncate(
-                        f"- 第{vol.start_chapter}-{vol.end_chapter}章大卷：{vol.summary}",
+                        f"- 第{vol.start_chapter}-{vol.end_chapter}章大卷{day_tag}：{vol.summary}",
                         per_vol,
                     )
                 )
@@ -539,3 +691,112 @@ class MemoryPyramid:
     def load(cls, path: str | Path) -> MemoryPyramid:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls.from_dict(data)
+
+
+def migrate_legacy_memory(
+    data: Mapping[str, Any],
+    chapter_day_map: Mapping[int, int],
+) -> MemoryPyramid:
+    """Explicitly migrate legacy MemoryPyramid JSON lacking virtual_day/start_day/end_day."""
+    if not isinstance(data, Mapping):
+        raise MemoryMigrationError(
+            f"migrate_legacy_memory expects mapping data, got {type(data).__name__}"
+        )
+    if not isinstance(chapter_day_map, Mapping):
+        raise MemoryMigrationError(
+            f"migrate_legacy_memory expects mapping chapter_day_map, got {type(chapter_day_map).__name__}"
+        )
+
+    normalized_map: Dict[int, int] = {}
+    for raw_ch, raw_day in chapter_day_map.items():
+        ch = _validate_positive_day(raw_ch, "chapter", "chapter_day_map key")
+        day = _validate_positive_day(raw_day, "virtual_day", f"chapter_day_map[{ch}]")
+        normalized_map[ch] = day
+
+    migrated: Dict[str, Any] = copy.deepcopy(dict(data))
+    migrated_entries = 0
+    migrated_stages = 0
+    migrated_volumes = 0
+
+    for key in ("l1_recent", "_l2_staging"):
+        raw_list = migrated.get(key, [])
+        if not isinstance(raw_list, list):
+            raise MemoryMigrationError(f"Legacy memory field '{key}' must be a list")
+        new_list: List[Dict[str, Any]] = []
+        for idx, item in enumerate(raw_list):
+            if not isinstance(item, Mapping):
+                raise MemoryMigrationError(
+                    f"Legacy memory '{key}[{idx}]' must be a mapping, got {type(item).__name__}"
+                )
+            entry = dict(item)
+            ch = _validate_positive_day(entry.get("chapter"), "chapter", f"{key}[{idx}]")
+            if "virtual_day" not in entry or entry["virtual_day"] is None:
+                if ch not in normalized_map:
+                    raise MemoryMigrationError(
+                        f"Cannot migrate legacy memory '{key}' chapter {ch}: "
+                        "missing chapter in chapter_day_map"
+                    )
+                entry["virtual_day"] = normalized_map[ch]
+                migrated_entries += 1
+            else:
+                _validate_positive_day(entry["virtual_day"], "virtual_day", f"{key}[{idx}]")
+            new_list.append(entry)
+        migrated[key] = new_list
+
+    for key in ("l2_stages", "_l3_staging", "l3_volumes"):
+        raw_list = migrated.get(key, [])
+        if not isinstance(raw_list, list):
+            raise MemoryMigrationError(f"Legacy memory field '{key}' must be a list")
+        new_list = []
+        for idx, item in enumerate(raw_list):
+            if not isinstance(item, Mapping):
+                raise MemoryMigrationError(
+                    f"Legacy memory '{key}[{idx}]' must be a mapping, got {type(item).__name__}"
+                )
+            block = dict(item)
+            start_ch = _validate_positive_day(
+                block.get("start_chapter"), "start_chapter", f"{key}[{idx}]"
+            )
+            end_ch = _validate_positive_day(
+                block.get("end_chapter"), "end_chapter", f"{key}[{idx}]"
+            )
+            if end_ch < start_ch:
+                raise MemoryMigrationError(
+                    f"Legacy memory '{key}[{idx}]' invalid chapter span: {start_ch}-{end_ch}"
+                )
+            has_start = block.get("start_day") is not None
+            has_end = block.get("end_day") is not None
+            if not has_start or not has_end:
+                if start_ch not in normalized_map or end_ch not in normalized_map:
+                    raise MemoryMigrationError(
+                        f"Cannot migrate legacy memory '{key}' span Ch.{start_ch}-{end_ch}: "
+                        "missing boundary chapter in chapter_day_map"
+                    )
+                span_days = [
+                    normalized_map[c] for c in range(start_ch, end_ch + 1) if c in normalized_map
+                ]
+                if not has_start:
+                    block["start_day"] = min(span_days)
+                else:
+                    _validate_positive_day(block["start_day"], "start_day", f"{key}[{idx}]")
+                if not has_end:
+                    block["end_day"] = max(span_days)
+                else:
+                    _validate_positive_day(block["end_day"], "end_day", f"{key}[{idx}]")
+                if key == "l3_volumes":
+                    migrated_volumes += 1
+                else:
+                    migrated_stages += 1
+            else:
+                _validate_positive_day(block["start_day"], "start_day", f"{key}[{idx}]")
+                _validate_positive_day(block["end_day"], "end_day", f"{key}[{idx}]")
+            new_list.append(block)
+        migrated[key] = new_list
+
+    _logger.warning(
+        "Migrated legacy MemoryPyramid: entries=%d, stages=%d, volumes=%d",
+        migrated_entries,
+        migrated_stages,
+        migrated_volumes,
+    )
+    return MemoryPyramid.from_dict(migrated)
