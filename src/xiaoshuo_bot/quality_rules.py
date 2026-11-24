@@ -14,7 +14,16 @@ Threshold constants (module-level, explicit; never silently overridden by implic
   ``SELLING_POINT_WINDOW`` (20), ``QR_SELLING_POINT_DRIFT`` is skipped and documented as not
   applicable so early/short drafts are not falsely flagged.
 - ``SELLING_POINT_MIN_RATIO = 0.40``: minimum fraction of chapters in any 20-chapter window that
-  must contain at least one keyword from ``selling_point_keywords``.
+  must contain at least one keyword from ``selling_point_keywords`` (and separately from
+  ``core_selling_point_keywords`` when supplied, emitting ``QR_CORE_SELLING_POINT_DRIFT``).
+- ``SELLING_POINT_MONOPOLY_MIN_KEYWORDS = 3``: minimum keyword count in ``selling_point_keywords``
+  required to activate ``QR_SELLING_POINT_MONOPOLY`` (WARNING).
+- ``SELLING_POINT_MONOPOLY_SOLE_SHARE = 0.85``: strict lower bound on the fraction of matched
+  chapters in a 20-chapter window covered solely by a single dominant keyword before triggering
+  ``QR_SELLING_POINT_MONOPOLY``.
+- ``SELLING_POINT_MONOPOLY_OTHER_MAX_RATIO = 0.15``: strict upper bound on the combined 20-chapter
+  window coverage ratio of all non-dominant keywords required alongside ``SOLE_SHARE > 0.85`` to
+  emit ``QR_SELLING_POINT_MONOPOLY``.
 """
 
 from __future__ import annotations
@@ -23,7 +32,7 @@ from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
 from dataclasses import asdict, dataclass
 import math
 import re
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .models import CharacterAnchor
 
@@ -37,6 +46,9 @@ VERBATIM_MIN_OCCURRENCES: int = 2
 
 SELLING_POINT_WINDOW: int = 20
 SELLING_POINT_MIN_RATIO: float = 0.40
+SELLING_POINT_MONOPOLY_MIN_KEYWORDS: int = 3
+SELLING_POINT_MONOPOLY_SOLE_SHARE: float = 0.85
+SELLING_POINT_MONOPOLY_OTHER_MAX_RATIO: float = 0.15
 
 VALID_SCALE_POLICIES = frozenset({"bounded_realistic", "unbounded_fantasy"})
 
@@ -197,24 +209,28 @@ def _validate_scale_rules(
     return validated
 
 
-def _validate_keywords(selling_point_keywords: Sequence[str]) -> List[str]:
+def _validate_keywords(
+    selling_point_keywords: Sequence[str],
+    *,
+    param_name: str = "selling_point_keywords",
+) -> List[str]:
     if (
         selling_point_keywords is None
         or isinstance(selling_point_keywords, (str, bytes, bytearray))
         or not isinstance(selling_point_keywords, SequenceABC)
     ):
-        raise ValueError("selling_point_keywords must be a sequence of non-empty strings.")
+        raise ValueError(f"{param_name} must be a sequence of non-empty strings.")
     cleaned: List[str] = []
     for idx, kw in enumerate(selling_point_keywords):
         if not isinstance(kw, str) or not kw.strip():
             raise ValueError(
-                f"selling_point_keywords[{idx}] must be a non-empty string, got {kw!r}."
+                f"{param_name}[{idx}] must be a non-empty string, got {kw!r}."
             )
         token = kw.strip()
         if token not in cleaned:
             cleaned.append(token)
     if not cleaned:
-        raise ValueError("selling_point_keywords must contain at least 1 non-empty keyword.")
+        raise ValueError(f"{param_name} must contain at least 1 non-empty keyword.")
     return cleaned
 
 
@@ -446,6 +462,9 @@ def _check_scale_rules(
 def _check_selling_point_drift(
     sorted_chapters: Sequence[Tuple[int, str]],
     keywords: Sequence[str],
+    *,
+    rule_id: str = "QR_SELLING_POINT_DRIFT",
+    label: str = "卖点",
 ) -> List[RuleHit]:
     """Check 20-chapter windows for selling-point keyword presence ratio >= 40%.
 
@@ -459,7 +478,7 @@ def _check_selling_point_drift(
 
     chapter_has_kw = [any(kw in text for kw in keywords) for _, text in sorted_chapters]
 
-    drifting_windows: List[Tuple[List[int], int, float]] = []
+    drifting_windows: List[Tuple[List[int], int, float, int]] = []
     for idx in range(0, len(sorted_chapters) - SELLING_POINT_WINDOW + 1):
         win_pairs = sorted_chapters[idx : idx + SELLING_POINT_WINDOW]
         if win_pairs[-1][0] - win_pairs[0][0] >= SELLING_POINT_WINDOW:
@@ -468,14 +487,14 @@ def _check_selling_point_drift(
         ratio = hit_count / float(SELLING_POINT_WINDOW)
         if ratio < SELLING_POINT_MIN_RATIO:
             win_chs = [ch_num for ch_num, _ in win_pairs]
-            drifting_windows.append((win_chs, hit_count, ratio))
+            drifting_windows.append((win_chs, hit_count, ratio, idx))
 
     if not drifting_windows:
         return []
 
     # Merge overlapping drifting windows into contiguous spans so a long drift arc produces
     # one clear hit per drifted span rather than N nearly identical overlapping hits.
-    merged_clusters: List[List[Tuple[List[int], int, float]]] = []
+    merged_clusters: List[List[Tuple[List[int], int, float, int]]] = []
     for win_item in drifting_windows:
         if not merged_clusters:
             merged_clusters.append([win_item])
@@ -488,18 +507,22 @@ def _check_selling_point_drift(
 
     hits: List[RuleHit] = []
     for cluster in merged_clusters:
-        span_chs = sorted({ch for win_chs, _, _ in cluster for ch in win_chs})
-        worst_chs, worst_cnt, worst_ratio = min(
+        span_chs = sorted({ch for win_chs, _, _, _ in cluster for ch in win_chs})
+        worst_chs, worst_cnt, worst_ratio, worst_idx = min(
             cluster, key=lambda item: (item[2], item[0][0])
         )
+        worst_slice = sorted_chapters[worst_idx : worst_idx + SELLING_POINT_WINDOW]
+        per_kw_counts = {
+            kw: sum(1 for _, text in worst_slice if kw in text) for kw in keywords
+        }
         evidence = (
             f"连续 {SELLING_POINT_WINDOW} 章窗口 [{worst_chs[0]}..{worst_chs[-1]}] 中仅 "
-            f"{worst_cnt}/{SELLING_POINT_WINDOW} 章 ({worst_ratio:.1%}) 包含卖点关键词 "
+            f"{worst_cnt}/{SELLING_POINT_WINDOW} 章 ({worst_ratio:.1%}) 包含{label}关键词 "
             f"{list(keywords)}，低于最低要求 {SELLING_POINT_MIN_RATIO:.0%}"
         )
         hits.append(
             RuleHit(
-                rule_id="QR_SELLING_POINT_DRIFT",
+                rule_id=rule_id,
                 severity="CRITICAL",
                 chapters=span_chs,
                 evidence=evidence,
@@ -510,6 +533,142 @@ def _check_selling_point_drift(
                     "min_ratio": SELLING_POINT_MIN_RATIO,
                     "worst_window": [worst_chs[0], worst_chs[-1]],
                     "drifting_window_count": len(cluster),
+                    "per_keyword_counts": per_kw_counts,
+                },
+            )
+        )
+    return hits
+
+
+def _check_selling_point_monopoly(
+    sorted_chapters: Sequence[Tuple[int, str]],
+    keywords: Sequence[str],
+) -> List[RuleHit]:
+    """Emit WARNING when a single keyword monopolizes > 85% of matched chapters in a 20-ch window
+    while all remaining keywords combined cover < 15% of the window.
+
+    Active only when ``len(keywords) >= SELLING_POINT_MONOPOLY_MIN_KEYWORDS`` (3) and
+    ``len(sorted_chapters) >= SELLING_POINT_WINDOW`` (20).
+    """
+    if (
+        len(keywords) < SELLING_POINT_MONOPOLY_MIN_KEYWORDS
+        or len(sorted_chapters) < SELLING_POINT_WINDOW
+    ):
+        return []
+
+    chapter_kw_sets: List[frozenset[str]] = [
+        frozenset(kw for kw in keywords if kw in text) for _, text in sorted_chapters
+    ]
+
+    monopoly_windows: List[
+        Tuple[List[int], str, int, int, float, int, float, Dict[str, int]]
+    ] = []
+    for idx in range(0, len(sorted_chapters) - SELLING_POINT_WINDOW + 1):
+        win_pairs = sorted_chapters[idx : idx + SELLING_POINT_WINDOW]
+        if win_pairs[-1][0] - win_pairs[0][0] >= SELLING_POINT_WINDOW:
+            continue
+        win_sets = chapter_kw_sets[idx : idx + SELLING_POINT_WINDOW]
+        any_hit_count = sum(1 for s in win_sets if s)
+        if any_hit_count == 0:
+            continue
+
+        total_hits = {kw: sum(1 for s in win_sets if kw in s) for kw in keywords}
+        sole_hits = {
+            kw: sum(1 for s in win_sets if len(s) == 1 and kw in s) for kw in keywords
+        }
+        dom_kw = max(keywords, key=lambda k: (sole_hits[k], total_hits[k]))
+        sole_count = sole_hits[dom_kw]
+        other_count = any_hit_count - sole_count
+        sole_share = sole_count / float(any_hit_count)
+        other_ratio = other_count / float(SELLING_POINT_WINDOW)
+
+        if (
+            sole_share > SELLING_POINT_MONOPOLY_SOLE_SHARE
+            and other_ratio < SELLING_POINT_MONOPOLY_OTHER_MAX_RATIO
+        ):
+            win_chs = [ch_num for ch_num, _ in win_pairs]
+            monopoly_windows.append(
+                (
+                    win_chs,
+                    dom_kw,
+                    any_hit_count,
+                    sole_count,
+                    sole_share,
+                    other_count,
+                    other_ratio,
+                    total_hits,
+                )
+            )
+
+    if not monopoly_windows:
+        return []
+
+    merged_clusters: List[
+        List[Tuple[List[int], str, int, int, float, int, float, Dict[str, int]]]
+    ] = []
+    for win_item in monopoly_windows:
+        if not merged_clusters:
+            merged_clusters.append([win_item])
+            continue
+        prev_chs = merged_clusters[-1][-1][0]
+        prev_dom = merged_clusters[-1][-1][1]
+        if win_item[0][0] <= prev_chs[-1] and win_item[1] == prev_dom:
+            merged_clusters[-1].append(win_item)
+        else:
+            merged_clusters.append([win_item])
+
+    hits: List[RuleHit] = []
+    for cluster in merged_clusters:
+        span_chs = sorted({ch for item in cluster for ch in item[0]})
+        (
+            worst_chs,
+            worst_dom,
+            worst_any,
+            worst_sole,
+            worst_sole_share,
+            worst_other,
+            worst_other_ratio,
+            worst_total_hits,
+        ) = max(cluster, key=lambda item: (item[4], -item[6], -item[0][0]))
+
+        per_kw_coverage = {
+            kw: {
+                "chapters": cnt,
+                "ratio": round(cnt / float(SELLING_POINT_WINDOW), 4),
+            }
+            for kw, cnt in worst_total_hits.items()
+        }
+        stats_text = ", ".join(
+            f"{kw}={cnt}/{SELLING_POINT_WINDOW} ({cnt / float(SELLING_POINT_WINDOW):.0%})"
+            for kw, cnt in worst_total_hits.items()
+        )
+        evidence = (
+            f"连续 {SELLING_POINT_WINDOW} 章窗口 [{worst_chs[0]}..{worst_chs[-1]}] 存在单一卖点词垄断："
+            f"全部 {worst_any} 个命中章中有 {worst_sole} 章 ({worst_sole_share:.1%}) 仅靠「{worst_dom}」"
+            f"单独支撑（>{SELLING_POINT_MONOPOLY_SOLE_SHARE:.0%}），其余关键词合计仅覆盖 "
+            f"{worst_other}/{SELLING_POINT_WINDOW} 章 ({worst_other_ratio:.1%} < "
+            f"{SELLING_POINT_MONOPOLY_OTHER_MAX_RATIO:.0%}）；各词覆盖统计：{stats_text}"
+        )
+        hits.append(
+            RuleHit(
+                rule_id="QR_SELLING_POINT_MONOPOLY",
+                severity="WARNING",
+                chapters=span_chs,
+                evidence=evidence,
+                value={
+                    "dominant_keyword": worst_dom,
+                    "matched_chapters": worst_any,
+                    "sole_dominant_chapters": worst_sole,
+                    "sole_share": worst_sole_share,
+                    "other_keywords_chapters": worst_other,
+                    "other_keywords_ratio": worst_other_ratio,
+                    "window_size": SELLING_POINT_WINDOW,
+                    "max_sole_share": SELLING_POINT_MONOPOLY_SOLE_SHARE,
+                    "min_other_ratio": SELLING_POINT_MONOPOLY_OTHER_MAX_RATIO,
+                    "worst_window": [worst_chs[0], worst_chs[-1]],
+                    "monopoly_window_count": len(cluster),
+                    "per_keyword_counts": worst_total_hits,
+                    "per_keyword_coverage": per_kw_coverage,
                 },
             )
         )
@@ -523,16 +682,28 @@ def run_l1_checks(
     blueprint_scale_rules: Sequence[Mapping[str, Any]],
     selling_point_keywords: Sequence[str],
     ledger_balances: Mapping[str, float],
+    core_selling_point_keywords: Optional[Sequence[str]] = None,
 ) -> List[RuleHit]:
     """Run deterministic L1 cross-chapter quality rules and return all triggered ``RuleHit``s.
 
-    All keyword-only inputs are required and strictly validated; missing or malformed arguments
+    All required keyword-only inputs are strictly validated; missing or malformed arguments
     raise ``ValueError`` immediately without falling back to implicit defaults.
+    When ``core_selling_point_keywords`` is provided (not ``None``), it is strictly validated as
+    a non-empty sequence of non-empty strings and evaluated for ``QR_CORE_SELLING_POINT_DRIFT``.
     """
     sorted_chapters = _validate_and_sort_chapters(chapters)
     validated_chars = _validate_characters(characters)
     validated_rules = _validate_scale_rules(blueprint_scale_rules)
-    validated_keywords = _validate_keywords(selling_point_keywords)
+    validated_keywords = _validate_keywords(
+        selling_point_keywords, param_name="selling_point_keywords"
+    )
+    validated_core_keywords: Optional[List[str]] = (
+        _validate_keywords(
+            core_selling_point_keywords, param_name="core_selling_point_keywords"
+        )
+        if core_selling_point_keywords is not None
+        else None
+    )
     validated_balances = _validate_ledger_balances(ledger_balances)
 
     hits: List[RuleHit] = []
@@ -540,6 +711,16 @@ def run_l1_checks(
     hits.extend(_check_verbatim_repeats(sorted_chapters))
     hits.extend(_check_scale_rules(sorted_chapters, validated_rules, validated_balances))
     hits.extend(_check_selling_point_drift(sorted_chapters, validated_keywords))
+    hits.extend(_check_selling_point_monopoly(sorted_chapters, validated_keywords))
+    if validated_core_keywords is not None:
+        hits.extend(
+            _check_selling_point_drift(
+                sorted_chapters,
+                validated_core_keywords,
+                rule_id="QR_CORE_SELLING_POINT_DRIFT",
+                label="核心卖点",
+            )
+        )
     return hits
 
 
@@ -549,6 +730,9 @@ __all__ = [
     "ANCHOR_WINDOW",
     "RuleHit",
     "SELLING_POINT_MIN_RATIO",
+    "SELLING_POINT_MONOPOLY_MIN_KEYWORDS",
+    "SELLING_POINT_MONOPOLY_OTHER_MAX_RATIO",
+    "SELLING_POINT_MONOPOLY_SOLE_SHARE",
     "SELLING_POINT_WINDOW",
     "VERBATIM_MIN_OCCURRENCES",
     "VERBATIM_MIN_PARA_LEN",

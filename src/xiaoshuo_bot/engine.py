@@ -8,8 +8,9 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import AbstractSet, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from .blueprint import BookBlueprint, VolumeSpec
 from .checker import AITicChecker
 from .compiler import PromptCompiler
 from .contracts import (
@@ -31,6 +32,7 @@ from .critic_polisher import (
     SurgicalPolishResult,
     TomatoCriticPolisher,
 )
+from .judge import PairwiseJudge
 from .llm.base import LLMError, LLMProvider, LLMRequest, LLMStreamTruncatedError
 from .llm.router import RoleModelRouter
 from .memory import MemoryMigrationError, MemoryPyramid, migrate_legacy_memory
@@ -46,6 +48,7 @@ from .models import (
     format_chapter_filename,
     resolve_chapter_path,
 )
+from .quality_rules import RuleHit, _validate_keywords, run_l1_checks
 from .reporter import generate_html_dashboard, generate_markdown_report
 from .state import (
     ForeshadowEvidenceMissingError,
@@ -193,12 +196,50 @@ class ProductionGateFailure(RuntimeError):
     """Raised when a chapter still fails AI-TIC-CHECK after exhausting rewrite retries."""
 
 
+class ConsecutiveGateFailureBrakeError(ProductionGateFailure):
+    """Raised when consecutive chapter gate failures reach max_consecutive_failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failed_chapters: Optional[List[int]] = None,
+        consecutive_failures: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.failed_chapters: List[int] = list(failed_chapters or [])
+        self.consecutive_failures: int = int(consecutive_failures)
+
+
+class ArcReviewBrakeError(ProductionGateFailure):
+    """Raised when cross-model volume arc review returns verdict == 'FAIL'."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        chapter: int = 0,
+        verdict: Optional[Any] = None,
+        audit_file: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.chapter: int = int(chapter)
+        self.verdict = verdict
+        self.audit_file: str = str(audit_file)
+
+
 class MissingPredecessorSnapshotError(RuntimeError):
     """Raised when a partial --chapters N (N > 1) run lacks chapter N-1 world-state snapshot."""
 
 
 class LockedChapterError(RuntimeError):
     """Raised when attempting to overwrite a locked chapter without explicit unlock=True."""
+
+
+def _validate_positive_int(value: Any, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be an int >= 1, got {value!r}.")
+    return int(value)
 
 
 def _now_shanghai_iso() -> str:
@@ -347,7 +388,42 @@ class NovelGenerationEngine:
         re_evaluate_after_polish: bool = True,
         memory_pyramid: Optional[MemoryPyramid] = None,
         on_progress: Optional[ProgressCallback] = None,
+        blueprint: Optional[BookBlueprint] = None,
+        core_selling_point_keywords: Optional[Sequence[str]] = None,
+        arc_judge: Optional[PairwiseJudge] = None,
+        arc_review_interval: int = 10,
+        trial_checkpoint_interval: Optional[int] = None,
+        max_consecutive_failures: int = 2,
     ) -> None:
+        if blueprint is not None and not isinstance(blueprint, BookBlueprint):
+            raise ValueError(
+                f"blueprint must be a BookBlueprint or None, got {type(blueprint).__name__}."
+            )
+        validated_core_keywords: Optional[List[str]] = (
+            _validate_keywords(
+                core_selling_point_keywords, param_name="core_selling_point_keywords"
+            )
+            if core_selling_point_keywords is not None
+            else None
+        )
+        if arc_judge is not None and not callable(getattr(arc_judge, "arc_review", None)):
+            raise ValueError(
+                "arc_judge must implement arc_review(chapters, volume_card) -> ArcVerdict."
+            )
+        validated_arc_interval = _validate_positive_int(
+            arc_review_interval, name="arc_review_interval"
+        )
+        validated_trial_interval: Optional[int] = (
+            _validate_positive_int(
+                trial_checkpoint_interval, name="trial_checkpoint_interval"
+            )
+            if trial_checkpoint_interval is not None
+            else None
+        )
+        validated_max_consecutive = _validate_positive_int(
+            max_consecutive_failures, name="max_consecutive_failures"
+        )
+
         self.project = project
         self.provider = provider
         if isinstance(provider, RoleModelRouter):
@@ -387,6 +463,12 @@ class NovelGenerationEngine:
 
         self.re_evaluate_after_polish = bool(re_evaluate_after_polish)
         self._default_on_progress = on_progress
+        self.blueprint: Optional[BookBlueprint] = blueprint
+        self.core_selling_point_keywords: Optional[List[str]] = validated_core_keywords
+        self.arc_judge: Optional[PairwiseJudge] = arc_judge
+        self.arc_review_interval: int = validated_arc_interval
+        self.trial_checkpoint_interval: Optional[int] = validated_trial_interval
+        self.max_consecutive_failures: int = validated_max_consecutive
         self.incidents: List[ProductionIncident] = []
 
     def _emit(
@@ -444,6 +526,124 @@ class NovelGenerationEngine:
                 ),
             )
         return None
+
+    def _project_ledger_balances(self, scene: SceneOutline) -> Dict[str, float]:
+        """Compute post-chapter ledger balances on a copied dict without mutating ``self.state``."""
+        projected: Dict[str, float] = {
+            str(k): float(v) for k, v in self.state.numeric_balances.items()
+        }
+        for lm in scene.ledger_mutations:
+            projected[lm.ledger_key] = projected.get(lm.ledger_key, 0.0) + float(lm.delta)
+        return projected
+
+    def _evaluate_l1_gate(
+        self,
+        scene: SceneOutline,
+        candidate_text: str,
+        chapters_dir: Path,
+    ) -> Tuple[List[Violation], List[RuleHit]]:
+        """Run deterministic L1 cross-chapter checks without mutating state or writing files."""
+        if self.blueprint is None:
+            return [], []
+
+        l1_chapters: List[Tuple[int, str]] = []
+        for ch_no, ch_path in _scan_completed_chapters(chapters_dir):
+            if ch_no < scene.chapter:
+                l1_chapters.append((ch_no, ch_path.read_text(encoding="utf-8").rstrip()))
+        l1_chapters.append((scene.chapter, candidate_text))
+
+        projected_balances = self._project_ledger_balances(scene)
+        hits = run_l1_checks(
+            l1_chapters,
+            characters=self.project.characters,
+            blueprint_scale_rules=[r.to_dict() for r in self.blueprint.scale_rules],
+            selling_point_keywords=list(self.blueprint.premise.selling_point_keywords),
+            ledger_balances=projected_balances,
+            core_selling_point_keywords=self.core_selling_point_keywords,
+        )
+
+        violations: List[Violation] = []
+        for hit in hits:
+            sev = str(hit.severity).upper()
+            violations.append(
+                Violation(
+                    rule_id=hit.rule_id,
+                    category="L1_QUALITY_RULE",
+                    severity=sev,
+                    matched_text=hit.evidence[:300],
+                    line_number=1,
+                    context_snippet=hit.evidence[:300],
+                    fix_hint=(
+                        f"L1 跨章质量红线未通过（{hit.rule_id}）：{hit.evidence}。"
+                        "请消除跨章原样重复段/角色招牌动作堆砌/量级越界或补回核心卖点后重写。"
+                        if sev == "CRITICAL"
+                        else f"L1 跨章质量预警（{hit.rule_id}）：{hit.evidence}"
+                    ),
+                )
+            )
+        return violations, hits
+
+    def _resolve_blueprint_volume(self, scene: SceneOutline) -> VolumeSpec:
+        if self.blueprint is None:
+            raise ValueError("Cannot resolve VolumeSpec when blueprint is None.")
+        for vol in self.blueprint.volumes:
+            if vol.chapter_start <= scene.chapter <= vol.chapter_end:
+                return vol
+        for vol in self.blueprint.volumes:
+            if vol.index == scene.volume:
+                return vol
+        raise ValueError(
+            f"BookBlueprint has no VolumeSpec covering chapter {scene.chapter} (volume={scene.volume})."
+        )
+
+    def _run_arc_review_checkpoint(
+        self,
+        *,
+        scene: SceneOutline,
+        chapters_dir: Path,
+        audit_dir: Path,
+    ) -> Dict[str, Any]:
+        if self.arc_judge is None or self.blueprint is None:
+            raise ValueError("arc_judge and blueprint are both required for arc_review.")
+        vol_spec = self._resolve_blueprint_volume(scene)
+        window_start = max(1, scene.chapter - self.arc_review_interval + 1)
+        completed_pairs = [
+            (ch_no, ch_path)
+            for ch_no, ch_path in _scan_completed_chapters(chapters_dir)
+            if window_start <= ch_no <= scene.chapter
+        ]
+        if not completed_pairs:
+            raise ProductionGateFailure(
+                f"Cannot run arc_review at chapter {scene.chapter:04d}: "
+                f"no completed chapter files found in '{chapters_dir}'."
+            )
+        reviewed_chapters = [ch_no for ch_no, _ in completed_pairs]
+        review_texts = [
+            ch_path.read_text(encoding="utf-8").strip() for _, ch_path in completed_pairs
+        ]
+        verdict = self.arc_judge.arc_review(review_texts, vol_spec.to_dict())
+        verdict_val = str(getattr(verdict, "verdict", "") or "").strip()
+        if verdict_val not in ("PASS", "FAIL"):
+            raise ValueError(
+                f"arc_judge.arc_review returned unexpected verdict {verdict_val!r}; expected 'PASS' or 'FAIL'."
+            )
+        arc_audit_path = audit_dir / f"arc_review_ch{scene.chapter:04d}.json"
+        arc_record: Dict[str, Any] = {
+            "chapter": scene.chapter,
+            "volume_index": vol_spec.index,
+            "volume_title": vol_spec.title,
+            "reviewed_chapters": reviewed_chapters,
+            "judge_model": str(getattr(self.arc_judge, "judge_model", "") or ""),
+            "writer_model": str(getattr(self.arc_judge, "writer_model", "") or ""),
+            "verdict": verdict_val,
+            "problems": list(getattr(verdict, "problems", [])),
+            "summary": str(getattr(verdict, "summary", "")),
+            "raw_response": str(getattr(verdict, "raw_response", "")),
+            "audit_file": str(arc_audit_path),
+            "recorded_at": _now_shanghai_iso(),
+        }
+        _write_json_atomic(arc_audit_path, arc_record)
+        return arc_record
 
     def _record_degradation(
         self,
@@ -608,7 +808,18 @@ class NovelGenerationEngine:
         *,
         unlock: bool = False,
         on_progress: Optional[ProgressCallback] = None,
+        trial_checkpoint_interval: Optional[int] = None,
+        brake_on_consecutive_failures: bool = False,
+        strict_arc_review: bool = True,
     ) -> Dict[str, Any]:
+        effective_checkpoint_interval: Optional[int] = (
+            _validate_positive_int(
+                trial_checkpoint_interval, name="trial_checkpoint_interval"
+            )
+            if trial_checkpoint_interval is not None
+            else self.trial_checkpoint_interval
+        )
+
         chapters_dir = self.output_dir / "chapters"
         audit_dir = self.output_dir / "audit"
         snapshots_dir = self.output_dir / "snapshots"
@@ -648,15 +859,30 @@ class NovelGenerationEngine:
             )
 
         chapter_summaries: List[Dict[str, Any]] = []
+        consecutive_failures: int = 0
+        failed_chapters: List[int] = []
+        failed_chapter_set: set[int] = set()
+        failed_chapter_errors: List[Dict[str, Any]] = []
+        arc_reviews: List[Dict[str, Any]] = []
+        paused_for_review: bool = False
+        checkpoint_chapter: Optional[int] = None
         started_at = _now_shanghai_iso()
         scene_map_all = {s.chapter: s for s in self.project.scenes}
 
         try:
             for scene in scenes:
                 # Enforce N-1 world-state snapshot continuity whenever starting at or jumping to N > 1
-                if scene.chapter > 1 and (
-                    self.state.current_chapter < scene.chapter - 1
-                    or (scene.chapter - 1) not in self.state.completed_chapters
+                # (unless N-1 just failed in this run under brake_on_consecutive_failures=True).
+                if (
+                    scene.chapter > 1
+                    and (
+                        self.state.current_chapter < scene.chapter - 1
+                        or (scene.chapter - 1) not in self.state.completed_chapters
+                    )
+                    and not (
+                        brake_on_consecutive_failures
+                        and (scene.chapter - 1) in failed_chapter_set
+                    )
                 ):
                     self._restore_predecessor_state(
                         scene.chapter - 1,
@@ -707,6 +933,7 @@ class NovelGenerationEngine:
                             f"({chk.char_count} chars)",
                             flush=True,
                         )
+                        consecutive_failures = 0
                         chapter_summaries.append(
                             {
                                 "chapter": scene.chapter,
@@ -752,16 +979,88 @@ class NovelGenerationEngine:
                         ]
                     self.state.chapter_hashes.pop(scene.chapter, None)
 
-                ch_result = self._run_single_chapter(
-                    scene=scene,
-                    chapters_dir=chapters_dir,
-                    audit_dir=audit_dir,
-                    snapshots_dir=snapshots_dir,
-                    incidents_jsonl=incidents_jsonl,
-                    run_stamp=run_stamp,
-                    on_progress=on_progress,
-                )
+                try:
+                    ch_result = self._run_single_chapter(
+                        scene=scene,
+                        chapters_dir=chapters_dir,
+                        audit_dir=audit_dir,
+                        snapshots_dir=snapshots_dir,
+                        incidents_jsonl=incidents_jsonl,
+                        run_stamp=run_stamp,
+                        on_progress=on_progress,
+                        skip_recent_chapters=(
+                            failed_chapter_set if brake_on_consecutive_failures else None
+                        ),
+                    )
+                except ProductionGateFailure as exc:
+                    if not brake_on_consecutive_failures:
+                        raise
+                    consecutive_failures += 1
+                    failed_chapters.append(scene.chapter)
+                    failed_chapter_set.add(scene.chapter)
+                    failed_chapter_errors.append(
+                        {
+                            "chapter": scene.chapter,
+                            "scene_id": scene.scene_id,
+                            "error": str(exc),
+                        }
+                    )
+                    print(
+                        f"[Engine] Chapter {scene.chapter:04d} FAILED gate "
+                        f"(consecutive_failures={consecutive_failures}/{self.max_consecutive_failures})",
+                        flush=True,
+                    )
+                    if consecutive_failures >= self.max_consecutive_failures:
+                        raise ConsecutiveGateFailureBrakeError(
+                            f"Consecutive gate failure brake triggered after {consecutive_failures} "
+                            f"consecutive failed chapter(s) (limit={self.max_consecutive_failures}, "
+                            f"failed_chapters={failed_chapters}). Last failure (Ch.{scene.chapter}): {exc}",
+                            failed_chapters=failed_chapters,
+                            consecutive_failures=consecutive_failures,
+                        ) from exc
+                    continue
+
+                consecutive_failures = 0
                 chapter_summaries.append(ch_result)
+
+                if (
+                    self.arc_judge is not None
+                    and self.blueprint is not None
+                    and scene.chapter % self.arc_review_interval == 0
+                ):
+                    arc_record = self._run_arc_review_checkpoint(
+                        scene=scene,
+                        chapters_dir=chapters_dir,
+                        audit_dir=audit_dir,
+                    )
+                    arc_reviews.append(arc_record)
+                    print(
+                        f"[Engine] Arc review at chapter {scene.chapter:04d}: "
+                        f"verdict={arc_record['verdict']} (problems={len(arc_record['problems'])})",
+                        flush=True,
+                    )
+                    if arc_record["verdict"] == "FAIL" and strict_arc_review:
+                        raise ArcReviewBrakeError(
+                            f"Arc review brake triggered at chapter {scene.chapter:04d} "
+                            f"(verdict=FAIL, problems={len(arc_record['problems'])}): "
+                            f"{arc_record['summary']}",
+                            chapter=scene.chapter,
+                            verdict=arc_record,
+                            audit_file=str(arc_record["audit_file"]),
+                        )
+
+                if (
+                    effective_checkpoint_interval is not None
+                    and scene.chapter % effective_checkpoint_interval == 0
+                ):
+                    paused_for_review = True
+                    checkpoint_chapter = scene.chapter
+                    print(
+                        f"[Engine] Reached trial checkpoint at chapter {scene.chapter:04d} "
+                        f"(interval={effective_checkpoint_interval}); pausing cleanly for review.",
+                        flush=True,
+                    )
+                    break
         finally:
             if hasattr(self.writer_provider, "close"):
                 self.writer_provider.close()
@@ -802,6 +1101,9 @@ class NovelGenerationEngine:
         )
 
         total_chars = sum(c["char_count"] for c in chapter_summaries)
+        all_gates_ok = (len(failed_chapters) == 0) and all(
+            r.get("verdict") == "PASS" for r in arc_reviews
+        )
         manifest: Dict[str, Any] = {
             "project": self.project.meta.to_dict(),
             "started_at": started_at,
@@ -811,7 +1113,12 @@ class NovelGenerationEngine:
             "all_completed_chapters_on_disk": [ch_no for ch_no, _ in all_on_disk],
             "total_chars": total_chars,
             "total_incidents_detected": len(self.incidents),
-            "all_gates_passed": True,
+            "all_gates_passed": all_gates_ok,
+            "paused_for_review": paused_for_review,
+            "checkpoint_chapter": checkpoint_chapter,
+            "failed_chapters": list(failed_chapters),
+            "failed_chapter_errors": list(failed_chapter_errors),
+            "arc_reviews": list(arc_reviews),
             "chapters": chapter_summaries,
             "incidents": [inc.to_dict() for inc in self.incidents],
             "final_world_state": self.state.snapshot_dict(),
@@ -837,13 +1144,23 @@ class NovelGenerationEngine:
         return manifest
 
     @staticmethod
-    def _load_recent_chapter_texts(chapter: int, chapters_dir: Path) -> Tuple[str, ...]:
+    def _load_recent_chapter_texts(
+        chapter: int,
+        chapters_dir: Path,
+        *,
+        skip_chapters: Optional[AbstractSet[int]] = None,
+    ) -> Tuple[str, ...]:
         if isinstance(chapter, bool) or not isinstance(chapter, int) or chapter < 1:
             raise ValueError(f"chapter must be an int >= 1, got {chapter!r}")
         if chapter == 1:
             return ()
         texts: List[str] = []
         for prev_ch in range(max(1, chapter - 3), chapter):
+            if skip_chapters is not None and prev_ch in skip_chapters:
+                # Preserve positional slot count required by PromptCompiler (min(3, chapter - 1))
+                # for a chapter explicitly skipped after failing the gate under brake mode.
+                texts.append("")
+                continue
             prev_path = resolve_chapter_path(chapters_dir, prev_ch)
             if prev_path is None or not prev_path.is_file():
                 raise ProductionGateFailure(
@@ -863,6 +1180,7 @@ class NovelGenerationEngine:
         *,
         run_stamp: str,
         on_progress: Optional[ProgressCallback] = None,
+        skip_recent_chapters: Optional[AbstractSet[int]] = None,
     ) -> Dict[str, Any]:
         max_attempts = self.project.meta.max_rewrite_retries + 1
         due_fs = self.state.get_due_foreshadows(scene.chapter)
@@ -924,7 +1242,11 @@ class NovelGenerationEngine:
                 "detail": "组装世界观、记忆金字塔与章节约束",
             },
         )
-        recent_chapter_texts = self._load_recent_chapter_texts(scene.chapter, chapters_dir)
+        recent_chapter_texts = self._load_recent_chapter_texts(
+            scene.chapter,
+            chapters_dir,
+            skip_chapters=skip_recent_chapters,
+        )
         sys_prompt, user_prompt = self.compiler.compile_scene_prompt(
             scene,
             self.state,
@@ -1109,6 +1431,28 @@ class NovelGenerationEngine:
                 if state_violation is not None:
                     report.violations.append(state_violation)
                     report.passed = False
+
+            l1_hits: List[RuleHit] = []
+            if report.passed and self.blueprint is not None:
+                l1_violations, l1_hits = self._evaluate_l1_gate(
+                    scene, candidate_text, chapters_dir
+                )
+                if l1_violations:
+                    report.violations.extend(l1_violations)
+                    if any(v.severity == "CRITICAL" for v in l1_violations):
+                        report.passed = False
+                _write_json_atomic(
+                    audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_l1.json",
+                    {
+                        "chapter": scene.chapter,
+                        "attempt": attempt,
+                        "passed": not any(
+                            str(h.severity).upper() == "CRITICAL" for h in l1_hits
+                        ),
+                        "hits": [h.to_dict() for h in l1_hits],
+                    },
+                )
+
             _write_json_atomic(
                 audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_scan.json",
                 report.to_dict(),
@@ -1295,6 +1639,7 @@ class NovelGenerationEngine:
                                 incidents_jsonl=incidents_jsonl,
                             )
 
+                        polish_l1_hits: Optional[List[RuleHit]] = None
                         if polish_res is not None:
                             polish_state_violation = self._validate_state_gate(
                                 scene, polish_res.polished_text
@@ -1309,6 +1654,25 @@ class NovelGenerationEngine:
                                     incidents_jsonl=incidents_jsonl,
                                 )
                                 polish_res = None
+
+                        if polish_res is not None and self.blueprint is not None:
+                            polish_l1_violations, polish_l1_hits = self._evaluate_l1_gate(
+                                scene, polish_res.polished_text, chapters_dir
+                            )
+                            polish_l1_critical = [
+                                v for v in polish_l1_violations if v.severity == "CRITICAL"
+                            ]
+                            if polish_l1_critical:
+                                self._record_degradation(
+                                    scene,
+                                    attempt,
+                                    stage="POLISH_L1_GATE",
+                                    exc=RuntimeError(polish_l1_critical[0].matched_text),
+                                    action_taken="Polished text failed L1 cross-chapter gate -> keeping unpolished gated text",
+                                    incidents_jsonl=incidents_jsonl,
+                                )
+                                polish_res = None
+                                polish_l1_hits = None
 
                         if polish_res is not None and self.re_evaluate_after_polish:
                             self._emit(
@@ -1370,6 +1734,8 @@ class NovelGenerationEngine:
                         if polish_res is not None:
                             candidate_text = polish_res.polished_text
                             report = polish_res.scan_report
+                            if polish_l1_hits is not None:
+                                l1_hits = polish_l1_hits
                             polish_payload = polish_res.to_dict()
                             if pre_polish_eval is not None:
                                 polish_payload["pre_polish_score"] = pre_polish_eval.overall_score
@@ -1512,6 +1878,20 @@ class NovelGenerationEngine:
                 actual_model = str(llm_resp.model or "").strip()
                 critic_model = str(critic_eval.model or "").strip() if critic_eval is not None else ""
                 polisher_model = str(polish_res.model or "").strip() if polish_res is not None else ""
+                l1_warning_dicts = [
+                    h.to_dict()
+                    for h in l1_hits
+                    if str(h.severity).upper() != "CRITICAL"
+                ]
+                if l1_warning_dicts:
+                    _write_json_atomic(
+                        audit_dir / f"ch{scene.chapter:04d}_l1_warnings.json",
+                        {
+                            "chapter": scene.chapter,
+                            "attempt": attempt,
+                            "warnings": l1_warning_dicts,
+                        },
+                    )
                 meta_payload = {
                     **artifact.to_dict(),
                     "model": actual_model,
@@ -1519,6 +1899,7 @@ class NovelGenerationEngine:
                     "critic_model": critic_model,
                     "polisher_model": polisher_model,
                     "model_switches": chapter_switches,
+                    "l1_warnings": l1_warning_dicts,
                     "updated_at": _now_shanghai_iso(),
                 }
                 if critic_eval is not None:
@@ -1637,6 +2018,7 @@ class NovelGenerationEngine:
                         if polish_res is not None
                         else None
                     ),
+                    "l1_warnings": l1_warning_dicts,
                     "state_transitions": state_diff,
                 }
 

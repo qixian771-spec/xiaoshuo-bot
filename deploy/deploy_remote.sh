@@ -371,6 +371,7 @@ cloud_tests=(
   tests/test_quality_rules.py
   tests/test_judge.py
   tests/test_opening_rules.py
+  tests/test_t7b2_engine_brakes.py
   tests/test_staged_planner.py
   tests/test_workbuddy_routing.py
   tests/test_workbuddy_config_and_tracking.py
