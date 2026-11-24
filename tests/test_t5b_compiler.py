@@ -148,6 +148,7 @@ def _write_project_yaml_dir(project_dir: Path, *, contract_track: str = "serial_
         "genre_id": "urban_brainhole",
         "synopsis": "CLI compile-prompt 测试项目",
         "default_pov_character": "mc",
+        "max_rewrite_retries": 3,
         "author_level": "lv2_plus",
         "contract_track": contract_track,
         "pov_mode": "third_limited",

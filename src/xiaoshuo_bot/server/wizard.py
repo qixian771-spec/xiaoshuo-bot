@@ -47,6 +47,7 @@ OPTIONS_PER_STEP = 3
 # times in total; then the admin sees a WizardError (no silent acceptance, no default option).
 PROPOSAL_ATTEMPTS = 3
 LV0_1_CHAPTER_RANGE = (70, 95)
+MIN_TARGET_TOTAL_CHARS = 100_000
 
 
 def _genre_catalog() -> List[Dict[str, str]]:
@@ -97,14 +98,17 @@ WIZARD_STEPS: List[Dict[str, Any]] = [
     {
         "key": "scale",
         "title": "篇幅与书名",
-        "question": "书名和篇幅定哪个？",
+        "question": "书名和目标总字数定哪个？",
         "allow_custom": False,
         "fields": {
-            "label": "方案名（不超过 12 字，须标明「长篇连载」或「紧凑完本」）",
+            "label": "方案名（不超过 12 字，须标明目标总字数，如「80万字长篇」「120万字长篇」或「18万字完本」）",
             "title": "高点击商业书名（硬性要求：1~15 个字符且建议 7~15 字，不带书名号；必须露出主角身份/外挂/冲突反差至少两项，严禁《三点十七分》《白雾渡口》类纯时间/纯地名文艺短名）",
-            "author_level": "优先推荐 lv2_plus（长篇滚动连载，300~700+ 章自动续卷换地图），最多 1 个备选用 lv0_1（70~95 章紧凑完本）",
-            "target_chapters": "lv2_plus 时填 0；lv0_1 时为 70~95 的整数",
+            "author_level": "按目标总字数选择：80万~150万字有明确大结局的完整长篇选 lv2_plus，最多 1 个备选用 lv0_1（15万~20万字紧凑完本）",
+            "target_chapters": "lv2_plus 时填 0（具体卷数与章数由全书骨架按目标总字数规划）；lv0_1 时为 70~95 的整数",
             "blurb": "三段式简介合并为一段（80~150 字，突出开篇压迫→外挂破局→阶梯爽点）",
+        },
+        "optional_fields": {
+            "target_total_chars": "目标总字数（正整数，至少 100000；如 800000、1200000、1500000 表示有明确结局的完整长篇，或 150000~200000 表示紧凑完本）",
         },
     },
 ]
@@ -136,15 +140,30 @@ def _validate_option(step_key: str, raw: Any) -> Dict[str, Any]:
             raise WizardError(f"scale: title {title!r} must be 1~15 chars without 《》")
         if opt["author_level"] not in AUTHOR_LEVELS:
             raise WizardError(f"scale: author_level {opt['author_level']!r} not in {AUTHOR_LEVELS}")
+        raw_chapters = opt["target_chapters"]
+        if isinstance(raw_chapters, bool):
+            raise WizardError(f"scale: target_chapters {raw_chapters!r} is not an integer")
         try:
-            chapters = int(opt["target_chapters"])
+            chapters = int(raw_chapters)
         except (TypeError, ValueError) as exc:
-            raise WizardError(f"scale: target_chapters {opt['target_chapters']!r} is not an integer") from exc
+            raise WizardError(f"scale: target_chapters {raw_chapters!r} is not an integer") from exc
         if opt["author_level"] == "lv0_1":
             lo, hi = LV0_1_CHAPTER_RANGE
             if not (lo <= chapters <= hi):
                 raise WizardError(f"scale: lv0_1 target_chapters must be in {lo}..{hi}, got {chapters}")
         opt["target_chapters"] = chapters
+        if "target_total_chars" in raw:
+            raw_total_chars = raw["target_total_chars"]
+            if not isinstance(raw_total_chars, int) or isinstance(raw_total_chars, bool):
+                raise WizardError(
+                    f"scale: target_total_chars must be an integer >= {MIN_TARGET_TOTAL_CHARS}, "
+                    f"got {raw_total_chars!r}"
+                )
+            if raw_total_chars < MIN_TARGET_TOTAL_CHARS:
+                raise WizardError(
+                    f"scale: target_total_chars must be >= {MIN_TARGET_TOTAL_CHARS}, got {raw_total_chars}"
+                )
+            opt["target_total_chars"] = raw_total_chars
     return opt
 
 
@@ -187,6 +206,11 @@ class NewBookWizard:
             "候选必须与老板已做的选择保持一致，不得推翻前面的选择。"
         )
         field_lines = "\n".join(f"  - {k}: {v}" for k, v in step["fields"].items())
+        optional_fields = step.get("optional_fields") or {}
+        optional_block = ""
+        if optional_fields:
+            optional_lines = "\n".join(f"  - {k}: {v}" for k, v in optional_fields.items())
+            optional_block = f"推荐提供的扩展字段（提供时须严格满足类型和范围校验）：\n{optional_lines}\n"
         catalog = ""
         if step["key"] == "direction":
             catalog = "可选类目（genre_id 只能取这里的值）：\n" + json.dumps(
@@ -194,8 +218,8 @@ class NewBookWizard:
             ) + "\n"
         elif step["key"] == "scale":
             scale_lines: List[str] = [
-                "【高点击书名与长篇连载策划硬要求】：",
-                "1. 篇幅默认优先长篇连载：3 个候选中至少 2 个设为 author_level='lv2_plus'（target_chapters=0，支持 300~700+ 章自动滚动续卷与每 60 章换地图），最多 1 个设为 lv0_1（70~95 章紧凑完本备选）。",
+                "【高点击书名与目标总字数规划硬要求】：",
+                "1. 篇幅必须按目标总字数规划，严禁设计无结局的无限续卷：3 个候选请给出差异化的目标总字数方案（例如 80 万字 / 120 万字 / 150 万字有清晰大结局的完整长篇，对应 author_level='lv2_plus'、target_chapters=0；最多 1 个备选为 15~20 万字紧凑完本，对应 author_level='lv0_1'、target_chapters 为 70~95），并请填写正整数 target_total_chars（>= 100000，例如 800000、1200000、1500000、180000）。",
                 "2. 3 个候选书名必须各自采用不同高点击商业套路：",
                 "   - 方案 1（强反差/破格打脸型）：把日常身份与离谱战绩直接撞在一起（例：让你算命，你全网连麦抓通缉犯？）；",
                 "   - 方案 2（核心金手指/利益直给型）：一眼亮出绝活与爽感回报（例：一卦千金：首富跪求我别闭麦）；",
@@ -223,6 +247,7 @@ class NewBookWizard:
             f"当前这一步：{step['title']} —— {step['question']}\n"
             f"{catalog}"
             f"每个候选对象必须包含以下字段：\n{field_lines}\n"
+            f"{optional_block}"
         )
         provider = self._provider_fn()
         errors: List[str] = []
@@ -380,9 +405,15 @@ class NewBookWizard:
         scale = by_step["scale"]
         sid_suffix = str(s["session_id"])[:6]
         project_id = f"book_{self._now_fn().strftime('%Y%m%d_%H%M%S')}_{sid_suffix}"
+        target_total_line = (
+            f"目标总字数：{scale['target_total_chars']} 字\n"
+            if "target_total_chars" in scale
+            else ""
+        )
         brief = (
             f"原始题材：{s['idea']}\n"
             f"书名必须为：{scale['title']}\n"
+            f"{target_total_line}"
             f"简介方向：{scale['blurb']}\n"
             "人名要求：向导中出现的人物姓名只是示意，正式姓名必须从推荐安全角色名池中选取，"
             "其余主角设定（身份、性格、金手指、代价、成长线）必须保留。\n"
@@ -472,4 +503,4 @@ class NewBookWizard:
         return accepted_view
 
 
-__all__ = ["NewBookWizard", "WizardConflictError", "WizardError", "WIZARD_STEPS"]
+__all__ = ["MIN_TARGET_TOTAL_CHARS", "NewBookWizard", "WizardConflictError", "WizardError", "WIZARD_STEPS"]

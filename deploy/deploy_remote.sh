@@ -351,6 +351,7 @@ cloud_tests=(
   tests/test_t5a_rules_and_cooldown.py
   tests/test_models_loader.py
   tests/test_genres_namer.py
+  tests/test_t3b_namer_wizard_architect.py
   tests/test_world_state_v2.py
   tests/test_t6_memory_and_state.py
   tests/test_llm_router_cpa.py

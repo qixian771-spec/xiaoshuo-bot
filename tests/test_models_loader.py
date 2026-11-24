@@ -49,6 +49,7 @@ def _build_minimal_project(
         "genre_id": "urban_brainhole",
         "synopsis": "测试简介",
         "default_pov_character": "protagonist",
+        "max_rewrite_retries": 3,
         "author_level": "lv0_1",
         "contract_track": "complete_150k",
         "pov_mode": "third_limited",

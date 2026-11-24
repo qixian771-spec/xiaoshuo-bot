@@ -914,6 +914,7 @@ class TestStagedExtendAndFinalePlanner(unittest.TestCase):
                     "genre_id": "urban_brainhole",
                     "synopsis": "实习转正前夜被抢走算法，激活十倍反噬账单系统，一路逆袭拿下资本总部。",
                     "default_pov_character": "mc",
+                    "max_rewrite_retries": 3,
                     "author_level": "lv2_plus",
                     "contract_track": "serial_20k",
                     "volume_index": 1,

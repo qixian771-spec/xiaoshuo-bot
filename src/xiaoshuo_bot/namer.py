@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import re
+import secrets
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from pypinyin import Style, lazy_pinyin
@@ -353,9 +354,11 @@ class CharacterNamer:
         """Generate `count` distinct, zero-homophone-collision names for a book cast."""
         if count < 0:
             raise ValueError(f"count must be >= 0, got {count}")
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+            raise ValueError(f"seed must be an integer or None, got {seed!r}")
         accumulated: List[str] = list(existing_names) if existing_names is not None else []
         generated: List[str] = []
-        base_seed = seed if seed is not None else 42
+        base_seed = seed if seed is not None else secrets.randbits(64)
         for idx in range(count):
             g = "female" if (channel == "female" and idx % 2 == 0) or (channel != "female" and idx % 3 == 1) else "male"
             name = self.generate_name(
