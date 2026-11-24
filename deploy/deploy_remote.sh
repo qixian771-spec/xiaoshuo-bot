@@ -346,6 +346,7 @@ cloud_tests=(
   tests/test_planner_deconstruct.py
   tests/test_checker.py
   tests/test_tomato_checker.py
+  tests/test_t5a_rules_and_cooldown.py
   tests/test_models_loader.py
   tests/test_genres_namer.py
   tests/test_world_state_v2.py
