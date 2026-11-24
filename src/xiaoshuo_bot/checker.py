@@ -4,6 +4,7 @@ import math
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .genres import get_genre
 from .models import (
     CONTRACT_TRACKS,
     CharacterAnchor,
@@ -437,6 +438,43 @@ def _match_balance_keys(unit: str, balances: Dict[str, float]) -> List[Tuple[str
     return []
 
 
+def resolve_rhythm_burstiness_check(
+    *,
+    scan_override: Optional[bool] = None,
+    instance_default: Optional[bool] = None,
+    project_meta: Optional[ProjectMeta] = None,
+) -> bool:
+    """判定句长波动检查（RHYTHM_BURSTINESS）是否开启。
+
+    优先级（严格执行决定 2）：
+    1) scan() 显式传入非 None -> 使用 scan_override；
+    2) 否则若 AITicChecker 实例初始化时传入非 None -> 使用 instance_default；
+    3) 否则若 project_meta 非 None 且 (project_meta.genre_id or "").strip() 非空 ->
+       调用 get_genre(genre_id) 读取该题材配方的 rhythm_burstiness_check
+       （未知 genre_id 直接由 get_genre 抛出 UnknownGenreError，严禁吞掉或静默回退）；
+    4) 其余情况（project_meta is None 或 genre_id == "" 的旧项目如 baiwu_dukou）：
+       开启（返回 True）——这是旧项目兼容、维持原规格，不是降级。
+    """
+    if scan_override is not None:
+        if not isinstance(scan_override, bool):
+            raise ProjectValidationError(
+                f"rhythm_burstiness_check must be a bool or None, got {scan_override!r}"
+            )
+        return scan_override
+    if instance_default is not None:
+        if not isinstance(instance_default, bool):
+            raise ProjectValidationError(
+                f"rhythm_burstiness_check must be a bool or None, got {instance_default!r}"
+            )
+        return instance_default
+    if project_meta is not None:
+        genre_id = (project_meta.genre_id or "").strip()
+        if genre_id:
+            return get_genre(genre_id).rhythm_burstiness_check
+    # 这是旧项目兼容、维持原规格，不是降级（project_meta is None 或 genre_id == "" 如 baiwu_dukou）
+    return True
+
+
 class AITicChecker:
     """Parameterized AI-TIC-CHECK 2.0 static analyzer for literary & Tomato web-fiction gates."""
 
@@ -449,14 +487,20 @@ class AITicChecker:
         contract_track: str = "legacy",
         short_paragraph_mode: Optional[bool] = None,
         check_modern_identifiers: bool = True,
+        rhythm_burstiness_check: Optional[bool] = None,
     ) -> None:
         self._validate_modes(pov_mode=pov_mode, panel_policy=panel_policy, contract_track=contract_track)
+        if rhythm_burstiness_check is not None and not isinstance(rhythm_burstiness_check, bool):
+            raise ProjectValidationError(
+                f"rhythm_burstiness_check must be a bool or None, got {rhythm_burstiness_check!r}"
+            )
         self.extra_banned_phrases = extra_banned_phrases or []
         self.pov_mode = pov_mode
         self.panel_policy = panel_policy
         self.contract_track = contract_track
         self.short_paragraph_mode = short_paragraph_mode
         self.check_modern_identifiers = check_modern_identifiers
+        self.rhythm_burstiness_check = rhythm_burstiness_check
 
     @staticmethod
     def _validate_modes(*, pov_mode: str, panel_policy: str, contract_track: str) -> None:
@@ -484,6 +528,7 @@ class AITicChecker:
         contract_track: Optional[str] = None,
         short_paragraph_mode: Optional[bool] = None,
         check_modern_identifiers: Optional[bool] = None,
+        rhythm_burstiness_check: Optional[bool] = None,
     ) -> ScanReport:
         eff_pov = pov_mode if pov_mode is not None else (project_meta.pov_mode if project_meta else self.pov_mode)
         eff_panel = (
@@ -508,6 +553,11 @@ class AITicChecker:
         eff_check_modern = (
             check_modern_identifiers if check_modern_identifiers is not None else self.check_modern_identifiers
         )
+        eff_rhythm_burstiness = resolve_rhythm_burstiness_check(
+            scan_override=rhythm_burstiness_check,
+            instance_default=self.rhythm_burstiness_check,
+            project_meta=project_meta,
+        )
         eff_chapter = scene.chapter if scene is not None else chapter
 
         violations: List[Violation] = []
@@ -531,6 +581,7 @@ class AITicChecker:
                 "sentence_count": 0,
                 "mean_sentence_length": 0.0,
                 "burstiness_sigma": 0.0,
+                "rhythm_burstiness_check": eff_rhythm_burstiness,
                 "short_paragraph_mode": eff_short_para,
                 "pov_mode": eff_pov,
                 "panel_policy": eff_panel,
@@ -744,16 +795,35 @@ class AITicChecker:
         # 14. Length & Foreshadow physical checks
         non_ws_chars = len(re.sub(r"\s+", "", text))
         if scene:
-            if non_ws_chars < scene.min_chars:
+            len_tolerance_floor = math.floor(scene.min_chars * 0.85)
+            if non_ws_chars < len_tolerance_floor:
                 violations.append(
                     Violation(
                         rule_id="LEN_001",
                         category="LENGTH_VIOLATION",
                         severity="CRITICAL",
-                        matched_text=f"{non_ws_chars} chars < min {scene.min_chars}",
+                        matched_text=f"{non_ws_chars} chars < floor {len_tolerance_floor} (min {scene.min_chars})",
                         line_number=len(text.splitlines()),
                         context_snippet=text[-60:].replace("\n", "⏎"),
-                        fix_hint=f"当前正文字数（{non_ws_chars}）不足章纲最低要求（{scene.min_chars}），请充分展开物理动作与对话细节（严禁注水议论）",
+                        fix_hint=(
+                            f"当前正文字数（{non_ws_chars}）低于容差硬下限（{len_tolerance_floor}，章纲下限 {scene.min_chars} 的 85%），"
+                            "请充分展开物理动作与对话细节（严禁注水议论）"
+                        ),
+                    )
+                )
+            elif non_ws_chars < scene.min_chars:
+                violations.append(
+                    Violation(
+                        rule_id="LEN_001W",
+                        category="LENGTH_VIOLATION",
+                        severity="WARNING",
+                        matched_text=f"{non_ws_chars} chars < min {scene.min_chars} (floor {len_tolerance_floor})",
+                        line_number=len(text.splitlines()),
+                        context_snippet=text[-60:].replace("\n", "⏎"),
+                        fix_hint=(
+                            f"当前正文字数（{non_ws_chars}）处于容差警告区间（{len_tolerance_floor}～{scene.min_chars - 1}，章纲目标下限 {scene.min_chars}），"
+                            "仍可通过门禁，严禁为凑字数硬行注水"
+                        ),
                     )
                 )
             elif non_ws_chars > scene.max_chars:
@@ -810,6 +880,7 @@ class AITicChecker:
             eff_pov=eff_pov,
             eff_panel=eff_panel,
             eff_track=eff_track,
+            eff_rhythm_burstiness=eff_rhythm_burstiness,
             non_ws_chars=non_ws_chars,
             violations=violations,
         )
@@ -837,6 +908,7 @@ class AITicChecker:
         panel_policy: Optional[str] = None,
         contract_track: Optional[str] = None,
         short_paragraph_mode: Optional[bool] = None,
+        rhythm_burstiness_check: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Run scan and return structured paragraph/rhythm diagnostics dictionary for T07 surgical polisher."""
         report = self.scan(
@@ -850,6 +922,7 @@ class AITicChecker:
             panel_policy=panel_policy,
             contract_track=contract_track,
             short_paragraph_mode=short_paragraph_mode,
+            rhythm_burstiness_check=rhythm_burstiness_check,
         )
         return dict(getattr(report, "diagnostics", {}))
 
@@ -1222,6 +1295,7 @@ class AITicChecker:
         eff_pov: str,
         eff_panel: str,
         eff_track: str,
+        eff_rhythm_burstiness: bool,
         non_ws_chars: int,
         violations: List[Violation],
     ) -> Dict[str, Any]:
@@ -1385,7 +1459,7 @@ class AITicChecker:
             mean_len = 0.0
             sigma = 0.0
 
-        if sent_count >= 8 and sigma < 10.0:
+        if eff_rhythm_burstiness and sent_count >= 8 and sigma < 10.0:
             for para_idx, lens in para_sent_lengths.items():
                 if all(abs(l - mean_len) < 8.0 for l in lens):
                     burstiness_paragraphs.append(para_idx)
@@ -1440,6 +1514,9 @@ class AITicChecker:
         for run in bare_dialogue_runs:
             critical_paras.update(range(run["start_para"], run["end_para"] + 1))
         for v in violations:
+            if v.rule_id == "LEN_001W":
+                # Chapter-level length tolerance warning does not target a specific paragraph for surgical polish.
+                continue
             p_idx = line_to_para_idx.get(v.line_number)
             if p_idx is not None:
                 if v.severity == "CRITICAL":
@@ -1457,6 +1534,7 @@ class AITicChecker:
             "sentence_count": sent_count,
             "mean_sentence_length": round(mean_len, 2),
             "burstiness_sigma": round(sigma, 2),
+            "rhythm_burstiness_check": eff_rhythm_burstiness,
             "short_paragraph_mode": eff_short_para,
             "pov_mode": eff_pov,
             "panel_policy": eff_panel,

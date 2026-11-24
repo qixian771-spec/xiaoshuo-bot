@@ -70,6 +70,8 @@ class GenreRecipe:
     golden_three_beats: List[GoldenChapterBeat]
     style_profile: StyleProfile
     common_sense_card: CommonSenseCard
+    rhythm_burstiness_check: bool
+    allow_pov_inner_monologue: bool
 
     @property
     def min_chapter_words(self) -> int:
@@ -96,6 +98,8 @@ class GenreRecipe:
             "golden_three_beats": [b.to_dict() for b in self.golden_three_beats],
             "style_profile": self.style_profile.to_dict(),
             "common_sense_card": self.common_sense_card.to_dict(),
+            "rhythm_burstiness_check": self.rhythm_burstiness_check,
+            "allow_pov_inner_monologue": self.allow_pov_inner_monologue,
         }
 
 
@@ -198,6 +202,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="本故事发生于现代架空平行都市（如大夏海城），一切机构、地名与金融规则均为虚构。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="xuanhuan_brainhole",
@@ -292,6 +298,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="纯属东方玄幻架空异界设定，境界与法术体系为虚构文学创作。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="apocalypse_hoarding",
@@ -386,6 +394,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="本故事为科幻末世灾变架空虚构创作，涉及防灾物资仅作小说推演。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="suspense_rules",
@@ -479,6 +489,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="本故事为纯虚构架空规则推理创作，世间并无鬼神，请相信科学、反对迷信。",
             ),
+            rhythm_burstiness_check=True,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="history_brainhole",
@@ -573,6 +585,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="架空历史平行时空创作，不影射真实历史人物与事件。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         # =====================================================================
         # FEMALE CHANNEL (5)
@@ -669,6 +683,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="现代都市架空浪漫幻想小说，地名、企业与法规均为虚构设定。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="ancient_rebirth",
@@ -764,6 +780,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="古代架空言情故事，礼制与律例参考传统文献做文学化虚构。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="era_7080_wealth",
@@ -862,6 +880,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="年代背景文学创作，物价与时代风貌力求贴合历史生活记忆。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="quick_transmigration",
@@ -954,6 +974,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="多世界架空幻想作品，位面设定均为虚构。",
             ),
+            rhythm_burstiness_check=False,
+            allow_pov_inner_monologue=True,
         ),
         GenreRecipe(
             genre_id="ancient_mystery",
@@ -1049,6 +1071,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="古代架空探案虚构作品，传统检验技法仅作文学创作呈现。",
             ),
+            rhythm_burstiness_check=True,
+            allow_pov_inner_monologue=True,
         ),
         # =====================================================================
         # COMPATIBLE GENERAL GENRE (1)
@@ -1144,6 +1168,8 @@ def _build_genre_registry() -> Dict[str, GenreRecipe]:
                 ],
                 disclaimer="现实主义悬疑虚构作品，人物、地名与案件均为艺术创作。",
             ),
+            rhythm_burstiness_check=True,
+            allow_pov_inner_monologue=False,
         ),
     ]
     return {r.genre_id: r for r in recipes}

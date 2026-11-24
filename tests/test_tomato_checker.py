@@ -48,6 +48,7 @@ def _make_tomato_meta(
     pov_mode: str = "third_limited",
     panel_policy: str = "allow_system_tag",
     contract_track: str = "serial_20k",
+    genre_id: str = "urban_brainhole",
 ) -> ProjectMeta:
     return ProjectMeta(
         project_id="tomato_demo",
@@ -59,7 +60,7 @@ def _make_tomato_meta(
         contract_track=contract_track,
         pov_mode=pov_mode,
         panel_policy=panel_policy,
-        genre_id="urban_brainhole",
+        genre_id=genre_id,
     )
 
 
@@ -307,7 +308,7 @@ class TestTomatoCheckerGates(unittest.TestCase):
         self.assertEqual(rep_bare.diagnostics["bare_dialogue_runs"][0]["turn_count"], 5)
 
     def test_rhythm_warning_burstiness_and_bystander_shock_diagnostics(self) -> None:
-        # Uniform 18-char sentences -> Burstiness sigma < 10 (WARNING, still passed=True)
+        # Uniform 18-char sentences -> Burstiness sigma < 10 (WARNING when enabled, still passed=True)
         # Plus 2 bystander shock clichés -> RHYTHM_BYSTANDER_SHOCK (WARNING)
         uniform_text = "\n\n".join(
             [
@@ -317,19 +318,43 @@ class TestTomatoCheckerGates(unittest.TestCase):
                 "陈默拎起手提箱转身走出拍卖厅大门。门外停着的黑色轿车立刻按响了双闪灯。",
             ]
         )
-        rep = self.checker.scan(uniform_text, scene=_make_tomato_scene(chapter=2, min_chars=20), project_meta=self.meta)
-        self.assertTrue(rep.passed, f"Soft WARNINGs must not fail CRITICAL passed flag: {rep.violations}")
-        warning_ids = {v.rule_id for v in rep.violations if v.severity == "WARNING"}
-        self.assertIn("RHYTHM_BURSTINESS", warning_ids)
-        self.assertIn("RHYTHM_BYSTANDER_SHOCK", warning_ids)
-        self.assertLess(rep.diagnostics["burstiness_sigma"], 10.0)
-        self.assertEqual(rep.diagnostics["bystander_shock_paragraphs"], [1, 2])
-        self.assertTrue(set([1, 2]).issubset(set(rep.diagnostics["warning_paragraph_indices"])))
+        scene = _make_tomato_scene(chapter=2, min_chars=20)
 
-        # Verify checker.diagnose() returns matching structured diagnostics dict
-        diag = self.checker.diagnose(uniform_text, scene=_make_tomato_scene(chapter=2, min_chars=20), project_meta=self.meta)
-        self.assertEqual(diag["burstiness_sigma"], rep.diagnostics["burstiness_sigma"])
-        self.assertEqual(diag["bystander_shock_paragraphs"], [1, 2])
+        # (a) literary_suspense enables RHYTHM_BURSTINESS
+        literary_meta = _make_tomato_meta(
+            panel_policy="forbid",
+            contract_track="complete_150k",
+            genre_id="literary_suspense",
+        )
+        rep_lit = self.checker.scan(uniform_text, scene=scene, project_meta=literary_meta)
+        self.assertTrue(rep_lit.passed, f"Soft WARNINGs must not fail CRITICAL passed flag: {rep_lit.violations}")
+        warning_ids_lit = {v.rule_id for v in rep_lit.violations if v.severity == "WARNING"}
+        self.assertIn("RHYTHM_BURSTINESS", warning_ids_lit)
+        self.assertIn("RHYTHM_BYSTANDER_SHOCK", warning_ids_lit)
+        self.assertLess(rep_lit.diagnostics["burstiness_sigma"], 10.0)
+        self.assertEqual(rep_lit.diagnostics["bystander_shock_paragraphs"], [1, 2])
+        self.assertTrue(set([1, 2]).issubset(set(rep_lit.diagnostics["warning_paragraph_indices"])))
+
+        diag_lit = self.checker.diagnose(uniform_text, scene=scene, project_meta=literary_meta)
+        self.assertEqual(diag_lit["burstiness_sigma"], rep_lit.diagnostics["burstiness_sigma"])
+        self.assertEqual(diag_lit["bystander_shock_paragraphs"], [1, 2])
+
+        # (b) urban_brainhole disables RHYTHM_BURSTINESS warning while still computing burstiness_sigma
+        rep_urban = self.checker.scan(uniform_text, scene=scene, project_meta=self.meta)
+        self.assertTrue(rep_urban.passed, f"Soft WARNINGs must not fail CRITICAL passed flag: {rep_urban.violations}")
+        warning_ids_urban = {v.rule_id for v in rep_urban.violations if v.severity == "WARNING"}
+        self.assertNotIn("RHYTHM_BURSTINESS", warning_ids_urban)
+        self.assertIn("RHYTHM_BYSTANDER_SHOCK", warning_ids_urban)
+        self.assertLess(rep_urban.diagnostics["burstiness_sigma"], 10.0)
+        self.assertEqual(rep_urban.diagnostics["burstiness_paragraph_indices"], [])
+        self.assertEqual(rep_urban.diagnostics["bystander_shock_paragraphs"], [1, 2])
+        self.assertEqual(rep_urban.diagnostics["warning_paragraph_indices"], [1, 2])
+        self.assertEqual(rep_urban.diagnostics["flagged_paragraph_indices"], [1, 2])
+
+        diag_urban = self.checker.diagnose(uniform_text, scene=scene, project_meta=self.meta)
+        self.assertEqual(diag_urban["burstiness_sigma"], rep_urban.diagnostics["burstiness_sigma"])
+        self.assertEqual(diag_urban["bystander_shock_paragraphs"], [1, 2])
+        self.assertEqual(diag_urban["burstiness_paragraph_indices"], [])
 
     def test_state_overdraft_zero_balance_benign_prose_and_explicit_amounts(self) -> None:
         benign_text = (
