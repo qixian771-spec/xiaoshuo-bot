@@ -440,6 +440,10 @@ class PairwiseJudge:
             '- "爽感疲劳"：打脸或爽点模式单一、边际递减\n'
             '- "工具人"：配角沦为单一触发器或毫无自主性\n'
             '- "跑偏"：偏离本卷目标、核心卖点或设定边界\n'
+            "硬性一致约束：\n"
+            '- 若判定 "verdict": "PASS"，则 "problems" 必须严格为空数组 []（轻微改进建议只能写在 "summary" 中）；\n'
+            '- 只要 "problems" 列出任意 1 条结构性病灶，"verdict" 必须为 "FAIL"；\n'
+            '- 若判定 "verdict": "FAIL"，则 "problems" 必须至少列出 1 条具体病灶。\n'
             "只允许输出严格 JSON 对象（每条 evidence 控制在 120 字以内、summary 控制在 150 字以内，保证 JSON 完整闭合）：\n"
             '{"verdict": "PASS"|"FAIL", '
             '"problems": [{"type": "同质化"|"原地踏步"|"爽感疲劳"|"工具人"|"跑偏", '
@@ -450,87 +454,115 @@ class PairwiseJudge:
         chapters_block = "\n\n".join(
             f"--- 第 {idx} 章样本 ---\n{txt}" for idx, txt in enumerate(cleaned_chapters, start=1)
         )
-        user_prompt = (
+        base_user_prompt = (
             f"【本卷卷卡】\n{card_json}\n\n"
             f"【待审连续章节（共 {len(cleaned_chapters)} 章）】\n{chapters_block}\n\n"
-            "请严格输出 JSON。"
-        )
-        raw_content = self._invoke_judge(
-            request_id="arc-review",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            chapter=len(cleaned_chapters),
-            max_tokens=8192,
-            extra_meta={"judge_task": "arc_review", "chapter_count": len(cleaned_chapters)},
+            "请严格输出 JSON（PASS 时 problems 必须为 []；FAIL 时 problems 必须非空）。"
         )
 
         ctx_label = "arc_review"
-        parsed = _parse_strict_json_object(raw_content, context=ctx_label)
-        verdict = _require_non_empty_str(parsed, "verdict", context=ctx_label)
-        if verdict not in VALID_ARC_VERDICTS:
-            raise JudgeResponseError(
-                f"{ctx_label}: verdict 必须为 {sorted(VALID_ARC_VERDICTS)} 之一，实际得到 {verdict!r}。"
+        max_contract_attempts = 2
+        retry_hint = ""
+        for contract_attempt in range(1, max_contract_attempts + 1):
+            user_prompt = base_user_prompt if not retry_hint else f"{base_user_prompt}\n\n{retry_hint}"
+            raw_content = self._invoke_judge(
+                request_id="arc-review" if contract_attempt == 1 else f"arc-review-fix{contract_attempt - 1}",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                chapter=len(cleaned_chapters),
+                attempt=contract_attempt,
+                max_tokens=8192,
+                extra_meta={
+                    "judge_task": "arc_review",
+                    "chapter_count": len(cleaned_chapters),
+                    "contract_attempt": contract_attempt,
+                },
             )
-        summary = _require_non_empty_str(parsed, "summary", context=ctx_label)
 
-        if "problems" not in parsed:
-            raise JudgeResponseError(f"{ctx_label}: 缺少必填字段 'problems'。")
-        raw_problems = parsed["problems"]
-        if not isinstance(raw_problems, list):
-            raise JudgeResponseError(
-                f"{ctx_label}: 'problems' 必须为列表，实际得到 {type(raw_problems).__name__}。"
-            )
+            parsed = _parse_strict_json_object(raw_content, context=ctx_label)
+            verdict = _require_non_empty_str(parsed, "verdict", context=ctx_label)
+            if verdict not in VALID_ARC_VERDICTS:
+                raise JudgeResponseError(
+                    f"{ctx_label}: verdict 必须为 {sorted(VALID_ARC_VERDICTS)} 之一，实际得到 {verdict!r}。"
+                )
+            summary = _require_non_empty_str(parsed, "summary", context=ctx_label)
 
-        validated_problems: List[Dict[str, Any]] = []
-        for idx, item in enumerate(raw_problems):
-            item_ctx = f"{ctx_label} problems[{idx}]"
-            if not isinstance(item, MappingABC):
+            if "problems" not in parsed:
+                raise JudgeResponseError(f"{ctx_label}: 缺少必填字段 'problems'。")
+            raw_problems = parsed["problems"]
+            if not isinstance(raw_problems, list):
                 raise JudgeResponseError(
-                    f"{item_ctx}: 每条问题必须为 JSON 对象，实际得到 {type(item).__name__}。"
+                    f"{ctx_label}: 'problems' 必须为列表，实际得到 {type(raw_problems).__name__}。"
                 )
-            prob_type = _require_non_empty_str(item, "type", context=item_ctx)
-            if prob_type not in VALID_ARC_PROBLEM_TYPES:
-                raise JudgeResponseError(
-                    f"{item_ctx}: type 必须为 {sorted(VALID_ARC_PROBLEM_TYPES)} 之一，实际得到 {prob_type!r}。"
-                )
-            if "chapters" not in item:
-                raise JudgeResponseError(f"{item_ctx}: 缺少必填字段 'chapters'。")
-            prob_chs = item["chapters"]
-            if not isinstance(prob_chs, list) or len(prob_chs) == 0:
-                raise JudgeResponseError(
-                    f"{item_ctx}: 'chapters' 必须为非空整数列表，实际得到 {prob_chs!r}。"
-                )
-            norm_chs: List[int] = []
-            for c_idx, ch in enumerate(prob_chs):
-                if isinstance(ch, bool) or not isinstance(ch, int) or ch < 1:
+
+            validated_problems: List[Dict[str, Any]] = []
+            for idx, item in enumerate(raw_problems):
+                item_ctx = f"{ctx_label} problems[{idx}]"
+                if not isinstance(item, MappingABC):
                     raise JudgeResponseError(
-                        f"{item_ctx}.chapters[{c_idx}] 必须为正整数，实际得到 {ch!r}。"
+                        f"{item_ctx}: 每条问题必须为 JSON 对象，实际得到 {type(item).__name__}。"
                     )
-                norm_chs.append(ch)
-            evidence = _require_non_empty_str(item, "evidence", context=item_ctx)
-            validated_problems.append(
-                {
-                    "type": prob_type,
-                    "chapters": norm_chs,
-                    "evidence": evidence,
-                }
-            )
+                prob_type = _require_non_empty_str(item, "type", context=item_ctx)
+                if prob_type not in VALID_ARC_PROBLEM_TYPES:
+                    raise JudgeResponseError(
+                        f"{item_ctx}: type 必须为 {sorted(VALID_ARC_PROBLEM_TYPES)} 之一，实际得到 {prob_type!r}。"
+                    )
+                if "chapters" not in item:
+                    raise JudgeResponseError(f"{item_ctx}: 缺少必填字段 'chapters'。")
+                prob_chs = item["chapters"]
+                if not isinstance(prob_chs, list) or len(prob_chs) == 0:
+                    raise JudgeResponseError(
+                        f"{item_ctx}: 'chapters' 必须为非空整数列表，实际得到 {prob_chs!r}。"
+                    )
+                norm_chs: List[int] = []
+                for c_idx, ch in enumerate(prob_chs):
+                    if isinstance(ch, bool) or not isinstance(ch, int) or ch < 1:
+                        raise JudgeResponseError(
+                            f"{item_ctx}.chapters[{c_idx}] 必须为正整数，实际得到 {ch!r}。"
+                        )
+                    norm_chs.append(ch)
+                evidence = _require_non_empty_str(item, "evidence", context=item_ctx)
+                validated_problems.append(
+                    {
+                        "type": prob_type,
+                        "chapters": norm_chs,
+                        "evidence": evidence,
+                    }
+                )
 
-        if verdict == "FAIL" and len(validated_problems) == 0:
-            raise JudgeResponseError(
-                f"{ctx_label}: verdict='FAIL' 时 'problems' 不能为空。"
-            )
-        if verdict == "PASS" and len(validated_problems) > 0:
-            raise JudgeResponseError(
-                f"{ctx_label}: verdict='PASS' 时 'problems' 必须为空列表，实际有 {len(validated_problems)} 项。"
-            )
+            mismatch_err: Optional[str] = None
+            if verdict == "FAIL" and len(validated_problems) == 0:
+                mismatch_err = f"{ctx_label}: verdict='FAIL' 时 'problems' 不能为空。"
+            elif verdict == "PASS" and len(validated_problems) > 0:
+                mismatch_err = (
+                    f"{ctx_label}: verdict='PASS' 时 'problems' 必须为空列表，实际有 {len(validated_problems)} 项。"
+                )
 
-        return ArcVerdict(
-            verdict=verdict,
-            problems=validated_problems,
-            summary=summary,
-            raw_response=raw_content,
-        )
+            if mismatch_err is None:
+                return ArcVerdict(
+                    verdict=verdict,
+                    problems=validated_problems,
+                    summary=summary,
+                    raw_response=raw_content,
+                )
+
+            if contract_attempt < max_contract_attempts:
+                logger.warning(
+                    "%s contract mismatch on attempt %d/%d (%s); retrying once with explicit schema correction.",
+                    ctx_label,
+                    contract_attempt,
+                    max_contract_attempts,
+                    mismatch_err,
+                )
+                retry_hint = (
+                    f"【格式纠偏重审】你上一次输出触发契约冲突：{mismatch_err}\n"
+                    '请明确做出一致裁决：若整体达标通过，请输出 "verdict": "PASS" 且 "problems": []（微瑕写进 summary）；'
+                    '若存在必须整改的结构性病灶，请输出 "verdict": "FAIL" 且在 "problems" 中列出。只输出严格 JSON。'
+                )
+                continue
+            raise JudgeResponseError(mismatch_err)
+
+        raise JudgeResponseError(f"{ctx_label}: exhausted contract retries.")
 
 
 __all__ = [

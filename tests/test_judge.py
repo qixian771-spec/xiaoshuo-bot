@@ -397,6 +397,38 @@ class TestArcReview(unittest.TestCase):
             judge_fail.compare("候选正文", "对照正文")
         self.assertEqual(len(provider_empty.requests), 2)
 
+    def test_arc_review_retries_once_on_pass_with_problems_contract_mismatch(self) -> None:
+        def _responder(req, n: int) -> str:
+            if n == 1:
+                return json.dumps(
+                    {
+                        "verdict": "PASS",
+                        "problems": [{"type": "工具人", "chapters": [2], "evidence": "轻微功能化"}],
+                        "summary": "整体达标但有微瑕。",
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "verdict": "PASS",
+                    "problems": [],
+                    "summary": "整体达标通过；微瑕在于第2章配角略功能化。",
+                },
+                ensure_ascii=False,
+            )
+
+        provider = _FakeProvider(_responder)
+        judge = PairwiseJudge(
+            provider,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        res = judge.arc_review(["第一章正文。", "第二章正文。"], {"index": 2, "protagonist_goal": "拆字打假"})
+        self.assertEqual(res.verdict, "PASS")
+        self.assertEqual(res.problems, [])
+        self.assertEqual(len(provider.requests), 2)
+        self.assertIn("格式纠偏重审", provider.requests[1].user_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
