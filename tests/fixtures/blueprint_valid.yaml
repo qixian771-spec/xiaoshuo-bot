@@ -1,0 +1,377 @@
+premise:
+  logline: "江城南桥夜市摆摊算命的独眼青年许青川，左眼觉醒能称量人果善恶的因果秤瞳，从一桩拐卖与假玉器局起步，把算命摊支成全网直播追凶的暗夜正义档口。"
+  selling_points:
+    - "街头算卦一语破局，冷面巡捕从不信邪到暗中登门求卦的极致反差"
+    - "真假玄学直播连麦当场打假，以物理证物闭环印证卦象"
+    - "二十年前渡江沉案层层剥茧，市井小摊主撬动隐秘黑产保护伞"
+  selling_point_keywords:
+    - "算卦"
+    - "因果秤"
+    - "观气"
+    - "夜市"
+    - "直播"
+    - "通缉"
+  benchmark_refs:
+    - title: "直播算命：我把榜一大哥送进去了"
+      why: "借用连麦断事的强节奏与即时抓捕爽感，补强现实刑侦取证逻辑而非纯神棍口嗨"
+    - title: "都市奇门小相师"
+      why: "参考市井古玩与民俗器物细节质感，避免后期升级成脱离现实的仙侠玄幻"
+  target_readers: "喜欢都市脑洞、直播断案、强逻辑打脸反转的番茄男频与泛悬疑读者"
+
+target_total_chars: 900000
+chapter_chars_range:
+  - 2100
+  - 2500
+
+protagonist:
+  character_id: "mc"
+  desire: "还清当年师父留下的旧债、查明二十年前渡江沉案导致左眼失明的真相，并在南桥老街体面立住脚跟"
+  flaw: "习惯用市井滑头和金钱交易掩饰重情重义，一旦牵扯亲近之人容易瞒着同伴独自扛雷"
+  arc: "从只想靠摆摊糊口、收钱消灾的市井算命郎，蜕变为敢用真名在直播间直面黑产、把因果交由公道与法律裁决的破局者"
+  voice_card:
+    speech_patterns: "语速平缓带点市井痞气，喜欢先报卦金再点破对方死穴，关键证据只说半句留给对面自己慌"
+    catchphrases:
+      - "先扫码后听话，嫌贵出门左拐找桥洞老神仙。"
+
+golden_finger:
+  rules: "许青川左眼失明后觉醒因果秤瞳：注视对象三秒即可浮现其近期最重的一笔隐秘因果重量与关联物件轮廓，但只显象不直接吐露人名与法律定性，必须靠主角言语套问或物证核验才能锁定真凶。"
+  cost: "每次强行称量背负重案或涉案金额极高的对象，左眼眶会剧烈灼痛并伴随长达六小时的右眼视物重影与低血糖冷汗；若一天内连续开瞳超过三次，将短暂失明二十四小时。"
+  limits: "无法直接读取未接触对象十米外的画面，无法对无主观恶意的自然灾害生效，严禁靠虚空预测彩票或股价直接变现。"
+  upgrade_path:
+    - volume: 1
+      unlock: "单人近距因果秤显影：可识别三米内对象七日内的隐匿恶意与关键随身物件"
+    - volume: 2
+      unlock: "隔屏微表情同步观气：高清直播连麦中若对方露出五官且光线充足，可捕捉其因果失衡方位"
+    - volume: 4
+      unlock: "旧物残留因果溯源：触碰超过二十年的涉案遗物时，可回放持物人最后一次情绪剧烈波动的环境剪影"
+    - volume: 6
+      unlock: "群像因果交织图谱：同场多名共犯之间存在资金或血案串联时，能分辨主谋与从犯的权重差"
+
+scale_rules:
+  - ledger_key: "cash"
+    policy: "bounded_realistic"
+    hard_max: 5000000
+    unit: "元"
+  - ledger_key: "followers"
+    policy: "bounded_realistic"
+    hard_max: 12000000
+    unit: "人"
+  - ledger_key: "merit_aura"
+    policy: "unbounded_fantasy"
+    hard_max: null
+    unit: "分"
+
+volumes:
+  - index: 1
+    title: "南桥夜摊初开瞳"
+    chapter_start: 1
+    chapter_end: 40
+    protagonist_goal: "保住南桥夜市摊位不被地头蛇吞并，凭三桩小案赢得巡捕房信任"
+    antagonist_id: "vol1_boss"
+    cool_point_modes:
+      - "摆摊精准断事打脸"
+      - "顺藤摸瓜起获赃物"
+    climax: "钱万顺设局栽赃许青川售卖涉案赃玉，许青川当场指认地下仓库夹墙暗格并用实时录像反钉死对方销赃链"
+    payoff: "洗清嫌疑并收编旧玉器行摊位，重案队宋海潮默许许青川作为编外线索提供人"
+    enters:
+      - "mc"
+      - "detective_ally"
+      - "vol1_boss"
+    exits:
+      - id: "vol1_boss"
+        how: "销赃与非法拘禁证据链坐实，被宋海潮带队当场刑拘"
+    map: null
+    key_scenes:
+      - "雨夜夜市棚布下，许青川隔着三步点出问卦妇人衣袖里的失踪女童发卡编号"
+      - "古玩街地下夹层拆墙现场，探照灯打在成箱冒牌印章与盗掘青铜片上"
+    foreshadows_plant:
+      - "fs_scale_origin"
+      - "fs_fake_jade_seal"
+    foreshadows_payoff: []
+
+  - index: 2
+    title: "连麦打假出圈夜"
+    chapter_start: 41
+    chapter_end: 100
+    protagonist_goal: "借直播连麦摆脱线下地痞围堵，拆穿伪国学大师收割养老金的骗局"
+    antagonist_id: "qi_jingming"
+    cool_point_modes:
+      - "直播间百万观众面前拆穿魔术障眼法"
+      - "连麦帮苦主跨区追回被骗养老钱"
+    climax: "齐景明邀约同台斗法并暗中买通水军举报封号，许青川联合何小满在公证镜头下拆解其转运珠磁控机关并放出受害老人转账流水"
+    payoff: "账号粉丝破两百万并登上同城热搜，获江城反诈中心邀请合作公益专场"
+    enters:
+      - "he_xiaoman"
+      - "qi_jingming"
+    exits:
+      - id: "qi_jingming"
+        how: "直播现场机关败露且涉案资金超额，被经侦当场控制带离"
+    map:
+      location_id: "loc_old_teahouse_studio"
+      name: "老街二楼茶室直播间"
+    key_scenes:
+      - "何小满举着补光灯冲进夜市摊位，拿二维码立牌挡住闹事混混的手机镜头"
+      - "万人同屏直播连麦中，齐景明袖口滑落的那枚遥控磁铁滚过八仙桌"
+    foreshadows_plant:
+      - "fs_river_case"
+    foreshadows_payoff: []
+
+  - index: 3
+    title: "黑车渡口迷雾线"
+    chapter_start: 101
+    chapter_end: 170
+    protagonist_goal: "顺着假玉器流出的旧货码头线索，摸清跨城失踪案背后的黑车蛇头网络"
+    antagonist_id: "cao_tiesheng"
+    cool_point_modes:
+      - "旧货流向逆推"
+      - "险境盲眼听声脱困"
+    climax: "许青川为救被困在废弃冷库的何小满连续四次开瞳导致短暂失明，凭记忆里的秤瞳方位与宋海潮对讲机接力围堵曹铁生"
+    payoff: "救出全部三名被困务工人员，从冷库铁皮箱底翻出与假玉玺同批的二十年前航运登记簿"
+    enters:
+      - "cao_tiesheng"
+    exits:
+      - id: "cao_tiesheng"
+        how: "在北郊冷库外围驾车冲卡失败撞护栏，伤重落网"
+    map:
+      location_id: "loc_north_cold_depot"
+      name: "北郊旧货运码头冷库区"
+    key_scenes:
+      - "暴雨夜冷库断电，短暂失明的许青川靠脚底踩中货架铁锈落屑辨位"
+      - "宋海潮砸开暗门铁锁时，探照灯光柱里泛白的二十年前旧航运账本"
+    foreshadows_plant:
+      - "fs_blind_left_eye"
+    foreshadows_payoff:
+      - "fs_fake_jade_seal"
+
+  - index: 4
+    title: "省城旧宅伪嘱局"
+    chapter_start: 171
+    chapter_end: 250
+    protagonist_goal: "护送关键证人杜若兰赴省城核验航运遗物，戳破宗族势力伪造遗嘱洗钱阴谋"
+    antagonist_id: "wei_zhenbang"
+    cool_point_modes:
+      - "遗物溯源翻旧账"
+      - "宗祠对峙亮真章"
+    climax: "魏振邦在老宅宗祠当众烧毁旧契约企图毁证，许青川早一步用旧物因果溯源定位地下防空洞原件并交由公证处封存"
+    payoff: "保住杜若兰手中的沉船档案钥匙，查明师父当年被诬陷与左眼旧伤皆因有人调包了因果秤铜砝码"
+    enters:
+      - "wei_zhenbang"
+      - "du_ruolan"
+    exits:
+      - id: "wei_zhenbang"
+        how: "洗钱与纵火毁证罪名成立，资产冻结并被依法批捕"
+    map:
+      location_id: "loc_provincial_ancestral_hall"
+      name: "省城西关魏氏旧宅与古籍书店"
+    key_scenes:
+      - "杜若兰在旧书店阁楼抽出夹在民国地方志里的半张渡轮船票"
+      - "宗祠火盆灰烬未熄，司法公证员与巡捕同时推开后院石阶暗门"
+    foreshadows_plant:
+      - "fs_patron_signature"
+    foreshadows_payoff:
+      - "fs_scale_origin"
+
+  - index: 5
+    title: "封号断网反杀夜"
+    chapter_start: 251
+    chapter_end: 330
+    protagonist_goal: "顶住幕后资本的恶意造谣与平台断流封杀，反查资助魏振邦的公益基金暗桩"
+    antagonist_id: "luo_wenbin"
+    cool_point_modes:
+      - "舆论逆风翻盘"
+      - "慈善晚宴现场对账"
+    climax: "罗文斌在年度慈善直播晚宴上宣布起诉许青川诽谤，许青川以受害人家属代理身份走上侧门台面，当场投影出基金空转洗钱的银行电文摘要与失踪船员名单"
+    payoff: "平台官方恢复账号并置顶澄清通告，罗文斌倒台供出二十年前渡江沉案真正签名者"
+    enters:
+      - "luo_wenbin"
+    exits:
+      - id: "luo_wenbin"
+        how: "在晚宴后台企图乘游艇外逃时被海警与重案组联合截获"
+    map:
+      location_id: "loc_harbor_convention_hall"
+      name: "江城新港国际会展中心"
+    key_scenes:
+      - "直播间突然黑屏限流当晚，上百名受过助的夜市老摊主举着手机帮许青川接力开播"
+      - "慈善晚宴水晶吊灯熄灭三秒后，大屏幕切出二十年前超载货轮核销底单"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_blind_left_eye"
+
+  - index: 6
+    title: "渡江总账归尘土"
+    chapter_start: 331
+    chapter_end: 400
+    protagonist_goal: "在二十年追诉节点前逼出袁伯衡藏匿的沉船原始底档，彻底了结师门冤屈与渡江沉案"
+    antagonist_id: "yuan_boheng"
+    cool_point_modes:
+      - "终局群像因果对质"
+      - "二十年旧案尘埃落定"
+    climax: "江面浓雾封航之夜，袁伯衡企图将铁皮档案箱沉入旧渡口深水区，许青川在宋海潮和杜若兰配合下用群像因果交织锁定其随身暗锁，亲手把沉船原件交到公诉人手里"
+    payoff: "渡江沉案十八名遇难船员家属终获平反，许青川因果秤瞳完成最后一次平衡后归于常人视力范围"
+    enters:
+      - "yuan_boheng"
+    exits:
+      - id: "yuan_boheng"
+        how: "在旧渡口堤坝人赃并获，被依法收押候审"
+    map:
+      location_id: "loc_old_river_ferry"
+      name: "南桥上游二十年前旧渡口堤坝"
+    key_scenes:
+      - "江雾里汽笛长鸣，许青川左眼第一次不再灼痛，只剩清澈水波映出铁箱编号"
+      - "结案日清晨，许青川把那块写着‘南桥算卦’的旧木牌收进纸箱，换上重案反诈顾问工作证"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_river_case"
+      - "fs_patron_signature"
+
+cast:
+  - id: "mc"
+    name: "许青川"
+    role: "南桥夜市算命摊主兼后期巡捕房反诈顾问（主角，25岁）"
+    first_volume: 1
+    exit_volume: null
+    appearance_card: "一米七八偏瘦身材，左眼略微失焦常戴一副浅茶色平光镜遮挡微红眼角，穿洗得发白的藏青帆布工装外套，右腕戴一串磨损的旧黄杨木小算盘珠"
+    voice_card:
+      speech_patterns: "市井圆滑中带着笃定冷幽默，问事只挑对方最心虚的日期与细节开口，从不念玄学长篇咒语"
+      catchphrases:
+        - "先扫码后听话，嫌贵出门左拐找桥洞老神仙。"
+    arc: "从明哲保身的夜市摊主成长为用因果秤瞳配合公道程序拆解黑产网的破局者"
+
+  - id: "detective_ally"
+    name: "宋海潮"
+    role: "南桥区巡捕房重案队副队长（34岁，主角官面搭档）"
+    first_volume: 1
+    exit_volume: null
+    appearance_card: "寸头国字脸，左眉骨有一道旧缝针疤，常穿深灰冲锋衣配黑色斜挎证件包，右手虎口有常年握方向盘和档案夹磨出的厚茧"
+    voice_card:
+      speech_patterns: "说话讲究时间地点与证据链闭环，嘴上永远嫌弃许青川装神弄鬼，实际每次出警先给他留一条后门退路"
+      catchphrases:
+        - "少扯玄乎的，把车牌号和仓库门牌说清楚。"
+    arc: "从怀疑许青川靠灰产摸消息的严厉执法者，转变为彼此托付后背的黄金搭档"
+
+  - id: "vol1_boss"
+    name: "钱万顺"
+    role: "南桥夜市黑市摊霸兼假古董销赃头目（43岁，第一卷反派）"
+    first_volume: 1
+    exit_volume: 1
+    appearance_card: "矮胖微秃，左手小指戴一枚宽边金戒，常拎一只拉链半敞的棕色假皮手包，笑起来眼角挤成三条深褶"
+    voice_card:
+      speech_patterns: "开口闭口‘兄弟帮衬’与江湖规矩，威胁人时习惯先把嗓门压低再拍对方肩膀"
+      catchphrases: []
+    arc: "依仗地头关系欺压小摊贩并企图栽赃主角，最终自曝地下销赃仓入狱"
+
+  - id: "he_xiaoman"
+    name: "何小满"
+    role: "大四兼职摊主兼主角直播运营搭档（22岁，重要女配）"
+    first_volume: 2
+    exit_volume: null
+    appearance_card: "高马尾圆脸戴黑框防蓝光眼镜，背一只贴满反诈贴纸的帆布双肩包，手机永远插着两万毫安快充线"
+    voice_card:
+      speech_patterns: "语速快、擅长用网络热词和账目表格把玄乎的卦象翻译成普通观众听得懂的线索"
+      catchphrases: []
+    arc: "从欠债摆摊卖烤冷面的女学生，成长为独当一面的反诈直播团队总控"
+
+  - id: "qi_jingming"
+    name: "齐景明"
+    role: "百万粉丝伪国学风水主播（39岁，第二卷反派）"
+    first_volume: 2
+    exit_volume: 2
+    appearance_card: "刻意蓄一缕齐胸山羊胡，穿亚麻立领对襟衫，镜头前手捻紫檀佛珠，袖口内侧缝有暗扣机关"
+    voice_card:
+      speech_patterns: "拿腔作调引用半吊子古文吓唬老年观众，被拆穿后立刻切换成撒泼耍赖模式"
+      catchphrases: []
+    arc: "靠磁控道具与托儿团伙收割养老金，在百万直播间被主角当众掀翻老底"
+
+  - id: "cao_tiesheng"
+    name: "曹铁生"
+    role: "跨城黑车物流与地下冷库蛇头（46岁，第三卷反派）"
+    first_volume: 3
+    exit_volume: 3
+    appearance_card: "左臂有大片洗不净的机油暗斑，总穿一件沾满鱼腥和霜气的军绿棉大衣，走路右腿微跛"
+    voice_card:
+      speech_patterns: "声音沙哑短促，说话像报货单一样冷硬，习惯用天气和路段暗语下指令"
+      catchphrases: []
+    arc: "自以为靠偏僻冷库与黑车暗线天衣无缝，终因贪恋旧货利润暴露行踪落网"
+
+  - id: "wei_zhenbang"
+    name: "魏振邦"
+    role: "省城魏氏宗族管事兼地下洗钱金主（55岁，第四卷反派）"
+    first_volume: 4
+    exit_volume: 4
+    appearance_card: "梳得一丝不苟的银灰背头，戴无框金丝眼镜，手持一根包浆乌亮的黑檀木文明杖"
+    voice_card:
+      speech_patterns: "极重长幼尊卑与体面腔调，常用‘家门清誉’和‘体面退场’作为软刀子"
+      catchphrases: []
+    arc: "为掩盖宗族空壳信托与二十年前赃款流向企图烧毁地窖原档，反被当众封存铁证"
+
+  - id: "du_ruolan"
+    name: "杜若兰"
+    role: "省城旧书店老板兼渡江沉案幸存者家属（48岁，关键证人）"
+    first_volume: 4
+    exit_volume: null
+    appearance_card: "齐耳短发夹着两枚素银发卡，穿深褐羊绒开衫，指尖因常年翻修旧纸张贴着医用透气胶布"
+    voice_card:
+      speech_patterns: "克制温和却句句带骨，习惯先确认门窗锁好再说出尘封多年的船舱编号"
+      catchphrases: []
+    arc: "从隐姓埋名躲避追杀二十年的孤寡店主，鼓起勇气站在公堂与直播镜头前作证"
+
+  - id: "luo_wenbin"
+    name: "罗文斌"
+    role: "新港公益基金理事长兼黑产舆论操盘手（49岁，第五卷反派）"
+    first_volume: 5
+    exit_volume: 5
+    appearance_card: "剪裁合体的深蓝双排扣西装，左胸别一枚镀金白鸽徽章，说话时双手习惯十指交叉按在话筒前"
+    voice_card:
+      speech_patterns: "滴水不漏的公关官腔，擅长用公益名词与法务函把对手逼入沉默"
+      catchphrases: []
+    arc: "试图用资本封号和诽谤诉讼扼杀夜市小摊主，反在慈善直播夜被当场亮出洗钱底单"
+
+  - id: "yuan_boheng"
+    name: "袁伯衡"
+    role: "原江城航运改制办主任兼渡江沉案终极主谋（62岁，第六卷反派）"
+    first_volume: 6
+    exit_volume: 6
+    appearance_card: "身形清癯儒雅，常穿灰色中山装在江边写生，左手无名指缺了半截指节"
+    voice_card:
+      speech_patterns: "像一位看淡名利的老学者般轻声细语，实际每一句都在试探对手手里究竟握着几成实锤"
+      catchphrases: []
+    arc: "隐身幕后二十年的真正操盘者，终在旧渡口浓雾中被原始档案箱钉死罪证"
+
+foreshadow_plan:
+  - id: "fs_scale_origin"
+    title: "师父遗留因果秤铜砝码缺失一钱的来历"
+    plant_volume: 1
+    payoff_volume: 4
+  - id: "fs_fake_jade_seal"
+    title: "假玉器行暗格里那批二十年前同模印章"
+    plant_volume: 1
+    payoff_volume: 3
+  - id: "fs_river_case"
+    title: "直播连麦老太手中半张褪色渡轮船票编号"
+    plant_volume: 2
+    payoff_volume: 6
+  - id: "fs_blind_left_eye"
+    title: "许青川幼年渡江呛水失明当晚是谁抱走木箱"
+    plant_volume: 3
+    payoff_volume: 5
+  - id: "fs_patron_signature"
+    title: "魏氏旧宅地窖契约背面的半枚缺指指纹与签名"
+    plant_volume: 4
+    payoff_volume: 6
+
+ending: "二十年前渡江沉案十八名遇难船员平反，主谋袁伯衡及其资金保护伞全部落网；许青川左眼因果秤瞳在完成最后一次衡平后不再灼痛，只留淡淡微光；他正式收起南桥夜市的旧算命帆布招牌，以巡捕房特聘反诈顾问和老街古籍书店合伙人的身份继续留在烟火人间。"
+
+style:
+  genre_id: "urban_brainhole"
+  allow_pov_inner_monologue: true
+  humor: true
+  narration_rules: "第一要务是市井烟火气与快节奏对话推进，每一卦必须落到具体时间、物品、扫码金额或现场物证闭环；严禁大段堆砌玄学名词或修仙境界，配角反应靠手部动作与神态微变体现，不准写‘倒吸一口凉气’等套话。"
+  sample_text: |
+    南桥夜市刚亮起第一排白炽灯泡时，许青川把折叠小方桌支在烤冷面摊隔壁，桌上只摆了一块写着‘看事五十，不准倒赔一百’的旧松木牌。
+    穿灰色工装裤的中年男人蹲在塑料凳上，手里攥着一张皱巴巴的医院缴费单，刚要开口问老人手术吉凶，许青川抬手按住桌角：“先别急着掏钱，你后腰裤兜里那张刚签了字的抵押协议，借条利息写的是月息三分还是五分？”
+    中年男人的指节瞬间捏得发白，抬眼盯着镜片后面那只微微泛红的左眼：“你……你怎么知道我刚从典当行出来？”
+    许青川往手机收款码上轻轻敲了两下：“先扫五十块摊位费，我顺便告诉你，那个催你抵押房子的人现在就在桥头面包车里，副驾脚垫底下还压着另外三户的假房产证。”
+
+adaptation:
+  visual_hook: "霓虹与白炽灯交错的市井夜市摊位前，青年摘下浅茶色平光镜的瞬间，左眼瞳孔倒映出一杆悬在当事人头顶倾斜的古铜小秤"
+  protagonist_look: "二十五岁清瘦青年，利落短发，左眼浅茶色平光镜片后微带淡金细纹，深青帆布工装外套配旧木算盘珠手串"
