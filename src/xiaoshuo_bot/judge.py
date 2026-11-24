@@ -262,6 +262,7 @@ class PairwiseJudge:
         user_prompt: str,
         chapter: int = 0,
         attempt: int = 1,
+        max_tokens: int = 2048,
         extra_meta: Optional[Mapping[str, Any]] = None,
     ) -> str:
         total_attempts = 1 + MAX_EMPTY_RESPONSE_RETRIES
@@ -279,7 +280,7 @@ class PairwiseJudge:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.2,
-                max_tokens=2048,
+                max_tokens=max_tokens,
                 metadata=meta,
             )
             resp = self.provider.generate(req)
@@ -439,7 +440,7 @@ class PairwiseJudge:
             '- "爽感疲劳"：打脸或爽点模式单一、边际递减\n'
             '- "工具人"：配角沦为单一触发器或毫无自主性\n'
             '- "跑偏"：偏离本卷目标、核心卖点或设定边界\n'
-            "只允许输出严格 JSON 对象：\n"
+            "只允许输出严格 JSON 对象（每条 evidence 控制在 120 字以内、summary 控制在 150 字以内，保证 JSON 完整闭合）：\n"
             '{"verdict": "PASS"|"FAIL", '
             '"problems": [{"type": "同质化"|"原地踏步"|"爽感疲劳"|"工具人"|"跑偏", '
             '"chapters": [int, ...], "evidence": "具体依据（非空）"}], '
@@ -459,6 +460,7 @@ class PairwiseJudge:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             chapter=len(cleaned_chapters),
+            max_tokens=8192,
             extra_meta={"judge_task": "arc_review", "chapter_count": len(cleaned_chapters)},
         )
 

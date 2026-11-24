@@ -253,6 +253,7 @@ class TestArcReview(unittest.TestCase):
         self.assertIsInstance(verdict_pass, ArcVerdict)
         self.assertEqual(verdict_pass.verdict, "PASS")
         self.assertEqual(verdict_pass.problems, [])
+        self.assertEqual(pass_provider.requests[0].max_tokens, 8192)
 
         fail_provider = _FakeProvider(
             lambda req, n: json.dumps(

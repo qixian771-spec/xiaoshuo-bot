@@ -1107,6 +1107,7 @@ def _build_blueprint_expansion_prompts(
     existing_before: Sequence[Any],
     snapshot: Optional[WorldStateSnapshot],
     feedback_errors: Sequence[str],
+    editorial_notes: str = "",
 ) -> Tuple[str, str]:
     bp_min, bp_max = int(blueprint.chapter_chars_range[0]), int(blueprint.chapter_chars_range[1])
     is_volume_transition = start_chapter == volume.chapter_start and volume.index > 1
@@ -1276,6 +1277,12 @@ def _build_blueprint_expansion_prompts(
         else ""
     )
 
+    editorial_section = (
+        f"\n### 【主编弧线会诊与本批强制纠偏指令】\n{editorial_notes.strip()}\n"
+        if isinstance(editorial_notes, str) and editorial_notes.strip()
+        else ""
+    )
+
     user_prompt = (
         f"阶段: blueprint_expand（第 {volume.index} 卷《{volume.title}》章纲展开）\n"
         f"项目: {project.meta.project_id}《{project.meta.title}》｜genre_id={blueprint.style.genre_id}\n"
@@ -1312,6 +1319,7 @@ def _build_blueprint_expansion_prompts(
         f"- 前序末尾 location_id：{trailing_loc[0] or '无'}（已连续 {trailing_loc[1]} 章；衔接本批绝对不超过 2 章）\n"
         f"- 前序末尾连续 suppress 章数：{trailing_suppress}（衔接本批绝对不超过 2 章）\n"
         + ("\n".join(prior_summary_lines) if prior_summary_lines else "（尚无前序章节）")
+        + f"{editorial_section}"
         + f"\n{feedback_section}"
     )
 
@@ -1368,6 +1376,7 @@ def expand_blueprint_chapters(
     provider: LLMProvider | RoleModelRouter,
     max_retries: int = 3,
     snapshot_path: Optional[str | Path] = None,
+    editorial_notes: str = "",
 ) -> BlueprintExpansionResult:
     """Expand a single-volume chapter span from BookBlueprint into project outline with strict verification."""
     if not isinstance(provider, (LLMProvider, RoleModelRouter)):
@@ -1462,6 +1471,7 @@ def expand_blueprint_chapters(
             existing_before=existing_before,
             snapshot=effective_snapshot,
             feedback_errors=last_errors,
+            editorial_notes=editorial_notes,
         )
         req = LLMRequest(
             request_id=f"bp-expand-{project.meta.project_id}-v{volume.index}-{start_chapter}-{end_chapter}-{attempt}-{uuid.uuid4().hex[:6]}",

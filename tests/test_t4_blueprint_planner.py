@@ -697,9 +697,12 @@ class TestBlueprintVolumeTransition(unittest.TestCase):
                 start_chapter=44,
                 end_chapter=45,
                 provider=provider,
+                editorial_notes="本批禁止重复夜市单口相面，转战暗巷仓库查账并推进伏笔。",
             )
             self.assertEqual(res_next.added_chapters, [44, 45])
             self.assertIn(f"current_role={new_role}", provider.requests[1].user_prompt)
+            self.assertIn("### 【主编弧线会诊与本批强制纠偏指令】", provider.requests[1].user_prompt)
+            self.assertIn("本批禁止重复夜市单口相面", provider.requests[1].user_prompt)
 
     def test_volume_2_transition_rejects_missing_new_map_and_prior_vol_exited_character(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xsb_t4_vol2_neg_") as tmp:
