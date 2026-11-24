@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 import re
 import shutil
@@ -11,6 +12,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import uuid
 import yaml
 
+from .blueprint import ScaleRule, load_blueprint
 from .deconstructor import BestsellerDeconstructor, DeconstructedBlueprint
 from .evolution import (
     MotifWeightEntry,
@@ -1444,6 +1446,49 @@ def _format_prior_scene_summaries(
     return "\n".join(tail) if tail else "无"
 
 
+def _normalize_scale_rules_map(
+    scale_rules: Optional[Sequence[Mapping[str, Any] | ScaleRule]],
+) -> Tuple[Dict[str, Tuple[str, Optional[float]]], List[str]]:
+    rules_by_key: Dict[str, Tuple[str, Optional[float]]] = {}
+    errors: List[str] = []
+    if scale_rules is None:
+        return rules_by_key, errors
+    for idx, rule in enumerate(scale_rules):
+        if isinstance(rule, Mapping):
+            raw_key = rule.get("ledger_key")
+            raw_policy = rule.get("policy")
+            raw_hard_max = rule.get("hard_max")
+        elif isinstance(rule, ScaleRule):
+            raw_key = rule.ledger_key
+            raw_policy = rule.policy
+            raw_hard_max = rule.hard_max
+        else:
+            errors.append(
+                f"scale_rules[{idx}] must be a mapping or ScaleRule, got {type(rule).__name__}"
+            )
+            continue
+        key = _nonempty_str(raw_key)
+        policy = _nonempty_str(raw_policy)
+        if not key or not policy:
+            errors.append(f"scale_rules[{idx}] missing non-empty 'ledger_key' or 'policy'")
+            continue
+        hard_max: Optional[float] = None
+        if raw_hard_max is not None:
+            if not _is_strict_number(raw_hard_max) or not math.isfinite(float(raw_hard_max)):
+                errors.append(
+                    f"scale_rules[{idx}] ({key!r}) hard_max must be a finite number or None, got {raw_hard_max!r}"
+                )
+                continue
+            hard_max = float(raw_hard_max)
+        if policy == "bounded_realistic" and (hard_max is None or hard_max <= 0):
+            errors.append(
+                f"scale_rules[{idx}] ({key!r}) policy='bounded_realistic' requires hard_max > 0, got {raw_hard_max!r}"
+            )
+            continue
+        rules_by_key[key] = (policy, hard_max)
+    return rules_by_key, errors
+
+
 def _collect_extend_volume_meta_errors(
     payload: Mapping[str, Any],
     *,
@@ -1451,9 +1496,13 @@ def _collect_extend_volume_meta_errors(
     trigger_map_change: bool,
     old_locations: set[str],
     prev_locks: Mapping[str, VolumeCapLock],
+    scale_rules: Optional[Sequence[Mapping[str, Any] | ScaleRule]] = None,
 ) -> Tuple[List[str], str, str, str, List[VolumeCapLock]]:
     """Collect ALL volume-level metadata errors for extend_volume Batch 1 without stopping early."""
     errors: List[str] = []
+    rules_by_key, rule_errors = _normalize_scale_rules_map(scale_rules)
+    errors.extend(rule_errors)
+
     new_map_name = str(payload.get("map_name") or "").strip()
     new_loc_id = str(payload.get("location_id") or "").strip()
     soft_reboot = str(payload.get("soft_identity_reboot") or "").strip()
@@ -1473,6 +1522,21 @@ def _collect_extend_volume_meta_errors(
                 except (ValueError, KeyError, TypeError) as exc:
                     errors.append(f"volume_cap_locks[{idx}] invalid: {exc}")
 
+    for lk in new_locks:
+        rule_info = rules_by_key.get(lk.ledger_key)
+        if rule_info is not None and rule_info[0] == "bounded_realistic":
+            hard_max = rule_info[1]
+            if lk.max_value <= 0:
+                errors.append(
+                    f"New VolumeCapLock '{lk.ledger_key}' max_value ({lk.max_value}) must be > 0 "
+                    f"under bounded_realistic scale rule"
+                )
+            elif hard_max is not None and lk.max_value > hard_max:
+                errors.append(
+                    f"New VolumeCapLock '{lk.ledger_key}' max_value ({lk.max_value}) exceeds "
+                    f"bounded_realistic hard_max ({hard_max})"
+                )
+
     if trigger_map_change:
         if not new_map_name:
             errors.append("Map-change volume extension requires non-empty map_name")
@@ -1491,7 +1555,13 @@ def _collect_extend_volume_meta_errors(
                 errors.append(
                     f"New VolumeCapLock for '{lk.ledger_key}' must have volume={target_vol}, got {lk.volume}"
                 )
-            if lk.ledger_key in prev_locks and lk.max_value <= prev_locks[lk.ledger_key].max_value:
+            rule_info = rules_by_key.get(lk.ledger_key)
+            is_bounded_realistic = rule_info is not None and rule_info[0] == "bounded_realistic"
+            if (
+                not is_bounded_realistic
+                and lk.ledger_key in prev_locks
+                and lk.max_value <= prev_locks[lk.ledger_key].max_value
+            ):
                 errors.append(
                     f"New VolumeCapLock '{lk.ledger_key}' max_value ({lk.max_value}) must exceed "
                     f"previous volume cap ({prev_locks[lk.ledger_key].max_value})"
@@ -2816,7 +2886,7 @@ class AutoNovelPlanner:
         trigger_map_change = chapters_in_vol >= map_change_interval or crossed_boundary
         target_vol = current_vol + 1 if trigger_map_change else current_vol
 
-        # Collect existing locks for previous volume to verify strictly higher caps on map change
+        # Collect existing locks for previous volume to verify volume caps on map change
         prev_locks: Dict[str, VolumeCapLock] = {}
         for lk in project.volume_cap_locks.values():
             if lk.volume == current_vol:
@@ -2825,6 +2895,11 @@ class AutoNovelPlanner:
             for lk in effective_snapshot.volume_cap_locks.values():
                 if lk.volume == current_vol and lk.ledger_key not in prev_locks:
                     prev_locks[lk.ledger_key] = lk
+
+        blueprint_scale_rules: Optional[List[ScaleRule]] = None
+        bp_path = root / "blueprint.yaml"
+        if bp_path.is_file():
+            blueprint_scale_rules = list(load_blueprint(bp_path).scale_rules)
 
         old_locations = {
             s.location_id.strip() for s in project.scenes if s.location_id and s.location_id.strip()
@@ -2940,14 +3015,28 @@ class AutoNovelPlanner:
             due_fs_block = "\n".join(due_fs_lines) if due_fs_lines else "（本批无到期必收伏笔）"
             master_outline_slice = _load_master_outline_slice(root, b_start, b_end)
             if is_first_batch:
-                map_instruction = (
-                    f"【强制触发 60~80 章换地图与身份软重启】进入第 {target_vol} 卷！\n"
-                    f"必须切换全新地图（location_id 禁止复用旧地图：{sorted(old_locations)}），"
-                    f"必须设计主角身份软重启（soft_identity_reboot），并全面抬升 volume_cap_locks（"
-                    f"前卷上限：{ {k: v.max_value for k, v in prev_locks.items()} }，新卷必须严格更高）。"
-                    if trigger_map_change
-                    else f"继续第 {target_vol} 卷连载节奏。"
-                )
+                if trigger_map_change:
+                    bounded_desc = ""
+                    if blueprint_scale_rules:
+                        bounded_items = [
+                            f"{r.ledger_key}(hard_max={r.hard_max}{r.unit})"
+                            for r in blueprint_scale_rules
+                            if r.policy == "bounded_realistic"
+                        ]
+                        if bounded_items:
+                            bounded_desc = (
+                                f"；注意 bounded_realistic 账本键（{', '.join(bounded_items)}）允许持平或微调但严禁超过 hard_max，"
+                                f"其余 unbounded_fantasy 账本键必须严格高于前卷上限"
+                            )
+                    map_instruction = (
+                        f"【强制触发 60~80 章换地图与身份软重启】进入第 {target_vol} 卷！\n"
+                        f"必须切换全新地图（location_id 禁止复用旧地图：{sorted(old_locations)}），"
+                        f"必须设计主角身份软重启（soft_identity_reboot），并配置新卷 volume_cap_locks（"
+                        f"前卷上限：{ {k: v.max_value for k, v in prev_locks.items()} }"
+                        f"{bounded_desc or '，新卷必须严格更高'}）。"
+                    )
+                else:
+                    map_instruction = f"继续第 {target_vol} 卷连载节奏。"
             else:
                 map_instruction = (
                     f"沿用第 1 批已锁定本卷设定：map_name={new_map_name!r}, "
@@ -3025,6 +3114,7 @@ class AutoNovelPlanner:
                             trigger_map_change=trigger_map_change,
                             old_locations=old_locations,
                             prev_locks=prev_locks,
+                            scale_rules=blueprint_scale_rules,
                         )
                     )
                     batch_errors.extend(meta_errs)
@@ -3638,6 +3728,41 @@ class AutoNovelPlanner:
             attempts_used=max_attempts_used,
         )
 
+    def expand_blueprint_chapters(
+        self,
+        project_dir: str | Path,
+        *,
+        blueprint_path: Optional[str | Path] = None,
+        start_chapter: int,
+        end_chapter: int,
+        max_retries: Optional[int] = None,
+        snapshot_path: Optional[str | Path] = None,
+    ) -> Any:
+        """Delegate blueprint-driven chapter expansion using this planner's provider and retry budget."""
+        from .blueprint_planner import expand_blueprint_chapters as _expand_blueprint_chapters
+
+        return _expand_blueprint_chapters(
+            project_dir=project_dir,
+            blueprint_path=blueprint_path,
+            start_chapter=start_chapter,
+            end_chapter=end_chapter,
+            provider=self.provider,
+            max_retries=self.max_validation_retries if max_retries is None else max_retries,
+            snapshot_path=snapshot_path,
+        )
+
+
+def __getattr__(name: str) -> Any:
+    if name in (
+        "BlueprintExpansionResult",
+        "collect_blueprint_scene_errors",
+        "expand_blueprint_chapters",
+    ):
+        from . import blueprint_planner
+
+        return getattr(blueprint_planner, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "PlannerError",
@@ -3646,6 +3771,9 @@ __all__ = [
     "VolumeExtensionResult",
     "FinaleVolumeResult",
     "AutoNovelPlanner",
+    "BlueprintExpansionResult",
+    "collect_blueprint_scene_errors",
+    "expand_blueprint_chapters",
     "find_stale_location_runs",
     "find_unfulfilled_expectations",
 ]

@@ -346,6 +346,7 @@ cloud_tests=(
   tests/test_blueprint.py
   tests/test_blueprint_project.py
   tests/test_planner_deconstruct.py
+  tests/test_t4_blueprint_planner.py
   tests/test_checker.py
   tests/test_tomato_checker.py
   tests/test_t5a_rules_and_cooldown.py
