@@ -52,7 +52,9 @@ class LengthTargetTest(unittest.TestCase):
         self.assertEqual(target_chapter_chars(replace(self.scene, min_chars=1950, max_chars=1950)), 1950)
 
     def test_scene_prompt_names_target_and_drops_stop_early_wording(self) -> None:
-        sys_p, usr_p = self.compiler.compile_scene_prompt(self.scene, self.state)
+        sys_p, usr_p = self.compiler.compile_scene_prompt(
+            self.scene, self.state, recent_chapter_texts=()
+        )
         target = target_chapter_chars(self.scene)
         self.assertIn(f"目标约 {target} 字", sys_p)
         self.assertIn(f"低于 {self.scene.min_chars} 字会被系统直接打回重写", sys_p)
@@ -62,7 +64,9 @@ class LengthTargetTest(unittest.TestCase):
 
     def test_short_draft_rewrite_states_gap_and_events(self) -> None:
         short = self.scene.min_chars - 47
-        _, rewrite = self.compiler.compile_rewrite_prompt(self.scene, self.state, "草稿", _report(short, "LEN_001"))
+        _, rewrite = self.compiler.compile_rewrite_prompt(
+            self.scene, self.state, "草稿", _report(short, "LEN_001"), recent_chapter_texts=()
+        )
         self.assertIn("### 篇幅缺口", rewrite)
         self.assertIn(f"上一版只有 {short} 字", rewrite)
         self.assertIn("还少 47 字", rewrite)
@@ -71,13 +75,17 @@ class LengthTargetTest(unittest.TestCase):
             self.assertIn(event, rewrite)
 
     def test_other_violations_get_no_length_block(self) -> None:
-        _, rewrite = self.compiler.compile_rewrite_prompt(self.scene, self.state, "草稿", _report(2500, "SYM_001"))
+        _, rewrite = self.compiler.compile_rewrite_prompt(
+            self.scene, self.state, "草稿", _report(2500, "SYM_001"), recent_chapter_texts=()
+        )
         self.assertNotIn("### 篇幅缺口", rewrite)
         self.assertNotIn("### 篇幅超限裁剪", rewrite)
 
     def test_overlong_draft_rewrite_states_excess_and_safe_range(self) -> None:
         over = self.scene.max_chars + 1
-        _, rewrite = self.compiler.compile_rewrite_prompt(self.scene, self.state, "草稿", _report(over, "LEN_002"))
+        _, rewrite = self.compiler.compile_rewrite_prompt(
+            self.scene, self.state, "草稿", _report(over, "LEN_002"), recent_chapter_texts=()
+        )
         self.assertIn("### 篇幅超限裁剪", rewrite)
         self.assertIn(f"上一版共 {over} 字", rewrite)
         self.assertIn("共 1 字", rewrite)
@@ -88,7 +96,9 @@ class LengthTargetTest(unittest.TestCase):
         solo_scene = replace(self.scene, active_characters=[self.scene.pov_character])
         solo_proj = replace(self.project, meta=solo_meta, scenes=[solo_scene])
         solo_compiler = PromptCompiler(solo_proj)
-        sys_p, _ = solo_compiler.compile_scene_prompt(solo_scene, self.state)
+        sys_p, _ = solo_compiler.compile_scene_prompt(
+            solo_scene, self.state, recent_chapter_texts=()
+        )
         self.assertIn("单人独角戏", sys_p)
         self.assertIn("纯动作描写无法打断纯旁白计数", sys_p)
 
@@ -97,6 +107,7 @@ class LengthTargetTest(unittest.TestCase):
             self.state,
             "草稿",
             _report(2200, "RHYTHM_NARRATION_WALL"),
+            recent_chapter_texts=(),
         )
         self.assertIn("### 纯旁白墙切分指引", rewrite)
         self.assertIn("纯动作或景物描写即使再短也不会清零连续纯旁白字数", rewrite)

@@ -836,6 +836,23 @@ class NovelGenerationEngine:
         _write_json_atomic(manifest_path, manifest)
         return manifest
 
+    @staticmethod
+    def _load_recent_chapter_texts(chapter: int, chapters_dir: Path) -> Tuple[str, ...]:
+        if isinstance(chapter, bool) or not isinstance(chapter, int) or chapter < 1:
+            raise ValueError(f"chapter must be an int >= 1, got {chapter!r}")
+        if chapter == 1:
+            return ()
+        texts: List[str] = []
+        for prev_ch in range(max(1, chapter - 3), chapter):
+            prev_path = resolve_chapter_path(chapters_dir, prev_ch)
+            if prev_path is None or not prev_path.is_file():
+                raise ProductionGateFailure(
+                    f"Chapter {chapter:04d} requires preceding chapter {prev_ch:04d} text for "
+                    f"anchor cooldown check, but no chapter file was found in '{chapters_dir}'."
+                )
+            texts.append(prev_path.read_text(encoding="utf-8"))
+        return tuple(texts)
+
     def _run_single_chapter(
         self,
         scene: SceneOutline,
@@ -907,8 +924,12 @@ class NovelGenerationEngine:
                 "detail": "组装世界观、记忆金字塔与章节约束",
             },
         )
+        recent_chapter_texts = self._load_recent_chapter_texts(scene.chapter, chapters_dir)
         sys_prompt, user_prompt = self.compiler.compile_scene_prompt(
-            scene, self.state, memory_pyramid=self.memory
+            scene,
+            self.state,
+            memory_pyramid=self.memory,
+            recent_chapter_texts=recent_chapter_texts,
         )
         _write_text_atomic(
             audit_dir / f"ch{scene.chapter:04d}_compiled_prompt.md",
@@ -956,6 +977,7 @@ class NovelGenerationEngine:
                     draft_text=last_draft,
                     report=last_report,
                     memory_pyramid=self.memory,
+                    recent_chapter_texts=recent_chapter_texts,
                 )
                 _write_text_atomic(
                     audit_dir / f"ch{scene.chapter:04d}_attempt{attempt}_rewrite_prompt.md",

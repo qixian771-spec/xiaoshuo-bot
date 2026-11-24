@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Dict, List, Optional, Tuple
 
+from .anchor_cooldown import cooling_anchors
 from .genres import GenreRecipe, get_genre
 from .memory import MemoryPyramid
 from .models import NovelProject, ScanReport, SceneOutline, StyleProfile
+from .opening_rules import writer_directives
 from .sanitizers import FICTIONALIZATION_MAP
 from .state import WorldStateManager
 
@@ -43,6 +46,39 @@ def target_chapter_chars(scene: SceneOutline) -> int:
     midpoint = (int(scene.min_chars) + int(scene.max_chars)) // 2
     return max(int(scene.min_chars), (midpoint // 100) * 100)
 
+def _validate_recent_chapter_texts(
+    scene: SceneOutline,
+    recent_chapter_texts: Sequence[str],
+) -> Tuple[str, ...]:
+    if (
+        isinstance(recent_chapter_texts, (str, bytes, bytearray))
+        or not isinstance(recent_chapter_texts, Sequence)
+    ):
+        raise ValueError(
+            "recent_chapter_texts must be a Sequence[str] (not str/bytes), "
+            f"got {type(recent_chapter_texts).__name__}"
+        )
+    validated: List[str] = []
+    for idx, item in enumerate(recent_chapter_texts):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"recent_chapter_texts[{idx}] must be str, got {type(item).__name__}"
+            )
+        validated.append(item)
+
+    chapter = scene.chapter
+    if isinstance(chapter, bool) or not isinstance(chapter, int) or chapter < 1:
+        raise ValueError(f"scene.chapter must be an int >= 1, got {chapter!r}")
+
+    expected_len = 0 if chapter == 1 else min(3, chapter - 1)
+    if len(validated) != expected_len:
+        raise ValueError(
+            f"Chapter {chapter} requires exactly {expected_len} recent_chapter_texts "
+            f"(min(3, chapter - 1)), got {len(validated)}"
+        )
+    return tuple(validated)
+
+
 class PromptCompiler:
     """Compiles dynamic 5D-state, memory-pyramid, and Tomato-track-aware prompts & rewrite instructions."""
 
@@ -60,6 +96,7 @@ class PromptCompiler:
         scene: SceneOutline,
         state: WorldStateManager,
         pov_mode: str,
+        cooling_by_char: Mapping[str, Sequence[str]],
     ) -> str:
         pov_char = self.project.characters[scene.pov_character]
         char_blocks: List[str] = []
@@ -77,7 +114,12 @@ class PromptCompiler:
                 observer = f"“我”（{pov_char.name}）" if pov_mode == "first_person" else pov_char.name
                 pov_tag = f"【外部观察角色（严禁直接进入其内心独白，仅能由{observer}的感官观察其言行）】"
 
-            anchors_str = "；".join(f"{k}时表现为「{v}」" for k, v in c.behavioral_anchors.items()) or "无"
+            cooled_keys = set(cooling_by_char.get(cid, ()))
+            anchor_parts: List[str] = []
+            for k, v in c.behavioral_anchors.items():
+                cool_suffix = "【冷却中：近3章已用，本章禁止使用】" if k in cooled_keys else ""
+                anchor_parts.append(f"{k}时表现为「{v}」{cool_suffix}")
+            anchors_str = "；".join(anchor_parts) or "无"
             ooc_str = "；".join(c.forbidden_ooc) if c.forbidden_ooc else "无"
 
             status_val = c_state.status if c_state else c.initial_status
@@ -272,8 +314,11 @@ class PromptCompiler:
         scene: SceneOutline,
         state: WorldStateManager,
         memory_pyramid: Optional[MemoryPyramid] = None,
+        *,
+        recent_chapter_texts: Sequence[str],
     ) -> Tuple[str, str]:
         """Return (system_prompt, user_prompt) dynamically adapted to project POV, panel policy, 5D state & memory."""
+        validated_recent_texts = _validate_recent_chapter_texts(scene, recent_chapter_texts)
         meta = self.project.meta
         pov_mode = meta.pov_mode
         panel_policy = meta.panel_policy
@@ -282,8 +327,11 @@ class PromptCompiler:
 
         pov_char = self.project.characters[scene.pov_character]
         recipe = self._resolve_genre_recipe()
+        cooling_by_char = cooling_anchors(validated_recent_texts, self.project.characters)
 
-        character_traits = self._format_character_section(scene, state, pov_mode)
+        character_traits = self._format_character_section(
+            scene, state, pov_mode, cooling_by_char=cooling_by_char
+        )
         world_state_5d = self._format_world_state_5d(scene, state)
 
         # Format [Current_Asset_State]
@@ -303,7 +351,9 @@ class PromptCompiler:
         eff_pyramid = memory_pyramid if memory_pyramid is not None else getattr(state, "memory_pyramid", None)
         memory_block = ""
         if eff_pyramid is not None:
-            compiled_mem = eff_pyramid.compile_context(scene)
+            compiled_mem = eff_pyramid.compile_context(
+                scene, current_virtual_day=state.virtual_day
+            )
             if compiled_mem:
                 memory_block = f"### [Memory_Pyramid_L0_L3]\n{compiled_mem}\n\n"
 
@@ -449,7 +499,7 @@ class PromptCompiler:
                 f"连续不含引号的纯旁白绝对不超过 320 字{solo_quote_rule}；"
                 "禁止连续超过 4 轮无动作或神态描写的“裸对话”；"
                 "严禁连续 4 句以上全是 6～12 字的碎片短句（避免分镜脚本感），必须用 25～45 字的因果推进/感官交锋复句铺开信息与压迫感，"
-                "紧接 4～12 字的刀锋短句砸出反转或金句爆点（例：“他把那枚沾着湿泥的铜钱按在红木桌沿，指腹抹过发黑的钱眼，盯着面前脸色发白的中年男人。”接“‘你这单生意，撑不过今晚十二点。’”），自然拉高节奏爆发力（Burstiness σ >= 12）。\n"
+                "紧接 4～12 字的刀锋短句砸出反转或金句爆点，自然拉高节奏爆发力（Burstiness σ >= 12）。\n"
                 "- **零拖沓与反「给道具做体检」铁律**：同一物件（茶杯、铜钱、罗盘、手机、工具等）在同一场景内严禁无新信息增量地反复拿起、放下、擦拭或摆弄超过 1 次；"
                 "严禁把上一段已经说透的条件、金额、威胁或结论换个说法再复读一遍；"
                 "每写 250～350 字必须落地至少 1 个实质剧情增量（新破绽暴露 / 信息差反转 / 筹码加码 / 当场打脸或利益易手 / 更高阶威胁逼近）。\n"
@@ -479,6 +529,14 @@ class PromptCompiler:
         )
         genre_section_str = f"{compliance_and_genre_block}\n\n" if compliance_and_genre_block else ""
 
+        golden_three_block = ""
+        if is_tomato_track and 1 <= scene.chapter <= 3:
+            directive_lines = "\n".join(f"- {d}" for d in writer_directives(scene.chapter))
+            golden_three_block = (
+                "### 黄金三章硬指标（对标头部书实测）\n"
+                f"{directive_lines}\n\n"
+            )
+
         tomato_task_flow = ""
         if is_tomato_track or scene.beat_type or scene.segment_comment_cue or scene.cliffhanger_hook:
             tomato_task_flow = (
@@ -503,6 +561,7 @@ class PromptCompiler:
             "  - 身体反应套路与网文虚词（如：“不禁一愣”、“微微一愣”、“心中一紧”、“心头一震”、“眸光微闪”、“瞳孔微缩”、“眼底闪过一丝”、“嘴角勾起一抹”、“倒吸一口凉气”、“苦笑一声”、“喃喃自语”、独立副词“不禁”，以及“三分薄凉”、“空气仿佛凝固”、“微不可察地”、“犹如实质般的杀意”、“声音淬了冰”、“大提琴般的嗓音”、“神色晦暗不明”）。\n"
             "  - 结构化对称与廉价路人震惊（如：“不是A，而是B”、“并非A，而是B”、“与其说是A，不如说是B”、“是……，是……，是……”三连排比、“没有……，没有……，只有……”；禁止高频堆砌“全场鸦雀无声/一片哗然/恐怖如斯”）。\n"
             "- **强制检查**：写完后，全文扫描是否出现上述禁用表达、过期称谓、死人施动、余额透支或违规地名机构。命中任意 CRITICAL 项，视为生产事故，自动触发重写。\n\n"
+            f"{golden_three_block}"
             "## 4. 任务执行流 (Task Flow)\n"
             "- 场景推进：必须基于当前的 [Scene_Context] 进行物理动作与对话推进，严格遵守 [Current_Asset_State] 中物件的物理位置与损耗状态，以及 [World_State_5D] 中的余额、伤势与倒计时约束。\n"
             "- 逻辑一致性：对话与微动作必须符合 [Character_Identity_Anchor] 的性格档案与最新关系，严禁角色 OOC 或使用已作废称谓。\n"
@@ -525,10 +584,15 @@ class PromptCompiler:
         draft_text: str,
         report: ScanReport,
         memory_pyramid: Optional[MemoryPyramid] = None,
+        *,
+        recent_chapter_texts: Sequence[str],
     ) -> Tuple[str, str]:
         """Compile a deterministic surgical rewrite prompt when AI-TIC-CHECK detects a production incident."""
         base_sys, base_user = self.compile_scene_prompt(
-            scene, state, memory_pyramid=memory_pyramid
+            scene,
+            state,
+            memory_pyramid=memory_pyramid,
+            recent_chapter_texts=recent_chapter_texts,
         )
 
         violation_lines: List[str] = []

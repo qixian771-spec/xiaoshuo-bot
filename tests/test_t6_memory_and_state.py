@@ -188,10 +188,9 @@ class TestT6MemoryAndState(unittest.TestCase):
         self.assertIn("首现Ch.1，最近Ch.1200", ctx)
         self.assertNotIn("下山三个月", ctx)
 
-        # Transitional compatibility: current_virtual_day=None omits time anchor header & day tags
-        ctx_compat = pyramid.compile_context(active_character_ids=["mc"])
-        self.assertNotIn("### [时间锚点]", ctx_compat)
-        self.assertNotIn("距今", ctx_compat)
+        # T5b: current_virtual_day is mandatory; omitting it must raise TypeError
+        with self.assertRaises(TypeError):
+            pyramid.compile_context(active_character_ids=["mc"])  # type: ignore[call-arg]
 
     def test_record_chapter_and_compile_context_parameter_validation(self) -> None:
         pyr = MemoryPyramid()

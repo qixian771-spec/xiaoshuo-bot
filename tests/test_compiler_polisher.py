@@ -199,7 +199,9 @@ class TestPromptCompilerV2(unittest.TestCase):
         )
         rules_state = WorldStateManager(rules_project)
         rules_compiler = PromptCompiler(rules_project)
-        sys_p, usr_p = rules_compiler.compile_scene_prompt(rules_project.scenes[0], rules_state)
+        sys_p, usr_p = rules_compiler.compile_scene_prompt(
+            rules_project.scenes[0], rules_state, recent_chapter_texts=()
+        )
 
         self.assertIn("第一人称限知视角", sys_p)
         self.assertIn("唯一视点人物：陈牧", sys_p)
@@ -217,7 +219,11 @@ class TestPromptCompilerV2(unittest.TestCase):
             contract_track="serial_20k",
         ).scan("今天天气晴朗，风和日丽。", chapter=1)
         _, rewrite_usr = rules_compiler.compile_rewrite_prompt(
-            rules_project.scenes[0], rules_state, "今天天气晴朗，风和日丽。", fake_report
+            rules_project.scenes[0],
+            rules_state,
+            "今天天气晴朗，风和日丽。",
+            fake_report,
+            recent_chapter_texts=(),
         )
         self.assertIn("受控系统标签【", rewrite_usr)
         self.assertNotIn("严禁前置空格、章节标题或【...】面板", rewrite_usr)
@@ -226,7 +232,9 @@ class TestPromptCompilerV2(unittest.TestCase):
         legacy_project = load_project(ROOT / "projects" / "baiwu_dukou")
         legacy_state = WorldStateManager(legacy_project)
         legacy_compiler = PromptCompiler(legacy_project)
-        leg_sys, leg_usr = legacy_compiler.compile_scene_prompt(legacy_project.scenes[0], legacy_state)
+        leg_sys, leg_usr = legacy_compiler.compile_scene_prompt(
+            legacy_project.scenes[0], legacy_state, recent_chapter_texts=()
+        )
 
         self.assertIn("唯一视点人物：林晚", leg_sys)
         self.assertIn("严禁叙述段出现第一人称“我”", leg_sys)
@@ -234,7 +242,11 @@ class TestPromptCompilerV2(unittest.TestCase):
         self.assertNotIn("竖屏短段呼吸排版", leg_sys)
 
         _, leg_rewrite_usr = legacy_compiler.compile_rewrite_prompt(
-            legacy_project.scenes[0], legacy_state, "测试草稿", fake_report
+            legacy_project.scenes[0],
+            legacy_state,
+            "测试草稿",
+            fake_report,
+            recent_chapter_texts=(),
         )
         self.assertIn("严禁前置空格、章节标题或【...】面板", leg_rewrite_usr)
 
@@ -274,7 +286,10 @@ class TestPromptCompilerV2(unittest.TestCase):
 
         compiler = PromptCompiler(project)
         _, usr_prompt = compiler.compile_scene_prompt(
-            project.scenes[1], state, memory_pyramid=pyramid
+            project.scenes[1],
+            state,
+            memory_pyramid=pyramid,
+            recent_chapter_texts=("第1章正文。",),
         )
 
         # 5D state assertions
@@ -307,7 +322,7 @@ class TestPromptCompilerV2(unittest.TestCase):
         state = WorldStateManager(project)
         compiler = PromptCompiler(project)
         with self.assertRaises(UnknownGenreError):
-            compiler.compile_scene_prompt(project.scenes[0], state)
+            compiler.compile_scene_prompt(project.scenes[0], state, recent_chapter_texts=())
 
 
 class TestTomatoCriticPolisher(unittest.TestCase):
