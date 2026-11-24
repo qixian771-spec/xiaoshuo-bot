@@ -1,0 +1,247 @@
+project_meta:
+  project_id: "nanqiao_cause_eye"
+  title: "夜市算命：我的左眼能称因果"
+  genre: "都市脑洞"
+  genre_id: "urban_brainhole"
+  synopsis: "江城南桥夜市摆摊算命的独眼青年许青川，左眼觉醒能称量人果善恶的因果秤瞳。从一桩拐卖发卡案与假玉器栽赃局起步，他携手冷面重案副队长宋海潮层层剥茧，将街头算命摊支成全网直播追凶的暗夜正义档口，直指二十年前渡江沉案背后的隐秘保护伞。"
+  default_pov_character: "mc"
+  max_rewrite_retries: 3
+  author_level: "lv0_1"
+  contract_track: "complete_150k"
+  pov_mode: "third_limited"
+  panel_policy: "allow_system_tag"
+  pen_name: "青川夜市客"
+  primary_category: "都市脑洞"
+  tags:
+    - "算卦"
+    - "因果秤"
+    - "夜市"
+    - "直播"
+  alternate_titles:
+    - "南桥夜市：开瞳一卦破悬案"
+  target_word_count: 900000
+  volume_index: 1
+  is_final_volume: false
+  initial_balances:
+    cash: 500.0
+    followers: 0.0
+    merit_aura: 0.0
+  volume_cap_locks:
+    - ledger_key: "cash"
+      volume: 1
+      max_value: 5000000.0
+      unlocked: false
+      unit: "元"
+    - ledger_key: "followers"
+      volume: 1
+      max_value: 12000000.0
+      unlocked: false
+      unit: "人"
+
+characters:
+  mc:
+    personality: "表面市井圆滑、见钱眼开，实则重情重诺、嫉恶如仇；遇事习惯先盘算物证与退路再开口点破死穴。"
+    behavioral_anchors:
+      开瞳称量: "右指习惯性转动腕间旧黄杨木算盘珠三圈，左眼微眯摘下或轻推浅茶色平光镜片"
+      收钱定规: "先把桌面手机收款二维码立牌往来客手边推半寸，用指节轻敲木牌边沿"
+      掩饰眼痛: "强行开瞳后太阳穴渗汗时，假装揉眉心把墨镜挂回鼻梁"
+    forbidden_ooc:
+      - "严禁不收卦金也不核对物理证据就高喊正义口号"
+      - "严禁像传统神棍一样念叨长篇玄奥咒语"
+    initial_status: "alive"
+    faction: "南桥夜市摊贩"
+    relations:
+      detective_ally: "亦嫌弃亦默契的官面搭档"
+      vol1_boss: "试图吞并摊位的地头蛇对头"
+      he_xiaoman: "夜市隔壁摊主兼后期直播运营搭档"
+
+  detective_ally:
+    personality: "严谨冷峻、程序至上、护短但嘴硬；表面不信玄学，却比谁都重视物理线索闭环。"
+    behavioral_anchors:
+      现场取证: "掏出随身黑色硬壳笔记本先记时间与车牌号，目光习惯性扫视嫌疑人袖口与鞋底"
+      应对玄学: "听完许青川报出方位后先皱眉冷哼‘巧合’，转身就掏对讲机调度警力核查"
+    forbidden_ooc:
+      - "严禁在毫无物证的情况下仅凭卦象违规抓人"
+      - "严禁被主角几句玩笑激怒而当众失态"
+    initial_status: "alive"
+    faction: "南桥区巡捕房重案队"
+    relations:
+      mc: "屡破奇案的编外线索提供人"
+      vol1_boss: "重点盯防的古玩销赃嫌疑对象"
+
+  vol1_boss:
+    personality: "贪婪狡诈、色厉内荏、爱装江湖体面；惯用地头关系欺压小摊贩，遇硬茬立刻栽赃反咬。"
+    behavioral_anchors:
+      威胁拿捏: "先把嗓门压低，左手小指转动宽边金戒，拍着对方肩膀称兄道弟"
+      心虚掩饰: "把拉链半敞的棕色假皮手包夹紧在腋下，眼角三条深褶紧绷"
+    forbidden_ooc:
+      - "严禁未遇实锤证据就主动认罪"
+      - "严禁表现得像有格局的幕后枭雄"
+    initial_status: "alive"
+    faction: "南桥黑市旧货行"
+    relations:
+      mc: "企图挤走并栽赃的眼中钉"
+      detective_ally: "表面讨好实则忌惮的重案副队长"
+
+  he_xiaoman:
+    personality: "机灵务实、算账极精、行动力极强；欠债摆摊却不认命，擅长把复杂线索翻成通俗流量话术。"
+    behavioral_anchors:
+      救场控场: "举着快充线连接的补光灯与二维码立牌直接卡住闹事者机位"
+      记账复盘: "飞快打开手机电子表格核对打赏流水与受害人转账截图"
+    forbidden_ooc:
+      - "严禁面对镜头怯场或轻易被黑水军带偏节奏"
+    initial_status: "alive"
+    faction: "南桥夜市摊贩"
+    relations:
+      mc: "并肩反诈直播的合伙搭档"
+      qi_jingming: "在直播间当众拆台的对立伪大师"
+
+  qi_jingming:
+    personality: "虚伪浮夸、利欲熏心、精于流量包装与道具障眼法；一旦话术被戳穿便瞬间撒泼抵赖。"
+    behavioral_anchors:
+      装腔作势: "镜头前慢条斯理拈起齐胸山羊胡，左手捻动紫檀佛珠背半吊子古文"
+      暗中作弊: "借亚麻广袖遮掩手指触碰袖口内侧暗扣磁控开关"
+    forbidden_ooc:
+      - "严禁具备任何真实玄学或推理本领"
+    initial_status: "alive"
+    faction: "伪国学MCN机构"
+    relations:
+      mc: "在万人同屏连麦中当众揭穿自己的死对头"
+      he_xiaoman: "截取自己穿帮慢动作的克星运营"
+
+  cao_tiesheng:
+    personality: "阴狠寡言、警惕性极高、做事只认黑车现金流水，嗜财如命但对底层苦主毫无人性。"
+    behavioral_anchors:
+      下令行事: "喉咙沙哑只报冷库门牌与发车时间暗语，右腿微跛却步频极快"
+      藏匿赃物: "进冷库前先关闸断电，用军绿棉大衣袖口擦掉铁皮箱指纹"
+    forbidden_ooc:
+      - "严禁长篇大论炫耀犯罪计划"
+    initial_status: "alive"
+    faction: "北郊黑车物流蛇头"
+    relations:
+      vol1_boss: "下游旧货与脏玉器供货上家"
+      wei_zhenbang: "替省城宗族暗中转运旧箱的马仔"
+
+  wei_zhenbang:
+    personality: "老谋深算、伪善体面、极度看重宗族名声与资产控制权；表面德高望重实则心狠手辣。"
+    behavioral_anchors:
+      施压立威: "用包浆黑檀木文明杖轻点青砖地面，无框眼镜后目光冷淡"
+      毁灭证据: "习惯在宗祠铜盆旁亲手焚烧旧契约并让人立刻扫净灰烬"
+    forbidden_ooc:
+      - "严禁像街头混混一样粗口叫骂"
+    initial_status: "alive"
+    faction: "省城魏氏宗族"
+    relations:
+      du_ruolan: "派人追查并企图灭口的关键证人"
+      luo_wenbin: "幕后洗钱资金池的托管金主"
+
+  du_ruolan:
+    personality: "外柔内刚、心思缜密、守口如瓶二十年；表面是温和旧书店主，实则保留着关键渡轮物证。"
+    behavioral_anchors:
+      防备试探: "先反锁旧书店门栓并拉上布帘，指尖胶布贴着古籍页角确认对方来意"
+      陈述旧案: "语速平缓却能精准报出二十年前船舱编号与日期"
+    forbidden_ooc:
+      - "严禁轻信陌生人而随手交出沉船钥匙与半张船票"
+    initial_status: "alive"
+    faction: "省城古籍旧书店"
+    relations:
+      wei_zhenbang: "隐姓埋名防备二十年的仇敌"
+      mc: "托付沉船旧档钥匙的破局者"
+
+  luo_wenbin:
+    personality: "圆滑冷血、擅长公关话术与资本封杀；把公益当成洗钱外衣与舆论盾牌。"
+    behavioral_anchors:
+      公关控评: "十指交叉按在话筒前微笑发声，眼底毫无温度"
+      打压对手: "习惯让法务团队同步递送律师函与平台限流工单"
+    forbidden_ooc:
+      - "严禁在未确认公关退路前当面暴露资金链破绽"
+    initial_status: "alive"
+    faction: "新港公益基金"
+    relations:
+      wei_zhenbang: "资金串联的利益共同体"
+      yuan_boheng: "幕后听命于二十年前主谋的操盘手"
+
+  yuan_boheng:
+    personality: "城府极深、儒雅伪装下冷酷到骨子里；二十年蛰伏江边写生却时刻盯紧渡口风吹草动。"
+    behavioral_anchors:
+      试探底牌: "左手无名指残节自然藏在画夹或中山装袖口后，轻声细语套问对方手里的证物成色"
+      绝境应对: "哪怕面临围堵也保持缓慢呼吸，企图借江雾与深水销毁原始底档"
+    forbidden_ooc:
+      - "严禁临场崩溃痛哭忏悔"
+    initial_status: "alive"
+    faction: "原江城航运改制办残余网络"
+    relations:
+      luo_wenbin: "在外围替自己遮掩资金流向的手下"
+      mc: "追查二十年前师门冤案的宿敌"
+
+assets:
+  - id: "stall_wooden_sign"
+    name: "南桥算卦旧松木牌"
+    location: "南桥夜市烤冷面摊旁折叠方桌左角"
+    holder: "许青川"
+    condition: "边角磨出浅包浆，正面用黑漆写着‘看事五十，不准倒赔一百’"
+    physical_details: "宽约三十厘米的老松木牌，背面贴着半张褪色二维码贴纸"
+    last_updated_chapter: 0
+    history:
+      - "初始建档：许青川每晚出摊固定摆放"
+
+  - id: "abacus_bracelet"
+    name: "黄杨木旧算盘珠手串"
+    location: "许青川右手腕"
+    holder: "许青川"
+    condition: "珠身油润泛深黄，中间第三颗算盘珠侧壁有一道细小铜丝嵌痕"
+    physical_details: "十二颗老式大算盘珠穿于黑蜡绳上，师父旧物"
+    last_updated_chapter: 0
+    history:
+      - "初始建档：许青川贴身佩戴"
+
+  - id: "missing_hairpin"
+    name: "女童红釉蝴蝶发卡"
+    location: "问卦妇人灰色棉袄左袖暗袋内"
+    holder: "夜市问卦妇人"
+    condition: "右翅边角磕掉一块指甲盖大小的红漆，背夹金属略微弯曲"
+    physical_details: "廉价塑料贴片发卡，卡扣内侧用细记号笔写有编号‘07-19’"
+    last_updated_chapter: 0
+    history:
+      - "初始建档：失踪女童遗落随身物"
+
+  - id: "fake_jade_seal"
+    name: "暗格仿古蟠螭玉印"
+    location: "钱万顺旧玉器行地下仓库夹墙暗格木箱内"
+    holder: "钱万顺"
+    condition: "表面刷有做旧黄土泥浆，印纽蟠螭尾巴处留有现代砂轮打磨划痕"
+    physical_details: "高约八厘米的仿古岫玉方印，底面刻有伪造篆文与编号钢印"
+    last_updated_chapter: 0
+    history:
+      - "初始建档：钱万顺准备用来栽赃许青川的涉案赃玉"
+
+foreshadows:
+  - id: "FS-CH01-HAIRPIN"
+    title: "发卡编号引出仓库暗格线索"
+    plant_chapter: 1
+    due_chapter: 3
+    plant_instruction: "第1章雨夜夜市棚布下，许青川隔着三步点出问卦妇人衣袖里的失踪女童蝴蝶发卡编号，引起蹲守便衣注意。"
+    payoff_instruction: "第3章古玩街地下仓库夹墙破壁现场，探照灯在冒牌玉印木箱旁照出同批失踪物品登记簿与对应发卡编号。"
+    plant_keywords:
+      - "蝴蝶发卡"
+      - "07-19"
+    payoff_keywords:
+      - "发卡编号"
+      - "夹墙暗格"
+    status: "pending"
+    cross_volume: false
+
+  - id: "fs_fake_jade_seal"
+    title: "假玉器行暗格里那批二十年前同模印章"
+    plant_chapter: 2
+    due_chapter: 120
+    plant_instruction: "第2章钱万顺企图将仿古蟠螭玉印混入许青川摊位货箱栽赃，许青川开瞳察觉玉印底面竟带着二十年前旧码头的暗记。"
+    payoff_instruction: "第3卷北郊冷库铁皮箱底翻出与假玉印同批的二十年前航运登记簿，将钱万顺销赃链条与跨城黑车网串联起来。"
+    plant_keywords:
+      - "蟠螭玉印"
+      - "砂轮打磨"
+    payoff_keywords:
+      - "航运登记簿"
+      - "同模印章"
+    status: "pending"
+    cross_volume: true

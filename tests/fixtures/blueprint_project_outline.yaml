@@ -1,0 +1,82 @@
+volume: 1
+scenes:
+  - chapter: 1
+    scene_id: "ch01_rainy_night_stall"
+    internal_title: "雨夜棚布下的蝴蝶发卡"
+    public_title: "先扫码后听话，你袖子里藏着失踪女童发卡"
+    beat_type: "开局钩子与首次开瞳立威"
+    emotion_polarity: "suppress"
+    pov_character: "mc"
+    active_characters:
+      - "mc"
+      - "detective_ally"
+      - "vol1_boss"
+    active_assets:
+      - "stall_wooden_sign"
+      - "abacus_bracelet"
+      - "missing_hairpin"
+    style_profile_ids:
+      - "book_style"
+    location_time: "深秋雨夜九点，江城南桥夜市烤冷面摊隔壁折叠小方桌前"
+    min_chars: 2100
+    max_chars: 2500
+    events:
+      - "钱万顺带着两个混混踩点收保护费并故意撞翻夜市木牌，警告许青川明晚前必须让出南桥摊位。"
+      - "一名神色慌张的灰衣妇人蹲在塑料凳上假借算命试探，许青川摘下浅茶色平光镜转动腕间黄杨木算盘珠开瞳三秒，直指对方左袖暗袋里的红釉蝴蝶发卡及背面编号‘07-19’（埋设 FS-CH01-HAIRPIN）。"
+      - "妇人脸色骤变欲逃，在摊边盯梢多时的重案队副队长宋海潮顺势亮出证件截住去路，嘴上嫌弃许青川装神弄鬼，眼神却盯紧发卡编号。"
+    stop_condition: "妇人被带离夜市后，许青川强忍左眼眶灼痛把旧松木牌重新立回桌角，冷眼看向街对面旧玉器行卷闸门缝时停笔。"
+    cliffhanger_hook: "旧玉器行卷闸门后，钱万顺拨通了一通低声电话：‘那瞎子眼神太毒，明天按原计划把那方假玉印塞进他摊位货箱。’"
+
+  - chapter: 2
+    scene_id: "ch02_jade_warehouse_trap"
+    internal_title: "摊位货箱里的假玉印"
+    public_title: "栽赃我卖赃玉？你袖子里的泥浆先招了"
+    beat_type: "反手反杀与暗记浮现"
+    emotion_polarity: "burst"
+    pov_character: "mc"
+    active_characters:
+      - "mc"
+      - "vol1_boss"
+      - "detective_ally"
+    active_assets:
+      - "fake_jade_seal"
+      - "abacus_bracelet"
+      - "stall_wooden_sign"
+    style_profile_ids:
+      - "book_style"
+    location_time: "次日傍晚六点，南桥夜市入口及旧玉器行门口人群围堵现场"
+    min_chars: 2100
+    max_chars: 2500
+    events:
+      - "钱万顺趁人流高峰带人围住许青川摊位，高喊算命摊私藏涉案古玉并当众翻开许青川脚边塑料货箱，拖出那方沾泥的仿古蟠螭玉印。"
+      - "许青川先让围观摊贩举手机录像，随即用因果秤瞳扫过玉印与钱万顺指甲缝，当众指出印纽现代砂轮打磨划痕与钱万顺棕皮手包拉链里的同源黄泥，并点破玉印底面残留着二十年前旧码头钢印暗记（埋设 fs_fake_jade_seal）。"
+      - "宋海潮带队赶到核验指印与摊位监控死角时间差，当场戳穿栽赃闹剧，钱万顺强辩自己只是路过。"
+    stop_condition: "许青川按住发酸的左眼框抬手指着旧玉器行后门排水沟，对宋海潮报出地下夹墙的砖缝位置时停笔。"
+    cliffhanger_hook: "宋海潮敲了敲后门砖墙听到空心回响，对讲机里立刻响起破拆工具入场指令。"
+
+  - chapter: 3
+    scene_id: "ch03_wall_secret_raid"
+    internal_title: "地下夹墙里的销赃账"
+    public_title: "拆开这堵夹墙，整条销赃链当场钉死"
+    beat_type: "高潮破局与阶段收口"
+    emotion_polarity: "burst"
+    pov_character: "mc"
+    active_characters:
+      - "mc"
+      - "detective_ally"
+      - "vol1_boss"
+    active_assets:
+      - "fake_jade_seal"
+      - "missing_hairpin"
+      - "stall_wooden_sign"
+    style_profile_ids:
+      - "book_style"
+    location_time: "当晚九点半，古玩街旧玉器行地下仓库夹墙暗格拆墙现场"
+    min_chars: 2100
+    max_chars: 2500
+    events:
+      - "破拆锤砸开旧玉器行地下仓库夹墙，强光探照灯打在成箱冒牌印章、盗掘青铜片与一叠贴有‘07-19’同批次编码的失物登记表上（回收 FS-CH01-HAIRPIN）。"
+      - "钱万顺试图趁混乱从通风井逃窜，被守在巷口的便衣与宋海潮联手按下，棕色假皮手包里的全部销赃转账单据被现场封存。"
+      - "结案归档后，宋海潮把南桥夜市的合法国摊位号牌还给许青川，默许他作为重案队编外线索提供人。"
+    stop_condition: "夜雨停歇，许青川把旧松木牌擦干摆上摊位，拿起那份查扣物证复印件上模糊的‘北郊冷库’印章时立即停笔。"
+    cliffhanger_hook: "手机弹出一条陌生私信：‘小神算，明天敢不敢上直播间跟百万粉丝国学大师连麦对卦？’"
