@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -234,6 +235,7 @@ class WorldStateManager:
                 forbidden_titles=list(char.forbidden_titles),
                 injuries={},
                 deceased_chapter=0 if char.initial_status == "deceased" else None,
+                current_role=char.role,
             )
             self.character_states[cid] = c_state
             if char.forbidden_titles:
@@ -431,6 +433,10 @@ class WorldStateManager:
                 f"Character '{cs.character_id}' injury_recovery_chapters cannot be negative: "
                 f"{mutation.injury_recovery_chapters}"
             )
+        if mutation.role is not None and not str(mutation.role).strip():
+            raise CharacterStateViolationError(
+                f"Character '{cs.character_id}' role mutation cannot be empty or whitespace"
+            )
 
     def apply_character_mutation(
         self, mutation: CharacterMutation, chapter: Optional[int] = None
@@ -482,6 +488,14 @@ class WorldStateManager:
             bucket = self.forbidden_titles.setdefault(cs.character_id, [])
             _dedupe_extend(bucket, newly_forbidden)
 
+        if mutation.role is not None:
+            new_role = str(mutation.role).strip()
+            if not new_role:
+                raise CharacterStateViolationError(
+                    f"Character '{cs.character_id}' role mutation cannot be empty or whitespace"
+                )
+            cs.current_role = new_role
+
         if mutation.injury:
             if mutation.injury_recovery_chapters > 0:
                 cs.injuries[mutation.injury] = mutation.injury_recovery_chapters
@@ -499,6 +513,7 @@ class WorldStateManager:
             "character_id": cs.character_id,
             "status": cs.status,
             "faction": cs.faction,
+            "current_role": cs.current_role,
             "relations": dict(cs.relations),
             "added_forbidden_titles": list(newly_forbidden),
             "injuries": dict(cs.injuries),
@@ -990,6 +1005,18 @@ class WorldStateManager:
                             f"Locked chapter {ch} at '{ch_path}' tampered: expected SHA256 {expected}, got {actual}"
                         )
 
+        migrated_character_states = copy.deepcopy(snapshot.character_states)
+        logger = logging.getLogger(__name__)
+        for cid, cs in migrated_character_states.items():
+            if cs.current_role is None:
+                if cid not in self.project.characters:
+                    raise WorldStateError(
+                        f"Legacy snapshot migration failed: character '{cid}' is missing current_role "
+                        f"and does not exist in project.characters"
+                    )
+                cs.current_role = self.project.characters[cid].role
+                logger.warning("legacy snapshot migrated current_role for %s", cid)
+
         self.current_chapter = snapshot.current_chapter
         self.current_volume = snapshot.current_volume
         self.completed_chapters = list(snapshot.completed_chapters)
@@ -998,7 +1025,7 @@ class WorldStateManager:
         self.foreshadows = copy.deepcopy(snapshot.foreshadows)
         self.numeric_balances = dict(snapshot.numeric_balances)
         self.volume_cap_locks = copy.deepcopy(snapshot.volume_cap_locks)
-        self.character_states = copy.deepcopy(snapshot.character_states)
+        self.character_states = migrated_character_states
         self.relationship_edges = [dict(e) for e in snapshot.relationship_edges]
         self.forbidden_titles = {k: list(v) for k, v in snapshot.forbidden_titles.items()}
         self.active_expectations = copy.deepcopy(snapshot.active_expectations)
@@ -1009,7 +1036,7 @@ class WorldStateManager:
         self.recent_locations = list(snapshot.recent_locations)
         self.chapter_hashes = dict(snapshot.chapter_hashes)
         self.locked_chapters = list(snapshot.locked_chapters)
-        return snapshot
+        return self.to_snapshot()
 
     def load_snapshot(
         self,

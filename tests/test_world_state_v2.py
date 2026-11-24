@@ -497,6 +497,7 @@ class TestWorldStateV2(unittest.TestCase):
             pyramid.record_chapter(
                 ch,
                 body,
+                virtual_day=ch + 1,
                 title=f"章名{ch}",
                 summary=summary,
                 character_ids=chars,
@@ -527,6 +528,7 @@ class TestWorldStateV2(unittest.TestCase):
             pyramid.record_chapter(
                 ch,
                 body,
+                virtual_day=ch + 1,
                 title=f"大章{ch}",
                 summary=f"第{ch}章万界征伐持续推进，陈屿收编第{ch}处关隘。",
                 character_ids=["hero"],

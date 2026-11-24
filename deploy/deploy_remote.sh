@@ -349,6 +349,7 @@ cloud_tests=(
   tests/test_models_loader.py
   tests/test_genres_namer.py
   tests/test_world_state_v2.py
+  tests/test_t6_memory_and_state.py
   tests/test_llm_router_cpa.py
   tests/test_compiler_polisher.py
   tests/test_pipeline.py

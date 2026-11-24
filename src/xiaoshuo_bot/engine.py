@@ -33,7 +33,7 @@ from .critic_polisher import (
 )
 from .llm.base import LLMError, LLMProvider, LLMRequest, LLMStreamTruncatedError
 from .llm.router import RoleModelRouter
-from .memory import MemoryPyramid
+from .memory import MemoryMigrationError, MemoryPyramid, migrate_legacy_memory
 from .models import (
     AmbiguousChapterArtifactError,
     ChapterArtifact,
@@ -530,8 +530,23 @@ class NovelGenerationEngine:
             self.state.current_chapter = max(self.state.completed_chapters)
 
         mem_path = _resolve_memory_path(snapshots_dir, predecessor_chapter)
+        scene_map = {s.chapter: s for s in self.project.scenes}
         if mem_path.is_file():
-            self.memory = MemoryPyramid.load(mem_path)
+            try:
+                self.memory = MemoryPyramid.load(mem_path)
+            except MemoryMigrationError:
+                raw_mem = json.loads(mem_path.read_text(encoding="utf-8"))
+                chapter_day_map: Dict[int, int] = {}
+                running_day = 1
+                day_chapters = sorted(
+                    {c for c in self.state.completed_chapters if 1 <= c <= predecessor_chapter}
+                    | {s.chapter for s in self.project.scenes if 1 <= s.chapter <= predecessor_chapter}
+                )
+                for ch_no in day_chapters:
+                    sc = scene_map.get(ch_no)
+                    running_day += int(sc.calendar_days_elapsed) if sc is not None else 1
+                    chapter_day_map[ch_no] = running_day
+                self.memory = migrate_legacy_memory(raw_mem, chapter_day_map)
             return
 
         # Reconstruct pre-chapter MemoryPyramid deterministically for legacy projects without memory_*.json
@@ -540,15 +555,18 @@ class NovelGenerationEngine:
         for eid, ename in names_map.items():
             etype = "character" if eid in self.project.characters else "asset"
             rebuilt.register_entity_name(eid, ename, etype)
-        scene_map = {s.chapter: s for s in self.project.scenes}
+        running_day = 1
         for ch_no in sorted(c for c in self.state.completed_chapters if 1 <= c <= predecessor_chapter):
+            sc = scene_map.get(ch_no)
+            running_day += int(sc.calendar_days_elapsed) if sc is not None else 1
             ch_file = resolve_chapter_path(chapters_dir, ch_no)
             if ch_file is not None and ch_file.is_file():
                 body = ch_file.read_text(encoding="utf-8").rstrip()
                 rebuilt.record_chapter(
                     ch_no,
                     body,
-                    scene=scene_map.get(ch_no),
+                    virtual_day=running_day,
+                    scene=sc,
                     entity_names=names_map,
                 )
         self.memory = rebuilt
@@ -573,9 +591,11 @@ class NovelGenerationEngine:
                 self.state.locked_chapters.append(scene.chapter)
 
         state_diff = self.state.advance_after_chapter(scene, existing_text)
+        # virtual_day 采用 advance_after_chapter 推进后的天数（与 state.virtual_day 一致）
         self.memory.record_chapter(
             scene.chapter,
             existing_text,
+            virtual_day=self.state.virtual_day,
             scene=scene,
             entity_names=self._entity_names_map(),
         )
@@ -1496,9 +1516,11 @@ class NovelGenerationEngine:
                 )
 
                 state_diff = self.state.advance_after_chapter(scene, candidate_text)
+                # virtual_day 采用 advance_after_chapter 推进后的天数（与 state.virtual_day 一致）
                 self.memory.record_chapter(
                     scene.chapter,
                     candidate_text,
+                    virtual_day=self.state.virtual_day,
                     scene=scene,
                     entity_names=self._entity_names_map(),
                 )
