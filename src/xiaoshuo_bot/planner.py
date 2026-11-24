@@ -1301,11 +1301,13 @@ def _load_master_outline_slice(project_root: Path, start_ch: int, end_ch: int) -
         return "无（按前序剧情与本卷主线自然延展）"
     try:
         raw = yaml.safe_load(mo_path.read_text(encoding="utf-8"))
-    except Exception:
-        return "无（按前序剧情与本卷主线自然延展）"
+    except yaml.YAMLError as exc:
+        raise PlannerError(f"master_outline.yaml is not valid YAML: {mo_path}: {exc}") from exc
     items = raw.get("master_outline", raw) if isinstance(raw, Mapping) else raw
     if not isinstance(items, list):
-        return "无（按前序剧情与本卷主线自然延展）"
+        raise PlannerError(
+            f"master_outline.yaml must hold a list of chapters (or a 'master_outline' list), got {type(items).__name__}: {mo_path}"
+        )
     lines: List[str] = []
     for item in items:
         if not isinstance(item, Mapping):

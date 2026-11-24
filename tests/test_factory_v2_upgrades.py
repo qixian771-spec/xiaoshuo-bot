@@ -202,6 +202,18 @@ class TestPillar1LedgerOverdraftGuard(unittest.TestCase):
         self.assertEqual(overdrafts[0]["chapter"], 3)
         self.assertEqual(overdrafts[0]["after"], -50.0)
 
+    def test_load_master_outline_slice_fails_loudly_on_corrupt_file(self) -> None:
+        from xiaoshuo_bot.planner import PlannerError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "master_outline.yaml").write_text("master_outline: [unclosed", encoding="utf-8")
+            with self.assertRaises(PlannerError):
+                _load_master_outline_slice(root, 1, 10)
+            (root / "master_outline.yaml").write_text("just a string", encoding="utf-8")
+            with self.assertRaises(PlannerError):
+                _load_master_outline_slice(root, 1, 10)
+
     def test_load_master_outline_slice_returns_matching_chapters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
