@@ -362,6 +362,40 @@ class TestArcReview(unittest.TestCase):
         with self.assertRaises(ValueError):
             judge.arc_review(["第一章"], {})
 
+    def test_pairwise_judge_retries_once_on_empty_response(self) -> None:
+        # Round 1 returns empty once then valid JSON; round 2 returns valid JSON -> total 3 calls
+        def _responder(req, n: int) -> str:
+            if n == 1:
+                return "   "
+            winner = "A" if n == 2 else "B"
+            return json.dumps(
+                {"winner": winner, "reason": "候选节奏更紧凑", "drop_risk_point": "无明显弃书点"},
+                ensure_ascii=False,
+            )
+
+        provider = _FakeProvider(_responder)
+        judge = PairwiseJudge(
+            provider,
+            judge_model="wb/deepseek-v4.1-flash",
+            writer_model="mimo_v2_6_pro",
+            rng=random.Random(0),
+        )
+        res = judge.compare("候选正文", "对照正文")
+        self.assertIn(res.winner, ("candidate", "reference"))
+        self.assertEqual(len(provider.requests), 3)
+        self.assertEqual(provider.requests[1].metadata.get("empty_response_retry"), 1)
+
+        # Two consecutive empties stop after bounded 1 retry and raise JudgeResponseError
+        provider_empty = _FakeProvider(lambda req, n: "")
+        judge_fail = PairwiseJudge(
+            provider_empty,
+            judge_model="wb/deepseek-v4.1-flash",
+            writer_model="mimo_v2_6_pro",
+        )
+        with self.assertRaises(JudgeResponseError):
+            judge_fail.compare("候选正文", "对照正文")
+        self.assertEqual(len(provider_empty.requests), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

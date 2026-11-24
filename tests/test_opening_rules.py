@@ -694,6 +694,57 @@ class TestGoldenThreeChaptersIntegration(unittest.TestCase):
         self.assertFalse(verdict3_fail.items[2].passed)
         self.assertFalse(verdict3_fail.to_dict()["passed_all"])
 
+    def test_locate_evidence_normalizes_quote_variants_without_fuzzy_matching(self) -> None:
+        text = "第一段铺垫。\n许青川语速仍慢：“你没有助学发起人的账。外省协查化名‘善舟’，卷走两百多户老人救命钱。”\n第三段。"
+        p1, r1 = locate_evidence(
+            text,
+            '你没有助学发起人的账。外省协查化名“善舟”，卷走两百多户老人救命钱。',
+        )
+        p2, r2 = locate_evidence(
+            text,
+            '你没有助学发起人的账。外省协查化名"善舟"，卷走两百多户老人救命钱。',
+        )
+        p3, r3 = locate_evidence(
+            text,
+            "你没有助学发起人的账。外省协查化名「善舟」，卷走两百多户老人救命钱。",
+        )
+        self.assertEqual((p1, p2, p3), (2, 2, 2))
+        self.assertAlmostEqual(r1, r2)
+        self.assertAlmostEqual(r1, r3)
+
+        # Single altered hanzi still strictly fails (no fuzzy matching)
+        with self.assertRaises(EvidenceNotFoundError):
+            locate_evidence(
+                text,
+                '你没有助学发起人的账。外省协查化名“善周”，卷走两百多户老人救命钱。',
+            )
+
+    def test_opening_reviewer_retries_once_on_empty_response(self) -> None:
+        # 1st call empty, 2nd call valid -> succeeds in exactly 2 calls
+        provider_recover = _FakeProvider(
+            lambda req, n: "" if n == 1 else _ch1_passing_payload()
+        )
+        reviewer = OpeningReviewer(
+            provider=provider_recover,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="hy4_flash",
+        )
+        verdict = reviewer.review(_CH1_BOOK1_FIXTURE, 1)
+        self.assertTrue(verdict.passed_all)
+        self.assertEqual(len(provider_recover.requests), 2)
+        self.assertEqual(provider_recover.requests[1].metadata.get("empty_response_retry"), 1)
+
+        # Consecutive empty responses exhaust the single retry cap and still raise
+        provider_always_empty = _FakeProvider(lambda req, n: "   ")
+        reviewer_fail = OpeningReviewer(
+            provider=provider_always_empty,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="hy4_flash",
+        )
+        with self.assertRaises(JudgeResponseError):
+            reviewer_fail.review(_CH1_BOOK1_FIXTURE, 1)
+        self.assertEqual(len(provider_always_empty.requests), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

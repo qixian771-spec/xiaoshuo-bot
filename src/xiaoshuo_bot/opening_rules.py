@@ -28,12 +28,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping as MappingABC
 from dataclasses import asdict, dataclass
+import logging
 import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .judge import (
     JudgeResponseError,
+    MAX_EMPTY_RESPONSE_RETRIES,
     SameModelJudgeError,
     _check_same_or_same_family_models,
     _parse_strict_json_object,
@@ -41,9 +43,12 @@ from .judge import (
 )
 from .llm.base import LLMConfigurationError, LLMProvider, LLMRequest, LLMResponse
 
+logger = logging.getLogger(__name__)
+
 VALID_RUBRIC_KINDS = frozenset({"positional", "judgment"})
 _VALID_CHAPTERS = frozenset({1, 2, 3})
 _WHITESPACE_RE = re.compile(r"\s+")
+_QUOTE_VARIANT_RE = re.compile(r"[“”‘’\"'「」『』]")
 
 
 class EvidenceNotFoundError(ValueError):
@@ -243,16 +248,21 @@ def split_paragraphs(text: str) -> List[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _normalize_for_match(raw: str) -> str:
+    """Strip whitespace and canonicalize 1-char quote variants without altering character lengths."""
+    return _QUOTE_VARIANT_RE.sub('"', _WHITESPACE_RE.sub("", raw))
+
+
 def _locate_evidence_if_present(text: str, evidence: str) -> Optional[Tuple[int, float]]:
     """Return ``(1-based paragraph_index, char_ratio)`` if verbatim match exists, else ``None``."""
     paragraphs = split_paragraphs(text)
     if not paragraphs or not isinstance(evidence, str):
         return None
-    norm_evidence = _WHITESPACE_RE.sub("", evidence)
+    norm_evidence = _normalize_for_match(evidence)
     if not norm_evidence:
         return None
 
-    norm_paras = [_WHITESPACE_RE.sub("", para) for para in paragraphs]
+    norm_paras = [_normalize_for_match(para) for para in paragraphs]
     joined = "".join(norm_paras)
     total_chars = len(joined)
     if total_chars == 0:
@@ -510,25 +520,40 @@ class OpeningReviewer:
         system_prompt: str,
         user_prompt: str,
     ) -> str:
-        req = LLMRequest(
-            request_id=request_id,
-            chapter=chapter,
-            attempt=1,
-            purpose="critic",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.2,
-            max_tokens=2048,
-            metadata={"model": self.judge_model},
-        )
-        resp = self.provider.generate(req)
-        if not isinstance(resp, LLMResponse) or not isinstance(resp.content, str):
-            raise JudgeResponseError(
-                f"{request_id}: provider.generate 必须返回含字符串 content 的 LLMResponse。"
+        total_attempts = 1 + MAX_EMPTY_RESPONSE_RETRIES
+        for retry_idx in range(total_attempts):
+            meta: Dict[str, Any] = {"model": self.judge_model}
+            if retry_idx > 0:
+                meta["empty_response_retry"] = retry_idx
+            req = LLMRequest(
+                request_id=request_id,
+                chapter=chapter,
+                attempt=1 + retry_idx,
+                purpose="critic",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.2,
+                max_tokens=2048,
+                metadata=meta,
             )
-        if not resp.content.strip():
-            raise JudgeResponseError(f"{request_id}: provider 返回空文本响应。")
-        return resp.content
+            resp = self.provider.generate(req)
+            if not isinstance(resp, LLMResponse) or not isinstance(resp.content, str):
+                raise JudgeResponseError(
+                    f"{request_id}: provider.generate 必须返回含字符串 content 的 LLMResponse。"
+                )
+            if resp.content.strip():
+                return resp.content
+            if retry_idx < MAX_EMPTY_RESPONSE_RETRIES:
+                logger.warning(
+                    "%s: provider returned empty content on attempt %d/%d (model=%s); retrying once.",
+                    request_id,
+                    retry_idx + 1,
+                    total_attempts,
+                    self.judge_model,
+                )
+        raise JudgeResponseError(
+            f"{request_id}: provider 返回空文本响应（已重试 {MAX_EMPTY_RESPONSE_RETRIES} 次仍为空）。"
+        )
 
     def review(
         self,

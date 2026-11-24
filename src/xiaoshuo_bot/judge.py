@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
 from dataclasses import asdict, dataclass, field
 import json
+import logging
 import random
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -38,6 +39,9 @@ from .llm.workbuddy_policy import (
     _strip_site_prefix,
 )
 
+logger = logging.getLogger(__name__)
+
+MAX_EMPTY_RESPONSE_RETRIES: int = 1
 VALID_PAIRWISE_RAW_WINNERS = frozenset({"A", "B", "TIE"})
 VALID_ARC_VERDICTS = frozenset({"PASS", "FAIL"})
 VALID_ARC_PROBLEM_TYPES = frozenset({"同质化", "原地踏步", "爽感疲劳", "工具人", "跑偏"})
@@ -260,28 +264,42 @@ class PairwiseJudge:
         attempt: int = 1,
         extra_meta: Optional[Mapping[str, Any]] = None,
     ) -> str:
-        meta: Dict[str, Any] = {"model": self.judge_model}
-        if extra_meta:
-            meta.update(extra_meta)
-        req = LLMRequest(
-            request_id=request_id,
-            chapter=chapter,
-            attempt=attempt,
-            purpose="critic",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.2,
-            max_tokens=2048,
-            metadata=meta,
-        )
-        resp = self.provider.generate(req)
-        if not isinstance(resp, LLMResponse) or not isinstance(resp.content, str):
-            raise JudgeResponseError(
-                f"{request_id}: provider.generate 必须返回含字符串 content 的 LLMResponse。"
+        total_attempts = 1 + MAX_EMPTY_RESPONSE_RETRIES
+        for retry_idx in range(total_attempts):
+            meta: Dict[str, Any] = {"model": self.judge_model}
+            if extra_meta:
+                meta.update(extra_meta)
+            if retry_idx > 0:
+                meta["empty_response_retry"] = retry_idx
+            req = LLMRequest(
+                request_id=request_id,
+                chapter=chapter,
+                attempt=attempt + retry_idx,
+                purpose="critic",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.2,
+                max_tokens=2048,
+                metadata=meta,
             )
-        if not resp.content.strip():
-            raise JudgeResponseError(f"{request_id}: provider 返回空文本响应。")
-        return resp.content
+            resp = self.provider.generate(req)
+            if not isinstance(resp, LLMResponse) or not isinstance(resp.content, str):
+                raise JudgeResponseError(
+                    f"{request_id}: provider.generate 必须返回含字符串 content 的 LLMResponse。"
+                )
+            if resp.content.strip():
+                return resp.content
+            if retry_idx < MAX_EMPTY_RESPONSE_RETRIES:
+                logger.warning(
+                    "%s: provider returned empty content on attempt %d/%d (model=%s); retrying once.",
+                    request_id,
+                    retry_idx + 1,
+                    total_attempts,
+                    self.judge_model,
+                )
+        raise JudgeResponseError(
+            f"{request_id}: provider 返回空文本响应（已重试 {MAX_EMPTY_RESPONSE_RETRIES} 次仍为空）。"
+        )
 
     def _run_pairwise_round(
         self,
