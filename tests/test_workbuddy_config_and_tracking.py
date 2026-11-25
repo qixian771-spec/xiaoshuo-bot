@@ -141,13 +141,14 @@ class TestWorkBuddyConfigAndStartupSelfCheck(unittest.TestCase):
             )
             self.assertNotIn(CFG_MODELS["hy4"], cfg.rotation_models)
 
-        # Planner starts at DeepSeek-V4.1-Flash -> Xiaomi MiMo-V2.6-Pro (no Hy4 flash, no Hy4)
+        # Planner starts at Xiaomi MiMo-V2.6-Pro -> DeepSeek-V4.1-Flash (no Hy4 flash, no Hy4)
         planner_cfg = router.get_role_config("planner")
-        self.assertEqual(planner_cfg.model, CFG_MODELS["deepseek_v4_1_flash"])
+        self.assertEqual(planner_cfg.model, CFG_MODELS["mimo_v2_6_pro"])
         self.assertEqual(
             planner_cfg.rotation_models,
-            (CFG_MODELS["deepseek_v4_1_flash"], CFG_MODELS["mimo_v2_6_pro"]),
+            (CFG_MODELS["mimo_v2_6_pro"], CFG_MODELS["deepseek_v4_1_flash"]),
         )
+        self.assertNotIn(CFG_MODELS["hy4"], planner_cfg.rotation_models)
 
         # Manual override to Hy4 succeeds with empty auto-rotation
         router_manual = RoleModelRouter.from_workbuddy_catalog(
@@ -177,7 +178,7 @@ class TestWorkBuddyConfigAndStartupSelfCheck(unittest.TestCase):
             self.assertIsNotNone(built)
             assert built is not None
             self.assertEqual(built.get_role_config("writer").model, CFG_MODELS["hy4_flash"])
-            self.assertEqual(built.get_role_config("planner").model, CFG_MODELS["deepseek_v4_1_flash"])
+            self.assertEqual(built.get_role_config("planner").model, CFG_MODELS["mimo_v2_6_pro"])
 
             # Role override outside whitelist fails fast
             bad_args = argparse.Namespace(**vars(args))
@@ -687,16 +688,16 @@ class TestTask4ModelQuotaTracking(unittest.TestCase):
                     f"data: {chunk3}\n\n",
                     "data: [DONE]\n\n",
                 ], True
-            chunk_ds = json.dumps(
+            chunk_planner = json.dumps(
                 {
-                    "id": f"chatcmpl-ds-{call_no['n']}",
+                    "id": f"chatcmpl-mimo-{call_no['n']}",
                     "model": m,
                     "choices": [{"index": 0, "delta": {"content": "立项响应"}, "finish_reason": "stop"}],
                     "usage": {
                         "prompt_tokens": 200,
                         "completion_tokens": 150,
                         "quota": {
-                            "model": "deepseek-v4.1-flash",
+                            "model": "mimo-v2.6-pro",
                             "percent": 76.25,
                             "reset_at": "2026-11-21T00:00:00+08:00",
                             "shared_models": [],
@@ -705,7 +706,7 @@ class TestTask4ModelQuotaTracking(unittest.TestCase):
                 },
                 ensure_ascii=False,
             )
-            return 200, [f"data: {chunk_ds}\n\n", "data: [DONE]\n\n"], True
+            return 200, [f"data: {chunk_planner}\n\n", "data: [DONE]\n\n"], True
 
         cpa_srv, cpa_url = _start_mock_cpa_models_server(
             lambda: (200, list(CFG_MODELS.values())),
@@ -772,7 +773,7 @@ class TestTask4ModelQuotaTracking(unittest.TestCase):
                     self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["reset_at"], "2026-11-20T19:43:24+08:00")
                     self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["raw_model"], "hy4-flash")
                     self.assertEqual(db_rows[CFG_MODELS["hy4_flash"]]["shared_models"], ["hy4-flash-free"])
-                    self.assertEqual(db_rows[CFG_MODELS["deepseek_v4_1_flash"]]["percent"], 76.25)
+                    self.assertEqual(db_rows[CFG_MODELS["mimo_v2_6_pro"]]["percent"], 76.25)
 
                     # 3. Verify GET /api/model-quotas requires admin auth (401 without token)
                     with self.assertRaises(urllib.error.HTTPError) as unauth_ctx:
@@ -802,12 +803,12 @@ class TestTask4ModelQuotaTracking(unittest.TestCase):
                     self.assertTrue(by_id[CFG_MODELS["hy4_flash"]]["in_rotation"])
                     self.assertFalse(by_id[CFG_MODELS["hy4_flash"]]["manual_only"])
 
-                    self.assertTrue(by_id[CFG_MODELS["deepseek_v4_1_flash"]]["has_quota"])
-                    self.assertEqual(by_id[CFG_MODELS["deepseek_v4_1_flash"]]["percent"], 76.25)
+                    self.assertTrue(by_id[CFG_MODELS["mimo_v2_6_pro"]]["has_quota"])
+                    self.assertEqual(by_id[CFG_MODELS["mimo_v2_6_pro"]]["percent"], 76.25)
 
                     # Unreported models must explicitly carry has_quota=False and percent=None
-                    self.assertFalse(by_id[CFG_MODELS["mimo_v2_6_pro"]]["has_quota"])
-                    self.assertIsNone(by_id[CFG_MODELS["mimo_v2_6_pro"]]["percent"])
+                    self.assertFalse(by_id[CFG_MODELS["deepseek_v4_1_flash"]]["has_quota"])
+                    self.assertIsNone(by_id[CFG_MODELS["deepseek_v4_1_flash"]]["percent"])
                     self.assertFalse(by_id[CFG_MODELS["hy4"]]["has_quota"])
                     self.assertTrue(by_id[CFG_MODELS["hy4"]]["manual_only"])
                     self.assertFalse(by_id[CFG_MODELS["hy4"]]["in_rotation"])

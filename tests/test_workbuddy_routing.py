@@ -261,8 +261,9 @@ class TestWorkBuddyRotationRouter(unittest.TestCase):
     def test_writer_and_planner_fixed_rotation_order_and_all_exhausted_halt(self) -> None:
         # Scripted CPA:
         # - wb/test-hy4-flash -> HTTP 429 (rate_limit_exceeded)
-        # - wb/test-ds-v41-flash -> HTTP 400 with upstream code 14018 (credit_package_exhausted)
-        # - wb/test-mimo-v26-pro -> 1st call succeeds, 2nd call hits HTTP 429
+        # - wb/test-ds-v41-flash -> 1st hit (writer) HTTP 400 with upstream code 14018, 2nd hit (planner failover) succeeds
+        # - wb/test-mimo-v26-pro -> 1st hit (writer) succeeds, 2nd hit (planner) HTTP 400/14018, 3rd+ hits (writer call 2) HTTP 429
+        ds_hits = {"count": 0}
         mimo_hits = {"count": 0}
 
         def handler(payload: Dict[str, Any], _seq: int):
@@ -270,16 +271,26 @@ class TestWorkBuddyRotationRouter(unittest.TestCase):
             if m == "wb/test-hy4-flash":
                 return 429, {"error": {"code": "rate_limit_exceeded", "message": "WorkBuddy rate limit exceeded"}}, False
             if m == "wb/test-ds-v41-flash":
-                return 400, {
-                    "error": {
-                        "code": "credit_package_exhausted",
-                        "message": "WorkBuddy requires an active credit package with available balance (upstream code 14018)",
-                    }
-                }, False
+                ds_hits["count"] += 1
+                if ds_hits["count"] == 1:
+                    return 400, {
+                        "error": {
+                            "code": "credit_package_exhausted",
+                            "message": "WorkBuddy requires an active credit package with available balance (upstream code 14018)",
+                        }
+                    }, False
+                return 200, _sse_ok(m, f"ok-from-{m}"), True
             if m == "wb/test-mimo-v26-pro":
                 mimo_hits["count"] += 1
-                if mimo_hits["count"] <= 2:
+                if mimo_hits["count"] == 1:
                     return 200, _sse_ok(m, f"ok-from-{m}"), True
+                if mimo_hits["count"] == 2:
+                    return 400, {
+                        "error": {
+                            "code": "credit_package_exhausted",
+                            "message": "WorkBuddy requires an active credit package with available balance (upstream code 14018)",
+                        }
+                    }, False
                 return 429, {"error": {"code": "rate_limit_exceeded", "message": "WorkBuddy rate limit exceeded"}}, False
             raise AssertionError(f"Unexpected model called: {m!r}")
 
@@ -305,12 +316,12 @@ class TestWorkBuddyRotationRouter(unittest.TestCase):
                     "planner": RoleEndpointConfig(
                         role="planner",
                         base_url=base_url,
-                        model="wb/test-ds-v41-flash",
+                        model="wb/test-mimo-v26-pro",
                         api_keys=["sk-cpa-client-key"],
                         model_whitelist=SAMPLE_WHITELIST,
                         rotation_models=(
-                            "wb/test-ds-v41-flash",
                             "wb/test-mimo-v26-pro",
+                            "wb/test-ds-v41-flash",
                         ),
                         manual_only_models=("wb/test-hy4-manual",),
                         model_labels=SAMPLE_LABELS,
@@ -340,15 +351,18 @@ class TestWorkBuddyRotationRouter(unittest.TestCase):
             self.assertEqual(events[1].upstream_code, "14018")
             self.assertEqual(router.get_active_model("writer"), "wb/test-mimo-v26-pro")
 
-            # Planner call: starts from DeepSeek-V4.1-Flash (400/14018) -> Xiaomi MiMo-V2.6-Pro (OK), never touches Hy4 flash or Hy4
+            # Planner call: starts from Xiaomi MiMo-V2.6-Pro (400/14018) -> DeepSeek-V4.1-Flash (OK), never touches Hy4 flash or Hy4
             calls.clear()
             events.clear()
             resp_p = router.generate("planner", _make_req(chapter=0))
-            self.assertEqual(resp_p.model, "wb/test-mimo-v26-pro")
-            self.assertEqual([c["model"] for c in calls], ["wb/test-ds-v41-flash", "wb/test-mimo-v26-pro"])
+            self.assertEqual(resp_p.model, "wb/test-ds-v41-flash")
+            self.assertEqual([c["model"] for c in calls], ["wb/test-mimo-v26-pro", "wb/test-ds-v41-flash"])
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].role, "planner")
-            self.assertEqual((events[0].from_model, events[0].to_model), ("wb/test-ds-v41-flash", "wb/test-mimo-v26-pro"))
+            self.assertEqual((events[0].from_model, events[0].to_model), ("wb/test-mimo-v26-pro", "wb/test-ds-v41-flash"))
+            self.assertEqual(events[0].status_code, 400)
+            self.assertEqual(events[0].upstream_code, "14018")
+            self.assertEqual(router.get_active_model("planner"), "wb/test-ds-v41-flash")
 
             # Writer call 2: MiMo-V2.6-Pro now ALSO returns 429 (1 + 3 retries = 4 calls)
             # -> ALL exhausted -> QuotaExhaustedError, NEVER switches to Hy4!

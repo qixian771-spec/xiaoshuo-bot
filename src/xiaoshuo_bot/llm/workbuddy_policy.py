@@ -40,8 +40,14 @@ WORKBUDDY_WRITER_ROTATION_SLOTS: Tuple[str, ...] = (
     WORKBUDDY_SLOT_MIMO_V2_6_PRO,
 )
 WORKBUDDY_PLANNER_ROTATION_SLOTS: Tuple[str, ...] = (
-    WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
     WORKBUDDY_SLOT_MIMO_V2_6_PRO,
+    WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH,
+)
+WORKBUDDY_STRONG_PLANNER_ROLES: Tuple[str, ...] = (
+    "planner",
+    "architect",
+    "volume_planner",
+    "volume_auditor",
 )
 WORKBUDDY_MANUAL_ONLY_SLOTS: Tuple[str, ...] = (WORKBUDDY_SLOT_HY4,)
 
@@ -744,9 +750,12 @@ class WorkBuddyModelCatalog:
 
     def planner_rotation(self) -> Tuple[str, ...]:
         return (
-            self.deepseek_v4_1_flash,
             self.mimo_v2_6_pro,
+            self.deepseek_v4_1_flash,
         )
+
+    def strong_planner_model(self) -> str:
+        return self.mimo_v2_6_pro
 
     def labels(self) -> Dict[str, str]:
         return {
@@ -763,7 +772,12 @@ class WorkBuddyModelCatalog:
         override_model: Optional[str] = None,
     ) -> Tuple[str, Tuple[str, ...]]:
         """Resolve (primary_model, rotation_models) for one text role under owner constraints."""
-        base_chain = self.planner_rotation() if role == "planner" else self.writer_rotation()
+        normalized_role = (role or "").strip()
+        base_chain = (
+            self.planner_rotation()
+            if normalized_role in WORKBUDDY_STRONG_PLANNER_ROLES
+            else self.writer_rotation()
+        )
         if not override_model or not str(override_model).strip():
             return base_chain[0], base_chain
 
@@ -898,6 +912,7 @@ __all__ = [
     "WORKBUDDY_SLOT_HY4",
     "WORKBUDDY_SLOT_HY4_FLASH",
     "WORKBUDDY_SLOT_MIMO_V2_6_PRO",
+    "WORKBUDDY_STRONG_PLANNER_ROLES",
     "WORKBUDDY_WHITELIST_SLOTS",
     "WORKBUDDY_WRITER_ROTATION_SLOTS",
     "WorkBuddyModelCatalog",
