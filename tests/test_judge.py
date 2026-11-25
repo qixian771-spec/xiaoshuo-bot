@@ -11,6 +11,8 @@ from xiaoshuo_bot.judge import (
     PairwiseJudge,
     PairwiseResult,
     SameModelJudgeError,
+    VALID_VOLUME_HEALTH_CHECK_IDS,
+    VolumeHealthJudgeResult,
 )
 from xiaoshuo_bot.llm.base import LLMConfigurationError, LLMProvider, LLMRequest, LLMResponse
 
@@ -448,6 +450,273 @@ class TestArcReview(unittest.TestCase):
         self.assertEqual(res.verdict, "PASS")
         self.assertEqual(len(provider.requests), 2)
         self.assertIn("JSON语法纠偏重审", provider.requests[1].user_prompt)
+
+
+def _make_vh_checks(
+    *,
+    fail_id: str | None = None,
+    fail_chapters: List[int] | None = None,
+    fail_hint: str = "请补写关键伏笔回收段落并收束卷末悬念。",
+) -> List[dict]:
+    checks: List[dict] = []
+    for cid in VALID_VOLUME_HEALTH_CHECK_IDS:
+        if cid == fail_id:
+            checks.append(
+                {
+                    "id": cid,
+                    "status": "FAIL",
+                    "chapters": fail_chapters if fail_chapters is not None else [3, 4],
+                    "evidence": f"{cid} 语义体检发现明显缺陷。",
+                    "repair_hint": fail_hint,
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "id": cid,
+                    "status": "PASS",
+                    "chapters": [],
+                    "evidence": f"{cid} 达标通过。",
+                    "repair_hint": "",
+                }
+            )
+    return checks
+
+
+class TestVolumeHealthReview(unittest.TestCase):
+    def test_volume_health_review_pass_and_fail(self) -> None:
+        shuffled_checks = list(reversed(_make_vh_checks()))
+        pass_provider = _FakeProvider(
+            lambda req, n: "```json\n"
+            + json.dumps(
+                {
+                    "verdict": "PASS",
+                    "checks": shuffled_checks,
+                    "summary": "全卷六项硬体检全部通过，可解锁进入下一卷。",
+                },
+                ensure_ascii=False,
+            )
+            + "\n```"
+        )
+        judge = PairwiseJudge(
+            pass_provider,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        res = judge.volume_health_review(
+            ["第41章正文。", "第42章正文。"],
+            {"index": 2, "title": "连麦打假", "chapter_start": 41, "chapter_end": 42},
+            prev_volume_card={"index": 1, "title": "南桥夜摊"},
+            cast_cards=[{"id": "mc", "name": "许青川", "independent_goal": "查旧案"}],
+            deterministic_summary={"checks": {"VH_01_NO_ROUTINE_REPEAT": {"passed": True}}},
+        )
+        self.assertIsInstance(res, VolumeHealthJudgeResult)
+        self.assertEqual(res.verdict, "PASS")
+        self.assertEqual([c["id"] for c in res.checks], list(VALID_VOLUME_HEALTH_CHECK_IDS))
+        self.assertEqual(pass_provider.requests[0].max_tokens, 8192)
+        self.assertIn("上一卷卷卡", pass_provider.requests[0].user_prompt)
+        self.assertIn("本卷相关角色卡", pass_provider.requests[0].user_prompt)
+        self.assertIn("确定性硬核验摘要", pass_provider.requests[0].user_prompt)
+        self.assertIn("第 41 章", pass_provider.requests[0].user_prompt)
+
+        fail_provider = _FakeProvider(
+            lambda req, n: json.dumps(
+                {
+                    "verdict": "FAIL",
+                    "checks": _make_vh_checks(fail_id="VH_05_THREE_ACT_AND_HOOK", fail_chapters=[42]),
+                    "summary": "卷末缺少钩子，需锁卷返修。",
+                },
+                ensure_ascii=False,
+            )
+        )
+        judge_fail = PairwiseJudge(
+            fail_provider,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        res_fail = judge_fail.volume_health_review(
+            ["第41章正文。", "第42章正文。"],
+            {"index": 2, "title": "连麦打假", "chapter_start": 41, "chapter_end": 42},
+        )
+        self.assertEqual(res_fail.verdict, "FAIL")
+        vh5 = [c for c in res_fail.checks if c["id"] == "VH_05_THREE_ACT_AND_HOOK"][0]
+        self.assertEqual(vh5["status"], "FAIL")
+        self.assertEqual(vh5["chapters"], [42])
+        self.assertTrue(vh5["repair_hint"])
+
+    def test_volume_health_review_retries_once_on_unescaped_quote_and_contract_mismatch(self) -> None:
+        # 1. Malformed JSON (unescaped double quote) on attempt 1 -> retries once and succeeds.
+        def _quote_responder(req: LLMRequest, n: int) -> str:
+            if n == 1:
+                return '{"verdict":"PASS","checks":[],"summary":"含"未转义"双引号"}'
+            return json.dumps(
+                {
+                    "verdict": "PASS",
+                    "checks": _make_vh_checks(),
+                    "summary": "含‘中文单引号’且六项全通过。",
+                },
+                ensure_ascii=False,
+            )
+
+        provider_quote = _FakeProvider(_quote_responder)
+        judge_quote = PairwiseJudge(
+            provider_quote,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        res_quote = judge_quote.volume_health_review(["第1章。"], {"index": 1})
+        self.assertEqual(res_quote.verdict, "PASS")
+        self.assertEqual(len(provider_quote.requests), 2)
+        self.assertIn("JSON语法纠偏重审", provider_quote.requests[1].user_prompt)
+
+        # 2. Contract mismatch (verdict PASS despite FAIL check) on attempt 1 -> retries once and succeeds.
+        def _mismatch_responder(req: LLMRequest, n: int) -> str:
+            if n == 1:
+                return json.dumps(
+                    {
+                        "verdict": "PASS",
+                        "checks": _make_vh_checks(fail_id="VH_03_CHARACTER_AND_ARC"),
+                        "summary": "矛盾响应。",
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "verdict": "FAIL",
+                    "checks": _make_vh_checks(fail_id="VH_03_CHARACTER_AND_ARC", fail_chapters=[2]),
+                    "summary": "已按契约修正为 FAIL。",
+                },
+                ensure_ascii=False,
+            )
+
+        provider_mismatch = _FakeProvider(_mismatch_responder)
+        judge_mismatch = PairwiseJudge(
+            provider_mismatch,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        res_mismatch = judge_mismatch.volume_health_review(["第1章。", "第2章。"], {"index": 1})
+        self.assertEqual(res_mismatch.verdict, "FAIL")
+        self.assertEqual(len(provider_mismatch.requests), 2)
+        self.assertIn("格式纠偏重审", provider_mismatch.requests[1].user_prompt)
+
+        # 3. Persistent violation stops strictly after 2 attempts (1 initial + 1 retry).
+        provider_always_bad = _FakeProvider(
+            lambda req, n: json.dumps(
+                {"verdict": "PASS", "checks": _make_vh_checks()[:-1], "summary": "缺一项"},
+                ensure_ascii=False,
+            )
+        )
+        judge_bad = PairwiseJudge(
+            provider_always_bad,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        with self.assertRaises(JudgeResponseError):
+            judge_bad.volume_health_review(["第1章。"], {"index": 1})
+        self.assertEqual(len(provider_always_bad.requests), 2)
+
+        # 4. Empty response stays bounded inside _invoke_judge (exactly 2 total calls, not 4).
+        provider_empty = _FakeProvider(lambda req, n: "   ")
+        judge_empty = PairwiseJudge(
+            provider_empty,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        with self.assertRaises(JudgeResponseError):
+            judge_empty.volume_health_review(["第1章。"], {"index": 1})
+        self.assertEqual(len(provider_empty.requests), 2)
+
+    def test_volume_health_review_rejects_all_contract_violations(self) -> None:
+        base_pass = _make_vh_checks()
+        dup_checks = list(base_pass[:-1]) + [dict(base_pass[0])]
+        unknown_checks = list(base_pass[:-1]) + [
+            {"id": "VH_99_UNKNOWN", "status": "PASS", "chapters": [], "evidence": "ok", "repair_hint": ""}
+        ]
+        bad_payloads = [
+            "非JSON",
+            json.dumps({"verdict": "WARN", "checks": base_pass, "summary": "bad verdict"}),
+            json.dumps({"verdict": "PASS", "checks": base_pass[:-1], "summary": "missing 1 check"}),
+            json.dumps({"verdict": "PASS", "checks": dup_checks, "summary": "duplicate check"}),
+            json.dumps({"verdict": "PASS", "checks": unknown_checks, "summary": "unknown id"}),
+            json.dumps(
+                {
+                    "verdict": "PASS",
+                    "checks": _make_vh_checks(fail_id="VH_01_NO_ROUTINE_REPEAT"),
+                    "summary": "PASS with FAIL item",
+                }
+            ),
+            json.dumps(
+                {"verdict": "FAIL", "checks": base_pass, "summary": "FAIL with all PASS items"}
+            ),
+            json.dumps(
+                {
+                    "verdict": "FAIL",
+                    "checks": _make_vh_checks(fail_id="VH_02_FORESHADOW_AND_REWARD", fail_chapters=[]),
+                    "summary": "FAIL with empty chapters",
+                }
+            ),
+            json.dumps(
+                {
+                    "verdict": "FAIL",
+                    "checks": _make_vh_checks(
+                        fail_id="VH_02_FORESHADOW_AND_REWARD", fail_chapters=[True]  # type: ignore[list-item]
+                    ),
+                    "summary": "FAIL with bool chapter",
+                }
+            ),
+            json.dumps(
+                {
+                    "verdict": "FAIL",
+                    "checks": _make_vh_checks(fail_id="VH_04_CORE_FLAVOR_QUOTA", fail_hint="   "),
+                    "summary": "FAIL with blank repair_hint",
+                }
+            ),
+            json.dumps(
+                {
+                    "verdict": "PASS",
+                    "checks": [
+                        {**c, "evidence": " "} if idx == 0 else c
+                        for idx, c in enumerate(base_pass)
+                    ],
+                    "summary": "blank evidence",
+                }
+            ),
+            json.dumps({"verdict": "PASS", "checks": base_pass, "summary": "   "}),
+        ]
+        for payload in bad_payloads:
+            with self.subTest(payload=payload[:90]):
+                provider = _FakeProvider(lambda req, n, p=payload: p)
+                judge = PairwiseJudge(
+                    provider,
+                    judge_model="wb/mimo-v2.6-pro",
+                    writer_model="wb/deepseek-v4.1-flash",
+                )
+                with self.assertRaises(JudgeResponseError):
+                    judge.volume_health_review(["第1章。"], {"index": 1})
+                self.assertEqual(len(provider.requests), 2)
+
+    def test_volume_health_review_validates_inputs(self) -> None:
+        provider = _FakeProvider(lambda req, n: "{}")
+        judge = PairwiseJudge(
+            provider,
+            judge_model="wb/mimo-v2.6-pro",
+            writer_model="wb/deepseek-v4.1-flash",
+        )
+        with self.assertRaises(ValueError):
+            judge.volume_health_review([], {"index": 1})
+        with self.assertRaises(ValueError):
+            judge.volume_health_review(["   "], {"index": 1})
+        with self.assertRaises(ValueError):
+            judge.volume_health_review(["第1章"], {})
+        with self.assertRaises(ValueError):
+            judge.volume_health_review(["第1章"], {"index": 1}, prev_volume_card="bad")  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            judge.volume_health_review(["第1章"], {"index": 1}, cast_cards="bad")  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            judge.volume_health_review(["第1章"], {"index": 1}, cast_cards=["not_mapping"])  # type: ignore[list-item]
+        with self.assertRaises(ValueError):
+            judge.volume_health_review(["第1章"], {"index": 1}, deterministic_summary="bad")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
