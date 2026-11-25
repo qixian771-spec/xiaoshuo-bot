@@ -45,6 +45,15 @@ MAX_EMPTY_RESPONSE_RETRIES: int = 1
 VALID_PAIRWISE_RAW_WINNERS = frozenset({"A", "B", "TIE"})
 VALID_ARC_VERDICTS = frozenset({"PASS", "FAIL"})
 VALID_ARC_PROBLEM_TYPES = frozenset({"同质化", "原地踏步", "爽感疲劳", "工具人", "跑偏"})
+VALID_VOLUME_HEALTH_CHECK_IDS: Tuple[str, ...] = (
+    "VH_01_NO_ROUTINE_REPEAT",
+    "VH_02_FORESHADOW_AND_REWARD",
+    "VH_03_CHARACTER_AND_ARC",
+    "VH_04_CORE_FLAVOR_QUOTA",
+    "VH_05_THREE_ACT_AND_HOOK",
+    "VH_06_LEDGER_AND_DEBT_MATH",
+)
+VALID_VOLUME_HEALTH_STATUSES = frozenset({"PASS", "FAIL"})
 
 _TIER_SUFFIX_RE = re.compile(r"(?:[-_./]?(?:free|latest))$", re.IGNORECASE)
 
@@ -107,6 +116,19 @@ class ArcVerdict:
 
     verdict: str  # "PASS" | "FAIL"
     problems: List[Dict[str, Any]]
+    summary: str
+    raw_response: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class VolumeHealthJudgeResult:
+    """End-of-volume 6-point semantic health verdict from ``PairwiseJudge.volume_health_review``."""
+
+    verdict: str  # "PASS" | "FAIL"
+    checks: List[Dict[str, Any]]
     summary: str
     raw_response: str = ""
 
@@ -227,6 +249,110 @@ def _map_ab_winner(raw_winner: str, *, a_is_candidate: bool) -> str:
     if raw_winner == "B":
         return "reference" if a_is_candidate else "candidate"
     raise JudgeResponseError(f"非法的 winner 值 {raw_winner!r}。")
+
+
+def _validate_volume_health_payload(
+    parsed: Mapping[str, Any],
+    *,
+    context: str,
+) -> Tuple[str, List[Dict[str, Any]], str]:
+    verdict = _require_non_empty_str(parsed, "verdict", context=context)
+    if verdict not in VALID_ARC_VERDICTS:
+        raise JudgeResponseError(
+            f"{context}: verdict 必须为 {sorted(VALID_ARC_VERDICTS)} 之一，实际得到 {verdict!r}。"
+        )
+    summary = _require_non_empty_str(parsed, "summary", context=context)
+
+    if "checks" not in parsed:
+        raise JudgeResponseError(f"{context}: 缺少必填字段 'checks'。")
+    raw_checks = parsed["checks"]
+    if not isinstance(raw_checks, list):
+        raise JudgeResponseError(
+            f"{context}: 'checks' 必须为列表，实际得到 {type(raw_checks).__name__}。"
+        )
+
+    valid_id_set = set(VALID_VOLUME_HEALTH_CHECK_IDS)
+    validated_by_id: Dict[str, Dict[str, Any]] = {}
+    for idx, item in enumerate(raw_checks):
+        item_ctx = f"{context} checks[{idx}]"
+        if not isinstance(item, MappingABC):
+            raise JudgeResponseError(
+                f"{item_ctx}: 每条体检项必须为 JSON 对象，实际得到 {type(item).__name__}。"
+            )
+        check_id = _require_non_empty_str(item, "id", context=item_ctx)
+        if check_id not in valid_id_set:
+            raise JudgeResponseError(
+                f"{item_ctx}: id 必须为 {list(VALID_VOLUME_HEALTH_CHECK_IDS)} 之一，实际得到 {check_id!r}。"
+            )
+        if check_id in validated_by_id:
+            raise JudgeResponseError(f"{item_ctx}: 体检项 id {check_id!r} 重复出现。")
+
+        status = _require_non_empty_str(item, "status", context=item_ctx)
+        if status not in VALID_VOLUME_HEALTH_STATUSES:
+            raise JudgeResponseError(
+                f"{item_ctx}: status 必须为 {sorted(VALID_VOLUME_HEALTH_STATUSES)} 之一，实际得到 {status!r}。"
+            )
+
+        if "chapters" not in item:
+            raise JudgeResponseError(f"{item_ctx}: 缺少必填字段 'chapters'。")
+        raw_chs = item["chapters"]
+        if not isinstance(raw_chs, list):
+            raise JudgeResponseError(
+                f"{item_ctx}: 'chapters' 必须为整数列表，实际得到 {type(raw_chs).__name__}。"
+            )
+        norm_chs: List[int] = []
+        for c_idx, ch in enumerate(raw_chs):
+            if isinstance(ch, bool) or not isinstance(ch, int) or ch < 1:
+                raise JudgeResponseError(
+                    f"{item_ctx}.chapters[{c_idx}] 必须为正整数，实际得到 {ch!r}。"
+                )
+            norm_chs.append(ch)
+        if status == "FAIL" and len(norm_chs) == 0:
+            raise JudgeResponseError(
+                f"{item_ctx}: status='FAIL' 时 'chapters' 必须为非空正整数列表。"
+            )
+
+        evidence = _require_non_empty_str(item, "evidence", context=item_ctx)
+
+        if status == "FAIL":
+            repair_hint = _require_non_empty_str(item, "repair_hint", context=item_ctx)
+        else:
+            if "repair_hint" in item:
+                raw_hint = item["repair_hint"]
+                if not isinstance(raw_hint, str):
+                    raise JudgeResponseError(
+                        f"{item_ctx}: 字段 'repair_hint' 必须为字符串，实际得到 {raw_hint!r}。"
+                    )
+                repair_hint = raw_hint.strip()
+            else:
+                repair_hint = ""
+
+        validated_by_id[check_id] = {
+            "id": check_id,
+            "status": status,
+            "chapters": norm_chs,
+            "evidence": evidence,
+            "repair_hint": repair_hint,
+        }
+
+    missing_ids = [cid for cid in VALID_VOLUME_HEALTH_CHECK_IDS if cid not in validated_by_id]
+    if missing_ids:
+        raise JudgeResponseError(
+            f"{context}: checks 缺少必填体检项 {missing_ids}（必须完整覆盖全部 6 项）。"
+        )
+
+    ordered_checks = [validated_by_id[cid] for cid in VALID_VOLUME_HEALTH_CHECK_IDS]
+    failed_ids = [c["id"] for c in ordered_checks if c["status"] == "FAIL"]
+    if failed_ids and verdict != "FAIL":
+        raise JudgeResponseError(
+            f"{context}: 存在 FAIL 项 {failed_ids}，但顶层 verdict={verdict!r}（必须为 'FAIL'）。"
+        )
+    if not failed_ids and verdict != "PASS":
+        raise JudgeResponseError(
+            f"{context}: 全部 6 项均为 PASS，但顶层 verdict={verdict!r}（必须为 'PASS'）。"
+        )
+
+    return verdict, ordered_checks, summary
 
 
 class PairwiseJudge:
@@ -580,6 +706,183 @@ class PairwiseJudge:
 
         raise JudgeResponseError(f"{ctx_label}: exhausted contract retries.")
 
+    def volume_health_review(
+        self,
+        chapters: Sequence[str],
+        volume_card: Mapping[str, Any],
+        *,
+        prev_volume_card: Optional[Mapping[str, Any]] = None,
+        cast_cards: Optional[Sequence[Mapping[str, Any]]] = None,
+        deterministic_summary: Optional[Mapping[str, Any]] = None,
+    ) -> VolumeHealthJudgeResult:
+        """Run end-of-volume 6-point semantic health review against ``volume_card``."""
+        if (
+            chapters is None
+            or isinstance(chapters, (str, bytes, bytearray))
+            or not isinstance(chapters, SequenceABC)
+            or len(chapters) == 0
+        ):
+            raise ValueError("chapters must be a non-empty sequence of chapter texts.")
+        cleaned_chapters: List[str] = []
+        for idx, ch_text in enumerate(chapters):
+            if not isinstance(ch_text, str) or not ch_text.strip():
+                raise ValueError(f"chapters[{idx}] must be a non-empty string.")
+            cleaned_chapters.append(ch_text.strip())
+
+        if volume_card is None or not isinstance(volume_card, MappingABC) or len(volume_card) == 0:
+            raise ValueError("volume_card must be a non-empty Mapping.")
+        if prev_volume_card is not None and not isinstance(prev_volume_card, MappingABC):
+            raise ValueError(
+                f"prev_volume_card must be a Mapping or None, got {type(prev_volume_card).__name__}."
+            )
+        cleaned_cast_cards: Optional[List[Dict[str, Any]]] = None
+        if cast_cards is not None:
+            if isinstance(cast_cards, (str, bytes, bytearray)) or not isinstance(
+                cast_cards, SequenceABC
+            ):
+                raise ValueError("cast_cards must be a sequence of Mapping objects or None.")
+            cleaned_cast_cards = []
+            for idx, card in enumerate(cast_cards):
+                if not isinstance(card, MappingABC):
+                    raise ValueError(
+                        f"cast_cards[{idx}] must be a Mapping, got {type(card).__name__}."
+                    )
+                cleaned_cast_cards.append(dict(card))
+        if deterministic_summary is not None and not isinstance(deterministic_summary, MappingABC):
+            raise ValueError(
+                "deterministic_summary must be a Mapping or None, "
+                f"got {type(deterministic_summary).__name__}."
+            )
+
+        system_prompt = (
+            "你是资深网文连载总编，正在执行【卷末六项硬体检】终审。本卷体检不通过将直接锁卷、禁止开下一卷。\n"
+            "请对照本卷卷卡（volume_card）、上一卷卷卡（如有）、本卷角色卡与确定性核验摘要，逐一审查以下全部 6 项（严禁遗漏、严禁重复）：\n"
+            '- "VH_01_NO_ROUTINE_REPEAT"：无套路重复与同质化（严查与上一卷及本卷前文桥段/爽点/冲突结构复读、换皮重复或触犯上一卷禁用套路）\n'
+            '- "VH_02_FORESHADOW_AND_REWARD"：伏笔闭环与阶段回报（检查本卷应埋/应回收伏笔是否自然落地，高潮与阶段回报是否真正兑现）\n'
+            '- "VH_03_CHARACTER_AND_ARC"：人物弧光与退场边界（主角与核心配角是否具备独立目标/缺陷/成长弧光，避免工具人化，且前卷退场角色不越界）\n'
+            '- "VH_04_CORE_FLAVOR_QUOTA"：核心卖点风味与配额（是否紧扣主线核心卖点与本卷风味/案件配额，无跑偏、无单一词垄断、无注水）\n'
+            '- "VH_05_THREE_ACT_AND_HOOK"：三幕结构与卷末钩子（本卷是否起承转合完整、高潮发力，并在卷尾留足进入下一卷的强钩子与主线推进）\n'
+            '- "VH_06_LEDGER_AND_DEBT_MATH"：数值账本与代价逻辑（资金/粉丝/债务/战力与金手指代价、限制是否逻辑自洽，无凭空暴涨或吃书）\n'
+            "硬性一致约束：\n"
+            '- "checks" 必须恰好包含上述全部 6 个 id，无遗漏、无重复；\n'
+            '- 每项必须含 "id", "status" ("PASS"|"FAIL"), "chapters" (正整数列表：FAIL 时必填非空，PASS 时允许 []), '
+            '"evidence" (非空，控制在 120 字以内), "repair_hint" (FAIL 时必填具体可执行返修指引，PASS 时可为空字符串 "")；\n'
+            '- 只要任意 1 项 status=="FAIL"，顶层 "verdict" 必须为 "FAIL"；全部 6 项均为 "PASS" 时，顶层 "verdict" 必须为 "PASS"。\n'
+            "只允许输出严格 JSON 对象（summary 控制在 180 字以内，JSON 字符串值内部严禁使用英文双引号 \"，引用字词一律用中文单引号 ‘’，保证 JSON 完整闭合）：\n"
+            '{"verdict": "PASS"|"FAIL", '
+            '"checks": [{"id": "VH_01_NO_ROUTINE_REPEAT", "status": "PASS"|"FAIL", '
+            '"chapters": [int, ...], "evidence": "具体依据（非空）", "repair_hint": "返修指引（FAIL时非空）"}], '
+            '"summary": "整卷终审总结（非空）"}'
+        )
+
+        card_json = json.dumps(dict(volume_card), ensure_ascii=False, indent=2)
+        sections: List[str] = [f"【本卷卷卡】\n{card_json}"]
+        if prev_volume_card is not None:
+            prev_json = json.dumps(dict(prev_volume_card), ensure_ascii=False, indent=2)
+            sections.append(f"【上一卷卷卡（用于对照去重与承接）】\n{prev_json}")
+        if cleaned_cast_cards is not None:
+            cast_json = json.dumps(cleaned_cast_cards, ensure_ascii=False, indent=2)
+            sections.append(f"【本卷相关角色卡】\n{cast_json}")
+        if deterministic_summary is not None:
+            det_json = json.dumps(dict(deterministic_summary), ensure_ascii=False, indent=2)
+            sections.append(f"【确定性硬核验摘要】\n{det_json}")
+
+        raw_start = volume_card.get("chapter_start")
+        start_ch = (
+            int(raw_start)
+            if isinstance(raw_start, int) and not isinstance(raw_start, bool) and raw_start >= 1
+            else 1
+        )
+        chapters_block = "\n\n".join(
+            f"--- 第 {start_ch + idx} 章（本卷第 {idx + 1} 章样本）---\n{txt}"
+            for idx, txt in enumerate(cleaned_chapters)
+        )
+        sections.append(f"【待审本卷章节（共 {len(cleaned_chapters)} 章）】\n{chapters_block}")
+        sections.append(
+            "请严格输出包含全部 6 项体检结果的 JSON（任一项 FAIL 则顶层 verdict 必须为 FAIL，全 PASS 则必须为 PASS）。"
+        )
+        base_user_prompt = "\n\n".join(sections)
+
+        raw_vol_index = volume_card.get("index")
+        vol_meta: Dict[str, Any] = {}
+        if isinstance(raw_vol_index, int) and not isinstance(raw_vol_index, bool) and raw_vol_index >= 1:
+            vol_meta["volume_index"] = raw_vol_index
+
+        ctx_label = "volume_health_review"
+        max_contract_attempts = 2
+        retry_hint = ""
+        for contract_attempt in range(1, max_contract_attempts + 1):
+            user_prompt = (
+                base_user_prompt if not retry_hint else f"{base_user_prompt}\n\n{retry_hint}"
+            )
+            raw_content = self._invoke_judge(
+                request_id=(
+                    "volume-health-review"
+                    if contract_attempt == 1
+                    else f"volume-health-review-fix{contract_attempt - 1}"
+                ),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                chapter=len(cleaned_chapters),
+                attempt=contract_attempt,
+                max_tokens=8192,
+                extra_meta={
+                    "judge_task": "volume_health_review",
+                    "chapter_count": len(cleaned_chapters),
+                    "contract_attempt": contract_attempt,
+                    **vol_meta,
+                },
+            )
+
+            try:
+                parsed = _parse_strict_json_object(raw_content, context=ctx_label)
+            except JudgeResponseError as parse_exc:
+                if contract_attempt < max_contract_attempts:
+                    logger.warning(
+                        "%s malformed JSON on attempt %d/%d (%s); retrying once with explicit JSON syntax correction.",
+                        ctx_label,
+                        contract_attempt,
+                        max_contract_attempts,
+                        parse_exc,
+                    )
+                    retry_hint = (
+                        f"【JSON语法纠偏重审】你上一次输出不是合法 JSON：{parse_exc}\n"
+                        '请重新输出严格合法的 JSON 对象，字符串值内部严禁包含未转义英文双引号 "（引用字词请改用中文单引号 ‘’）。'
+                    )
+                    continue
+                raise
+
+            try:
+                verdict, ordered_checks, summary = _validate_volume_health_payload(
+                    parsed, context=ctx_label
+                )
+            except JudgeResponseError as contract_exc:
+                if contract_attempt < max_contract_attempts:
+                    logger.warning(
+                        "%s contract violation on attempt %d/%d (%s); retrying once with explicit schema correction.",
+                        ctx_label,
+                        contract_attempt,
+                        max_contract_attempts,
+                        contract_exc,
+                    )
+                    retry_hint = (
+                        f"【格式纠偏重审】你上一次输出触发契约违规：{contract_exc}\n"
+                        f"必须完整返回全部 6 项体检 id（{list(VALID_VOLUME_HEALTH_CHECK_IDS)}）且无重复；"
+                        '任意一项 status=="FAIL" 时必须填写非空正整数 chapters 与非空 repair_hint，且顶层 verdict 必须为 "FAIL"；'
+                        '全部 6 项为 "PASS" 时顶层 verdict 必须为 "PASS"。只输出严格 JSON。'
+                    )
+                    continue
+                raise
+
+            return VolumeHealthJudgeResult(
+                verdict=verdict,
+                checks=ordered_checks,
+                summary=summary,
+                raw_response=raw_content,
+            )
+
+        raise JudgeResponseError(f"{ctx_label}: exhausted contract retries.")
+
 
 __all__ = [
     "ArcVerdict",
@@ -590,4 +893,7 @@ __all__ = [
     "VALID_ARC_PROBLEM_TYPES",
     "VALID_ARC_VERDICTS",
     "VALID_PAIRWISE_RAW_WINNERS",
+    "VALID_VOLUME_HEALTH_CHECK_IDS",
+    "VALID_VOLUME_HEALTH_STATUSES",
+    "VolumeHealthJudgeResult",
 ]
