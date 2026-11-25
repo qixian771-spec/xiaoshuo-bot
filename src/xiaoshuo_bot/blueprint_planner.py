@@ -51,6 +51,7 @@ from .planner import (
     find_ledger_overdrafts,
     find_stale_location_runs,
 )
+from .volume_health import assert_previous_volume_unlocked
 
 
 MIN_EVENTS_PER_CHAPTER = 3
@@ -135,6 +136,7 @@ class BlueprintExpansionResult:
     added_chapters: List[int]
     outline_path: Path
     attempts_used: int
+    planner_model: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -144,6 +146,7 @@ class BlueprintExpansionResult:
             "added_chapters": list(self.added_chapters),
             "outline_path": str(self.outline_path),
             "attempts_used": self.attempts_used,
+            "planner_model": self.planner_model,
         }
 
 
@@ -1150,11 +1153,12 @@ def _build_blueprint_expansion_prompts(
                 f"- {r.ledger_key}（{r.unit}）：policy={r.policy}，当前={_fmt_num(cur)}（不设 hard_max，但严禁负余额透支）"
             )
 
-    # 3. Character table with latest current_role & status + exited markers
+    # 3. Character table with latest current_role & status + exited markers + active growth arcs
     char_states = _simulate_character_states(project, existing_before, snapshot=snapshot)
     prior_exited = _collect_prior_exited_characters(blueprint, volume)
     cast_by_id = {m.id: m for m in blueprint.cast}
     char_lines: List[str] = []
+    has_supporting_growth_arcs = False
     for cid, char in project.characters.items():
         cs = char_states.get(cid)
         cur_role = (cs.current_role if cs and cs.current_role else char.role)
@@ -1170,10 +1174,37 @@ def _build_blueprint_expansion_prompts(
             ban_tag = f" 【已退场禁实时出场：{prior_exited[cid]}】"
         elif status == "deceased":
             ban_tag = f" 【已死亡禁实时出场（Ch.{cs.deceased_chapter if cs else '?'}）】"
+
+        growth_parts: List[str] = []
+        if (
+            member is not None
+            and cid not in prior_exited
+            and status != "deceased"
+            and member.first_volume <= volume.index
+        ):
+            if member.independent_goal and member.independent_goal.strip():
+                growth_parts.append(f"独立目标={member.independent_goal.strip()}")
+            if member.flaw_or_setback and member.flaw_or_setback.strip():
+                growth_parts.append(f"弱点/受挫线={member.flaw_or_setback.strip()}")
+            clean_stage_arcs = [
+                stage.strip() for stage in (member.stage_arcs or []) if stage and stage.strip()
+            ]
+            if clean_stage_arcs:
+                growth_parts.append(f"阶段成长弧={' / '.join(clean_stage_arcs)}")
+        if growth_parts:
+            has_supporting_growth_arcs = True
+        growth_suffix = f"｜{'；'.join(growth_parts)}" if growth_parts else ""
+
         char_lines.append(
             f"- {cid}（{char.name}）｜current_role={cur_role}｜status={status}"
             + (f"｜{lifecycle}" if lifecycle else "")
+            + growth_suffix
             + ban_tag
+        )
+    if has_supporting_growth_arcs:
+        char_lines.append(
+            "- 【重要配角成长线硬要求】：上述带有独立目标、弱点/受挫线与阶段成长弧的活跃角色，"
+            "必须在本批章纲中安排独立的个人目标推进与成长/受挫节拍，严禁写成纯工具人。"
         )
 
     # 4. Assets table (with latest simulated locations/holders/conditions)
@@ -1237,6 +1268,70 @@ def _build_blueprint_expansion_prompts(
         if volume.map is not None
         else "沿用当前卷主地图（请细分子空间 location_id，严禁连续超过 2 章相同）"
     )
+
+    clean_forbidden = [
+        item.strip()
+        for item in (volume.forbidden_from_prev_volume or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    vol_extra_lines: List[str] = []
+    if volume.antagonist_motive and volume.antagonist_motive.strip():
+        vol_extra_lines.append(f"- 本卷反派核心动机：{volume.antagonist_motive.strip()}")
+    if volume.new_gameplay and volume.new_gameplay.strip():
+        vol_extra_lines.append(f"- 本卷全新核心玩法：{volume.new_gameplay.strip()}")
+    if volume.mainline_step and volume.mainline_step.strip():
+        vol_extra_lines.append(f"- 本卷主线推进步：{volume.mainline_step.strip()}")
+    quota_parts: List[str] = []
+    if volume.daily_case_quota is not None:
+        quota_parts.append(f"日常案配额={volume.daily_case_quota}（daily_case_quota={volume.daily_case_quota}）")
+    if volume.fugitive_case_quota is not None:
+        quota_parts.append(f"通缉案配额={volume.fugitive_case_quota}（fugitive_case_quota={volume.fugitive_case_quota}）")
+    if quota_parts:
+        vol_extra_lines.append(f"- 本卷日常案/通缉案风味配额：{'；'.join(quota_parts)}")
+    if clean_forbidden:
+        vol_extra_lines.append(f"- 本卷明令禁用套路：{'；'.join(clean_forbidden)}")
+    vol_extra_block = ("\n" + "\n".join(vol_extra_lines)) if vol_extra_lines else ""
+
+    prev_volume_blacklist_block = ""
+    if volume.index > 1:
+        prev_vol = next(
+            (v for v in blueprint.volumes if v.index == volume.index - 1),
+            None,
+        )
+        blacklist_lines: List[str] = []
+        if prev_vol is not None:
+            blacklist_lines.append(f"- 上一卷（第 {prev_vol.index} 卷）：《{prev_vol.title}》")
+            if prev_vol.cool_point_modes:
+                blacklist_lines.append(
+                    f"- 上一卷核心爽点套路（本卷严禁复刻）：{'；'.join(prev_vol.cool_point_modes)}"
+                )
+            if prev_vol.new_gameplay and prev_vol.new_gameplay.strip():
+                blacklist_lines.append(
+                    f"- 上一卷核心玩法（本卷严禁重复）：{prev_vol.new_gameplay.strip()}"
+                )
+            if prev_vol.antagonist_motive and prev_vol.antagonist_motive.strip():
+                blacklist_lines.append(
+                    f"- 上一卷反派动机（本卷严禁雷同）：{prev_vol.antagonist_motive.strip()}"
+                )
+            if prev_vol.map is not None:
+                blacklist_lines.append(
+                    f"- 上一卷主地图（本卷严禁原地复用）：{prev_vol.map.location_id}（{prev_vol.map.name}）"
+                )
+        if clean_forbidden:
+            blacklist_lines.append(
+                f"- 本卷明令禁用套路（forbidden_from_prev_volume）：{'；'.join(clean_forbidden)}"
+            )
+        if blacklist_lines:
+            blacklist_lines.append(
+                "- 强制约束：本卷章纲严禁重复上一卷的玩法、反派动机、核心爽点套路或旧主舞台模式，"
+                "必须严格按照本卷新玩法与新主线推进步展开。"
+            )
+            prev_volume_blacklist_block = (
+                "\n### 【防套路重复黑名单（严禁复刻上一卷）】\n"
+                + "\n".join(blacklist_lines)
+                + "\n"
+            )
+
     transition_block = ""
     if is_volume_transition:
         transition_block = (
@@ -1297,7 +1392,9 @@ def _build_blueprint_expansion_prompts(
         f"- 必出名场面：{' ｜ '.join(volume.key_scenes)}\n"
         f"- 本卷进场：{volume.enters or '无'} ｜ 本卷退场：{exits_desc}\n"
         f"- 本卷地图：{map_desc}\n"
-        f"- 本卷埋设伏笔：{vol_plant_desc or '无'} ｜ 本卷回收伏笔：{vol_payoff_desc or '无'}\n"
+        f"- 本卷埋设伏笔：{vol_plant_desc or '无'} ｜ 本卷回收伏笔：{vol_payoff_desc or '无'}"
+        f"{vol_extra_block}\n"
+        f"{prev_volume_blacklist_block}"
         f"{transition_block}\n"
         f"### 金手指规则、代价与本卷技法\n"
         + "\n".join(gf_lines)
@@ -1377,6 +1474,8 @@ def expand_blueprint_chapters(
     max_retries: int = 3,
     snapshot_path: Optional[str | Path] = None,
     editorial_notes: str = "",
+    audit_dir: Optional[str | Path] = None,
+    require_prev_volume_health: bool = True,
 ) -> BlueprintExpansionResult:
     """Expand a single-volume chapter span from BookBlueprint into project outline with strict verification."""
     if not isinstance(provider, (LLMProvider, RoleModelRouter)):
@@ -1385,6 +1484,18 @@ def expand_blueprint_chapters(
         )
     if not _is_strict_int(max_retries) or max_retries < 1:
         raise ValueError(f"max_retries must be an integer >= 1, got {max_retries!r}")
+    if not isinstance(require_prev_volume_health, bool):
+        raise ValueError(
+            f"require_prev_volume_health must be a bool, got {require_prev_volume_health!r}"
+        )
+    if audit_dir is not None:
+        if isinstance(audit_dir, str):
+            if not audit_dir.strip():
+                raise ValueError("audit_dir must be a non-empty path.")
+        elif not isinstance(audit_dir, Path):
+            raise ValueError(
+                f"audit_dir must be str, Path, or None, got {type(audit_dir).__name__}"
+            )
 
     root = Path(project_dir).resolve()
     project = load_project(root)
@@ -1397,6 +1508,15 @@ def expand_blueprint_chapters(
     blueprint = load_blueprint(bp_file)
 
     volume = resolve_target_volume(blueprint, start_chapter, end_chapter)
+
+    # Hard volume health lock gate BEFORE any LLM call (0 tokens wasted on locked/missing prior volume)
+    if volume.index > 1 and require_prev_volume_health:
+        if audit_dir is not None:
+            assert_previous_volume_unlocked(audit_dir, volume.index)
+        else:
+            default_audit_dir = root / "output" / "audit"
+            if (default_audit_dir / "volume_locks.json").exists():
+                assert_previous_volume_unlocked(default_audit_dir, volume.index)
 
     effective_snapshot: Optional[WorldStateSnapshot] = None
     if snapshot_path is not None:
@@ -1459,6 +1579,7 @@ def expand_blueprint_chapters(
     last_errors: List[str] = []
     validated_scenes: Optional[List[Mapping[str, Any]]] = None
     attempts_used = 0
+    planner_model = ""
 
     for attempt in range(1, max_retries + 1):
         attempts_used = attempt
@@ -1484,6 +1605,7 @@ def expand_blueprint_chapters(
             max_tokens=STAGE_SCENES_MAX_TOKENS,
             metadata={
                 "stage": "blueprint_expand",
+                "planner_role": "volume_planner",
                 "project_id": project.meta.project_id,
                 "volume_index": volume.index,
                 "start_chapter": start_chapter,
@@ -1492,6 +1614,10 @@ def expand_blueprint_chapters(
             },
         )
         resp = _invoke_planner(provider, req)
+        resp_model = str(resp.model or "").strip()
+        if not resp_model and isinstance(provider, RoleModelRouter):
+            resp_model = str(provider.get_active_model("planner") or "").strip()
+        planner_model = resp_model
         try:
             payload = _parse_json_payload(
                 resp.content,
@@ -1556,6 +1682,7 @@ def expand_blueprint_chapters(
         added_chapters=added_chapters,
         outline_path=outline_path,
         attempts_used=attempts_used,
+        planner_model=planner_model,
     )
 
 
