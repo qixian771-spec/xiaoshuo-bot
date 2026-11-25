@@ -381,6 +381,7 @@ cloud_tests=(
   tests/test_strong_planner_routing.py
   tests/test_u4_volume_planner_lock.py
   tests/test_u5_engine_volume_gate.py
+  tests/test_u6_m2_e2e_volume_lifecycle.py
 )
 
 for tf in "${cloud_tests[@]}"; do
