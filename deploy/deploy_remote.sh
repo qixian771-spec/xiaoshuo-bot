@@ -379,6 +379,7 @@ cloud_tests=(
   tests/test_factory_v2_upgrades.py
   tests/test_volume_health.py
   tests/test_strong_planner_routing.py
+  tests/test_u4_volume_planner_lock.py
   tests/test_u5_engine_volume_gate.py
 )
 
