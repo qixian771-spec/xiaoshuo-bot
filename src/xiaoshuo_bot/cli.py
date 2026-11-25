@@ -10,11 +10,12 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
 from .backup import export_backup, git_incremental_backup, import_backup, verify_backup
+from .blueprint import load_blueprint
 from .checker import AITicChecker
 from .compiler import PromptCompiler
 from .contracts import (
@@ -29,7 +30,7 @@ from .engine import NovelGenerationEngine
 from .evolution import MotifWeightStore
 from .exporter import export_project_bundle
 from .genres import get_genre, list_genres
-from .judge import _check_same_or_same_family_models
+from .judge import PairwiseJudge, _check_same_or_same_family_models
 from .llm import (
     AnthropicProvider,
     CPAManagementClient,
@@ -62,6 +63,7 @@ from .transcreator import (
     build_glossary,
     export_english_serialization_bundle,
 )
+from .volume_health import VolumeHealthReport, run_volume_health_check
 
 _CHAPTER_FILE_RE = re.compile(r"^chapter_(\d+)\.txt$")
 
@@ -1447,6 +1449,319 @@ def _cmd_pilot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_volume_writer_model(
+    chapters_dir: Path,
+    chapter_end: int,
+    explicit_writer_model: Optional[str] = None,
+) -> str:
+    if explicit_writer_model is not None and str(explicit_writer_model).strip():
+        return str(explicit_writer_model).strip()
+    meta_path = chapters_dir / f"chapter_{chapter_end:04d}.meta.json"
+    if not meta_path.is_file():
+        raise LLMConfigurationError(
+            f"Missing --writer-model and end-of-volume chapter metadata file '{meta_path}' "
+            f"does not exist; refusing to guess writer_model."
+        )
+    try:
+        meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LLMConfigurationError(
+            f"Failed to read writer_model from '{meta_path}': {exc}"
+        ) from exc
+    if not isinstance(meta_data, Mapping):
+        raise LLMConfigurationError(
+            f"Invalid chapter metadata JSON at '{meta_path}': expected a JSON object."
+        )
+    candidate = str(meta_data.get("writer_model") or meta_data.get("model") or "").strip()
+    if not candidate or candidate.lower() == "checkpoint":
+        raise LLMConfigurationError(
+            f"Missing writer_model/model in '{meta_path}' and --writer-model was not provided; "
+            f"refusing to guess writer_model."
+        )
+    return candidate
+
+
+def execute_volume_check(
+    *,
+    project_dir: str | Path,
+    output_dir: str | Path,
+    volume: int,
+    blueprint_path: Optional[str | Path] = None,
+    writer_model: Optional[str] = None,
+    judge: Optional[PairwiseJudge] = None,
+    judge_provider: Optional[LLMProvider] = None,
+    judge_model: Optional[str] = None,
+    core_selling_point_keywords: Optional[Sequence[str]] = None,
+) -> VolumeHealthReport:
+    """Strictly validate volume artifacts and execute the 6-point end-of-volume health check."""
+    if isinstance(volume, bool) or not isinstance(volume, int) or volume < 1:
+        raise ValueError(f"volume must be an int >= 1, got {volume!r}.")
+
+    proj_path = Path(project_dir).resolve()
+    out_path = Path(output_dir).resolve()
+    if not out_path.is_dir():
+        raise FileNotFoundError(f"Output directory does not exist: '{out_path}'.")
+
+    bp_path = (
+        Path(blueprint_path).resolve()
+        if blueprint_path is not None and str(blueprint_path).strip()
+        else (proj_path / "blueprint.yaml")
+    )
+    if not bp_path.is_file():
+        raise FileNotFoundError(f"Blueprint file does not exist: '{bp_path}'.")
+
+    project = load_project(proj_path)
+    blueprint = load_blueprint(bp_path)
+
+    vol_spec = next((v for v in blueprint.volumes if v.index == volume), None)
+    if vol_spec is None:
+        available = [v.index for v in blueprint.volumes]
+        raise ValueError(
+            f"Volume {volume} not found in blueprint '{bp_path}' (available volumes: {available})."
+        )
+    prev_vol = (
+        next((v for v in blueprint.volumes if v.index == volume - 1), None)
+        if volume > 1
+        else None
+    )
+
+    chapters_dir = out_path / "chapters"
+    snapshots_dir = out_path / "snapshots"
+    audit_dir = out_path / "audit"
+    if not chapters_dir.is_dir():
+        raise FileNotFoundError(f"Chapters directory does not exist: '{chapters_dir}'.")
+    if not snapshots_dir.is_dir():
+        raise FileNotFoundError(f"Snapshots directory does not exist: '{snapshots_dir}'.")
+
+    missing_chapters: List[int] = []
+    vol_chapters: List[Tuple[int, str]] = []
+    for ch_no in range(vol_spec.chapter_start, vol_spec.chapter_end + 1):
+        ch_path = resolve_chapter_path(chapters_dir, ch_no)
+        if ch_path is None or not ch_path.is_file():
+            missing_chapters.append(ch_no)
+            continue
+        text = ch_path.read_text(encoding="utf-8").strip()
+        if not text:
+            raise ValueError(f"Chapter {ch_no:04d} file is empty: '{ch_path}'.")
+        vol_chapters.append((ch_no, text))
+    if missing_chapters:
+        raise FileNotFoundError(
+            f"Volume {volume} is incomplete: missing chapter file(s) {missing_chapters} "
+            f"in '{chapters_dir}' (required range {vol_spec.chapter_start}..{vol_spec.chapter_end})."
+        )
+
+    snap_path = snapshots_dir / f"chapter_{vol_spec.chapter_end:04d}_after.json"
+    if not snap_path.is_file():
+        raise FileNotFoundError(
+            f"Missing end-of-volume world-state snapshot for volume {volume}: '{snap_path}'."
+        )
+    try:
+        world_state_snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Invalid world-state snapshot JSON at '{snap_path}': {exc}"
+        ) from exc
+    if not isinstance(world_state_snapshot, Mapping):
+        raise ValueError(
+            f"World-state snapshot at '{snap_path}' must be a JSON object, "
+            f"got {type(world_state_snapshot).__name__}."
+        )
+
+    prior_chapters: List[Tuple[int, str]] = []
+    if prev_vol is not None:
+        for ch_no in range(prev_vol.chapter_start, prev_vol.chapter_end + 1):
+            prev_path = resolve_chapter_path(chapters_dir, ch_no)
+            if prev_path is not None and prev_path.is_file():
+                prev_text = prev_path.read_text(encoding="utf-8").strip()
+                if prev_text:
+                    prior_chapters.append((ch_no, prev_text))
+
+    if judge is not None:
+        if not isinstance(judge, PairwiseJudge):
+            raise ValueError(
+                f"judge must be a PairwiseJudge instance, got {type(judge).__name__}."
+            )
+        effective_judge = judge
+    else:
+        resolved_writer_model = _resolve_volume_writer_model(
+            chapters_dir,
+            vol_spec.chapter_end,
+            explicit_writer_model=writer_model,
+        )
+        if judge_provider is None:
+            raise LLMConfigurationError(
+                "Either judge (PairwiseJudge) or judge_provider + judge_model must be provided."
+            )
+        resolved_judge_model = str(
+            judge_model or getattr(judge_provider, "model", "") or ""
+        ).strip()
+        if not resolved_judge_model:
+            raise LLMConfigurationError(
+                "Missing judge_model for volume-check; specify --model, --judge-slot, "
+                "or configure the WorkBuddy model catalog."
+            )
+        effective_judge = PairwiseJudge(
+            judge_provider,
+            judge_model=resolved_judge_model,
+            writer_model=resolved_writer_model,
+        )
+
+    return run_volume_health_check(
+        volume_spec=vol_spec,
+        chapters=vol_chapters,
+        world_state_snapshot=world_state_snapshot,
+        project=project,
+        blueprint=blueprint,
+        judge=effective_judge,
+        audit_dir=audit_dir,
+        prev_volume_spec=prev_vol,
+        core_selling_point_keywords=core_selling_point_keywords,
+        prior_volume_chapters=prior_chapters or None,
+    )
+
+
+def _format_volume_health_table(report: VolumeHealthReport) -> str:
+    lines: List[str] = [
+        f"=== 卷末六项体检报告 · 第 {report.volume_index} 卷《{report.volume_title}》"
+        f"（第 {report.chapter_start}-{report.chapter_end} 章） ===",
+        f"结论: {report.verdict} | 锁卷状态: {report.lock_state}",
+        f"裁判模型: {report.judge_model} | 写作模型: {report.writer_model}",
+        "-" * 96,
+        f"{'体检项 ID':<28} | {'结论':<4} | {'涉及章号':<14} | 返修建议",
+        "-" * 96,
+    ]
+    for item in report.checks:
+        chs_str = ",".join(str(c) for c in item.chapters) if item.chapters else "-"
+        hint_str = item.repair_hint.strip() if item.repair_hint else "-"
+        lines.append(
+            f"{item.id:<28} | {item.status:<4} | {chs_str:<14} | {hint_str}"
+        )
+    lines.extend(
+        [
+            "-" * 96,
+            f"总结: {report.summary}",
+            f"锁卷状态: {report.lock_state}",
+            f"体检报告: {report.report_file}",
+            f"锁表文件: {report.lock_file}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _cmd_volume_check(args: argparse.Namespace) -> int:
+    if isinstance(args.volume, bool) or not isinstance(args.volume, int) or args.volume < 1:
+        raise ValueError(f"--volume must be an int >= 1, got {args.volume!r}.")
+
+    raw_core = getattr(args, "core_keywords", None)
+    core_keywords: Optional[List[str]] = None
+    if raw_core is not None:
+        parsed_kw = _split_csv(raw_core)
+        if not parsed_kw:
+            raise ValueError("--core-keywords must contain at least one non-empty keyword.")
+        core_keywords = parsed_kw
+
+    wb_catalog = WorkBuddyModelCatalog.from_env(
+        overrides={
+            WORKBUDDY_SLOT_HY4_FLASH: getattr(args, "workbuddy_hy4_flash", None),
+            WORKBUDDY_SLOT_HY4: getattr(args, "workbuddy_hy4", None),
+            WORKBUDDY_SLOT_DEEPSEEK_V4_1_FLASH: getattr(args, "workbuddy_deepseek_v4_1_flash", None),
+            WORKBUDDY_SLOT_MIMO_V2_6_PRO: getattr(args, "workbuddy_mimo_v2_6_pro", None),
+        }
+    )
+
+    judge_slot = str(getattr(args, "judge_slot", None) or "").strip()
+    explicit_model = str(getattr(args, "model", None) or "").strip()
+    provider_name = str(getattr(args, "provider", "openai") or "openai").strip().lower()
+
+    out_dir = Path(args.output_dir).resolve()
+    judge_provider: Optional[LLMProvider] = None
+    judge_model: Optional[str] = None
+
+    def _build_vc_ledger() -> UsageBudgetLedger:
+        budget_raw = getattr(args, "daily_budget_limit", None)
+        if budget_raw is None:
+            env_budget = os.environ.get("XIAOSHUO_DAILY_BUDGET_LIMIT", "").strip()
+            budget_limit = float(env_budget) if env_budget else None
+        else:
+            budget_limit = float(budget_raw)
+        chapter_raw = getattr(args, "daily_chapter_limit", None)
+        if chapter_raw is None:
+            env_chap = os.environ.get("XIAOSHUO_DAILY_CHAPTER_LIMIT", "").strip()
+            chapter_limit = int(env_chap) if env_chap else None
+        else:
+            chapter_limit = int(chapter_raw)
+        ledger_path = _resolve_env_or_arg(
+            getattr(args, "ledger_path", None),
+            "XIAOSHUO_LEDGER_PATH",
+        ) or str(out_dir / "audit" / "volume_check_usage_ledger.json")
+        return UsageBudgetLedger(
+            daily_budget_limit=budget_limit,
+            daily_chapter_limit=chapter_limit,
+            state_path=ledger_path,
+        )
+
+    if judge_slot:
+        if wb_catalog is None:
+            raise LLMConfigurationError(
+                "--judge-slot requires WorkBuddy model catalog configuration "
+                "(set WORKBUDDY_MODEL_* environment variables or --workbuddy-* flags)."
+            )
+        judge_provider, judge_model = _build_workbuddy_slot_provider(
+            args,
+            judge_slot,
+            role="critic",
+            catalog=wb_catalog,
+            ledger=_build_vc_ledger(),
+        )
+    elif wb_catalog is not None and not explicit_model and provider_name == "openai":
+        strong_model = wb_catalog.strong_planner_model()
+        slot_map = wb_catalog.slot_to_model()
+        strong_slot = next(
+            (slot for slot, model_id in slot_map.items() if model_id == strong_model),
+            WORKBUDDY_SLOT_MIMO_V2_6_PRO,
+        )
+        judge_provider, judge_model = _build_workbuddy_slot_provider(
+            args,
+            strong_slot,
+            role="critic",
+            catalog=wb_catalog,
+            ledger=_build_vc_ledger(),
+        )
+    else:
+        judge_provider = _build_text_provider(args)
+        vendor_prefix = "ANTHROPIC" if provider_name == "anthropic" else "OPENAI"
+        judge_model = (
+            _resolve_env_or_arg(
+                getattr(args, "model", None),
+                "XIAOSHUO_MODEL",
+                f"{vendor_prefix}_MODEL",
+            )
+            or str(getattr(judge_provider, "model", "") or "").strip()
+            or None
+        )
+
+    try:
+        report = execute_volume_check(
+            project_dir=args.project,
+            output_dir=out_dir,
+            volume=args.volume,
+            blueprint_path=getattr(args, "blueprint", None),
+            writer_model=getattr(args, "writer_model", None),
+            judge_provider=judge_provider,
+            judge_model=judge_model,
+            core_selling_point_keywords=core_keywords,
+        )
+    finally:
+        if judge_provider is not None and hasattr(judge_provider, "close"):
+            judge_provider.close()
+
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(_format_volume_health_table(report))
+    return 0 if report.verdict == "PASS" else 2
+
+
 def _add_provider_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--provider",
@@ -1792,6 +2107,68 @@ def build_parser() -> argparse.ArgumentParser:
     p_pilot.add_argument("--daily-chapter-limit", type=int, help="Daily chapter count circuit breaker")
     p_pilot.add_argument("--ledger-path", help="UsageBudgetLedger JSON path")
     p_pilot.set_defaults(func=_cmd_pilot)
+
+    p_vc = sub.add_parser(
+        "volume-check",
+        help="Run end-of-volume 6-point health check and update volume lock registry",
+    )
+    p_vc.add_argument("--project", required=True, help="Path to novel project directory")
+    p_vc.add_argument(
+        "--output",
+        "--output-dir",
+        dest="output_dir",
+        required=True,
+        help="Output directory containing chapters/, snapshots/, and audit/",
+    )
+    p_vc.add_argument("--volume", type=int, required=True, help="Volume index (>= 1) to audit")
+    p_vc.add_argument(
+        "--blueprint",
+        help="Optional path to blueprint.yaml (defaults to <project>/blueprint.yaml)",
+    )
+    p_vc.add_argument(
+        "--writer-model",
+        help="Writer model ID for cross-family isolation (defaults to chapter_<end>.meta.json writer_model/model)",
+    )
+    p_vc.add_argument(
+        "--judge-slot",
+        help="Optional WorkBuddy slot name for judge (e.g. mimo_v2_6_pro; defaults to strong_planner_model when WorkBuddy catalog is configured and --model is omitted)",
+    )
+    p_vc.add_argument(
+        "--core-keywords",
+        help="Optional comma-separated core selling point keywords for VH_04 drift check",
+    )
+    p_vc.add_argument("--json", action="store_true", help="Print full VolumeHealthReport as JSON")
+    _add_provider_args(p_vc)
+    p_vc.add_argument("--cpa-url", help="CPA base/management URL fallback (env CPA_BASE_URL)")
+    p_vc.add_argument(
+        "--workbuddy-hy4-flash",
+        help="Configured CPA upstream ID for WorkBuddy Hy4 flash (env WORKBUDDY_MODEL_HY4_FLASH)",
+    )
+    p_vc.add_argument(
+        "--workbuddy-hy4",
+        help="Configured CPA upstream ID for WorkBuddy Hy4 manual-only (env WORKBUDDY_MODEL_HY4)",
+    )
+    p_vc.add_argument(
+        "--workbuddy-deepseek-v4-1-flash",
+        help="Configured CPA upstream ID for WorkBuddy DeepSeek-V4.1-Flash (env WORKBUDDY_MODEL_DEEPSEEK_V4_1_FLASH)",
+    )
+    p_vc.add_argument(
+        "--workbuddy-mimo-v2-6-pro",
+        help="Configured CPA upstream ID for WorkBuddy Xiaomi MiMo-V2.6-Pro (env WORKBUDDY_MODEL_MIMO_V2_6_PRO)",
+    )
+    p_vc.add_argument(
+        "--workbuddy-rate-limit-backoff",
+        help="Comma-separated HTTP 429 backoff retry delays in seconds (env WORKBUDDY_RATE_LIMIT_BACKOFF_SEC)",
+    )
+    p_vc.add_argument(
+        "--workbuddy-model-cooldown-sec",
+        type=float,
+        help="Cooldown seconds for a quota-exhausted WorkBuddy model (env WORKBUDDY_MODEL_COOLDOWN_SEC)",
+    )
+    p_vc.add_argument("--daily-budget-limit", type=float, help="Daily USD budget circuit breaker")
+    p_vc.add_argument("--daily-chapter-limit", type=int, help="Daily chapter count circuit breaker")
+    p_vc.add_argument("--ledger-path", help="UsageBudgetLedger JSON path")
+    p_vc.set_defaults(func=_cmd_volume_check)
 
     return parser
 
