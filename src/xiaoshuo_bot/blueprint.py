@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -13,7 +13,7 @@ from .namer import CharacterNamer, NamerError, to_toneless_pinyin
 
 SCALE_POLICIES: Tuple[str, ...] = ("bounded_realistic", "unbounded_fantasy")
 MIN_VOLUMES = 3
-MAX_VOLUMES = 12
+MAX_VOLUMES = 40
 MIN_CAST_COUNT = 2
 MIN_SELLING_POINTS = 1
 MIN_SELLING_POINT_KEYWORDS = 3
@@ -158,6 +158,64 @@ def _parse_str_list(
     for idx, item in enumerate(val):
         if not isinstance(item, str):
             errors.append(f"{path}[{idx}]: expected str, got {type(item).__name__}")
+        else:
+            out.append(item)
+    return out
+
+
+def _parse_optional_str(
+    mapping: Mapping[str, Any],
+    key: str,
+    path: str,
+    errors: List[str],
+) -> str:
+    if key not in mapping:
+        return ""
+    val = mapping[key]
+    if not isinstance(val, str):
+        errors.append(f"{path}: expected str, got {type(val).__name__}")
+        return ""
+    return val
+
+
+def _parse_optional_non_negative_int(
+    mapping: Mapping[str, Any],
+    key: str,
+    path: str,
+    errors: List[str],
+) -> Optional[int]:
+    if key not in mapping:
+        return None
+    val = mapping[key]
+    if val is None:
+        return None
+    if not _is_strict_int(val):
+        errors.append(f"{path}: expected int or null, got {type(val).__name__}")
+        return None
+    if val < 0:
+        errors.append(f"{path}: must be an integer >= 0, got {val}")
+        return None
+    return int(val)
+
+
+def _parse_optional_non_empty_str_list(
+    mapping: Mapping[str, Any],
+    key: str,
+    path: str,
+    errors: List[str],
+) -> List[str]:
+    if key not in mapping:
+        return []
+    val = mapping[key]
+    if not isinstance(val, list):
+        errors.append(f"{path}: expected list, got {type(val).__name__}")
+        return []
+    out: List[str] = []
+    for idx, item in enumerate(val):
+        if not isinstance(item, str):
+            errors.append(f"{path}[{idx}]: expected str, got {type(item).__name__}")
+        elif not item.strip():
+            errors.append(f"{path}[{idx}]: must be a non-empty string")
         else:
             out.append(item)
     return out
@@ -490,9 +548,15 @@ class VolumeSpec:
     key_scenes: List[str]
     foreshadows_plant: List[str]
     foreshadows_payoff: List[str]
+    antagonist_motive: str = ""
+    new_gameplay: str = ""
+    mainline_step: str = ""
+    daily_case_quota: Optional[int] = None
+    fugitive_case_quota: Optional[int] = None
+    forbidden_from_prev_volume: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "index": self.index,
             "title": self.title,
             "chapter_start": self.chapter_start,
@@ -509,6 +573,19 @@ class VolumeSpec:
             "foreshadows_plant": list(self.foreshadows_plant),
             "foreshadows_payoff": list(self.foreshadows_payoff),
         }
+        if self.antagonist_motive:
+            out["antagonist_motive"] = self.antagonist_motive
+        if self.new_gameplay:
+            out["new_gameplay"] = self.new_gameplay
+        if self.mainline_step:
+            out["mainline_step"] = self.mainline_step
+        if self.daily_case_quota is not None:
+            out["daily_case_quota"] = self.daily_case_quota
+        if self.fugitive_case_quota is not None:
+            out["fugitive_case_quota"] = self.fugitive_case_quota
+        if self.forbidden_from_prev_volume:
+            out["forbidden_from_prev_volume"] = list(self.forbidden_from_prev_volume)
+        return out
 
     @classmethod
     def _from_mapping(
@@ -560,6 +637,27 @@ class VolumeSpec:
             foreshadows_payoff=_parse_str_list(
                 data, "foreshadows_payoff", f"{path}.foreshadows_payoff", errors
             ),
+            antagonist_motive=_parse_optional_str(
+                data, "antagonist_motive", f"{path}.antagonist_motive", errors
+            ),
+            new_gameplay=_parse_optional_str(
+                data, "new_gameplay", f"{path}.new_gameplay", errors
+            ),
+            mainline_step=_parse_optional_str(
+                data, "mainline_step", f"{path}.mainline_step", errors
+            ),
+            daily_case_quota=_parse_optional_non_negative_int(
+                data, "daily_case_quota", f"{path}.daily_case_quota", errors
+            ),
+            fugitive_case_quota=_parse_optional_non_negative_int(
+                data, "fugitive_case_quota", f"{path}.fugitive_case_quota", errors
+            ),
+            forbidden_from_prev_volume=_parse_optional_non_empty_str_list(
+                data,
+                "forbidden_from_prev_volume",
+                f"{path}.forbidden_from_prev_volume",
+                errors,
+            ),
         )
 
 
@@ -575,9 +673,12 @@ class CastMember:
     appearance_card: str
     voice_card: VoiceCard
     arc: str
+    independent_goal: str = ""
+    flaw_or_setback: str = ""
+    stage_arcs: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "id": self.id,
             "name": self.name,
             "role": self.role,
@@ -587,6 +688,13 @@ class CastMember:
             "voice_card": self.voice_card.to_dict(),
             "arc": self.arc,
         }
+        if self.independent_goal:
+            out["independent_goal"] = self.independent_goal
+        if self.flaw_or_setback:
+            out["flaw_or_setback"] = self.flaw_or_setback
+        if self.stage_arcs:
+            out["stage_arcs"] = list(self.stage_arcs)
+        return out
 
     @classmethod
     def _from_mapping(
@@ -612,6 +720,15 @@ class CastMember:
             appearance_card=_parse_str(data, "appearance_card", f"{path}.appearance_card", errors),
             voice_card=voice_card,
             arc=_parse_str(data, "arc", f"{path}.arc", errors),
+            independent_goal=_parse_optional_str(
+                data, "independent_goal", f"{path}.independent_goal", errors
+            ),
+            flaw_or_setback=_parse_optional_str(
+                data, "flaw_or_setback", f"{path}.flaw_or_setback", errors
+            ),
+            stage_arcs=_parse_optional_non_empty_str_list(
+                data, "stage_arcs", f"{path}.stage_arcs", errors
+            ),
         )
 
 
@@ -1154,6 +1271,34 @@ def _validate_volumes(
         _check_non_empty_str_list(vol.foreshadows_plant, f"{path}.foreshadows_plant", errors)
         _check_non_empty_str_list(vol.foreshadows_payoff, f"{path}.foreshadows_payoff", errors)
 
+        if not isinstance(vol.antagonist_motive, str):
+            errors.append(
+                f"{path}.antagonist_motive: expected str, got {type(vol.antagonist_motive).__name__}"
+            )
+        if not isinstance(vol.new_gameplay, str):
+            errors.append(
+                f"{path}.new_gameplay: expected str, got {type(vol.new_gameplay).__name__}"
+            )
+        if not isinstance(vol.mainline_step, str):
+            errors.append(
+                f"{path}.mainline_step: expected str, got {type(vol.mainline_step).__name__}"
+            )
+        if vol.daily_case_quota is not None:
+            if not _is_strict_int(vol.daily_case_quota) or vol.daily_case_quota < 0:
+                errors.append(
+                    f"{path}.daily_case_quota: must be None or an integer >= 0, got {vol.daily_case_quota!r}"
+                )
+        if vol.fugitive_case_quota is not None:
+            if not _is_strict_int(vol.fugitive_case_quota) or vol.fugitive_case_quota < 0:
+                errors.append(
+                    f"{path}.fugitive_case_quota: must be None or an integer >= 0, got {vol.fugitive_case_quota!r}"
+                )
+        _check_non_empty_str_list(
+            vol.forbidden_from_prev_volume,
+            f"{path}.forbidden_from_prev_volume",
+            errors,
+        )
+
     return valid_volume_indices, (total_chapters if all_chapter_spans_valid else None)
 
 
@@ -1263,6 +1408,16 @@ def _validate_cast(
         _check_non_empty_str(member.appearance_card, f"{path}.appearance_card", errors)
         _validate_voice_card(member.voice_card, f"{path}.voice_card", errors)
         _check_non_empty_str(member.arc, f"{path}.arc", errors)
+
+        if not isinstance(member.independent_goal, str):
+            errors.append(
+                f"{path}.independent_goal: expected str, got {type(member.independent_goal).__name__}"
+            )
+        if not isinstance(member.flaw_or_setback, str):
+            errors.append(
+                f"{path}.flaw_or_setback: expected str, got {type(member.flaw_or_setback).__name__}"
+            )
+        _check_non_empty_str_list(member.stage_arcs, f"{path}.stage_arcs", errors)
 
     return cast_ids
 
