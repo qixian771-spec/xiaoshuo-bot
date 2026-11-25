@@ -19,6 +19,8 @@ from xiaoshuo_bot.blueprint import (  # noqa: E402
     ForeshadowPlanItem,
     GoldenFingerSpec,
     GoldenFingerUpgrade,
+    MAX_VOLUMES,
+    MIN_VOLUMES,
     PremiseSpec,
     ProtagonistSpec,
     ScaleRule,
@@ -34,6 +36,7 @@ from xiaoshuo_bot.blueprint import (  # noqa: E402
 
 
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "blueprint_valid.yaml"
+FIXTURE_30VOLS_PATH = ROOT / "tests" / "fixtures" / "blueprint_30vols_valid.yaml"
 PROJECTS_ROOT = ROOT / "projects"
 
 OLD_NIGHT_MARKET_CAST = [
@@ -71,6 +74,107 @@ class TestBlueprintValidFixture(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             dumped_path = Path(tmp) / "book_blueprint.yaml"
+            dumped_path.write_text(
+                yaml.safe_dump(bp.to_dict(), allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            reloaded = load_blueprint(dumped_path)
+            validate_blueprint(reloaded, existing_cast_names=combined_existing)
+            self.assertEqual(reloaded.to_dict(), bp.to_dict())
+
+    def test_legacy_fixture_defaults_new_optional_fields(self) -> None:
+        bp = load_blueprint(FIXTURE_PATH)
+        for vol in bp.volumes:
+            self.assertEqual(vol.antagonist_motive, "")
+            self.assertEqual(vol.new_gameplay, "")
+            self.assertEqual(vol.mainline_step, "")
+            self.assertIsNone(vol.daily_case_quota)
+            self.assertIsNone(vol.fugitive_case_quota)
+            self.assertEqual(vol.forbidden_from_prev_volume, [])
+        for member in bp.cast:
+            self.assertEqual(member.independent_goal, "")
+            self.assertEqual(member.flaw_or_setback, "")
+            self.assertEqual(member.stage_arcs, [])
+        self.assertEqual(bp.to_dict(), _load_valid_raw())
+
+    def test_30vols_fixture_passes_and_deserializes_all_new_fields(self) -> None:
+        self.assertEqual(MIN_VOLUMES, 3)
+        self.assertEqual(MAX_VOLUMES, 40)
+
+        bp = load_blueprint(FIXTURE_30VOLS_PATH)
+        self.assertIsInstance(bp, BookBlueprint)
+        self.assertEqual(len(bp.volumes), 30)
+
+        # Verify 1000 contiguous chapters with 33~34 chapters per volume
+        self.assertEqual(bp.volumes[0].chapter_start, 1)
+        self.assertEqual(bp.volumes[-1].chapter_end, 1000)
+        total_chapters = 0
+        for idx, vol in enumerate(bp.volumes, start=1):
+            self.assertEqual(vol.index, idx)
+            vol_len = vol.chapter_end - vol.chapter_start + 1
+            self.assertIn(vol_len, (33, 34))
+            total_chapters += vol_len
+            self.assertTrue(vol.antagonist_motive.strip())
+            self.assertTrue(vol.new_gameplay.strip())
+            self.assertTrue(vol.mainline_step.strip())
+            self.assertIsInstance(vol.daily_case_quota, int)
+            self.assertGreaterEqual(vol.daily_case_quota, 0)
+            self.assertIsInstance(vol.fugitive_case_quota, int)
+            self.assertGreaterEqual(vol.fugitive_case_quota, 0)
+            if idx == 1:
+                self.assertEqual(vol.forbidden_from_prev_volume, [])
+            else:
+                self.assertGreaterEqual(len(vol.forbidden_from_prev_volume), 1)
+                for item in vol.forbidden_from_prev_volume:
+                    self.assertTrue(item.strip())
+        self.assertEqual(total_chapters, 1000)
+        self.assertEqual(bp.volumes[-1].daily_case_quota, 0)
+
+        # Verify 6 major supporting cast members have independent goals, flaws, and multi-stage arcs
+        cast_by_id = {m.id: m for m in bp.cast}
+        major_ally_ids = (
+            "ally_detective",
+            "ally_operator",
+            "ally_forensic",
+            "ally_mechanic",
+            "ally_reporter",
+            "ally_lawyer",
+        )
+        for cid in major_ally_ids:
+            self.assertIn(cid, cast_by_id)
+            member = cast_by_id[cid]
+            self.assertTrue(member.independent_goal.strip())
+            self.assertTrue(member.flaw_or_setback.strip())
+            self.assertGreaterEqual(len(member.stage_arcs), 3)
+            for stage in member.stage_arcs:
+                self.assertTrue(stage.strip())
+
+        existing = collect_existing_cast_names(PROJECTS_ROOT)
+        combined_existing = existing + OLD_NIGHT_MARKET_CAST
+        validate_blueprint(bp, existing_cast_names=combined_existing)
+
+        roundtrip = BookBlueprint.from_dict(bp.to_dict())
+        self.assertEqual(roundtrip.to_dict(), bp.to_dict())
+
+        # Verify to_dict() preserves populated optional fields (including quota == 0)
+        vol2_dict = bp.volumes[1].to_dict()
+        for key in (
+            "antagonist_motive",
+            "new_gameplay",
+            "mainline_step",
+            "daily_case_quota",
+            "fugitive_case_quota",
+            "forbidden_from_prev_volume",
+        ):
+            self.assertIn(key, vol2_dict)
+        self.assertEqual(bp.volumes[-1].to_dict()["daily_case_quota"], 0)
+
+        ally_dict = cast_by_id["ally_detective"].to_dict()
+        for key in ("independent_goal", "flaw_or_setback", "stage_arcs"):
+            self.assertIn(key, ally_dict)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dumped_path = Path(tmp) / "blueprint_30vols_roundtrip.yaml"
             dumped_path.write_text(
                 yaml.safe_dump(bp.to_dict(), allow_unicode=True, sort_keys=False),
                 encoding="utf-8",
@@ -167,6 +271,100 @@ class TestBlueprintLoaderSchema(unittest.TestCase):
             "scale_rules[0].hard_max",
         ):
             self.assertIn(expected_path, msg)
+
+    def test_load_blueprint_rejects_invalid_optional_volume_and_cast_fields(self) -> None:
+        cases = [
+            (
+                "daily_case_quota=-1",
+                lambda r: r["volumes"][0].__setitem__("daily_case_quota", -1),
+                "volumes[0].daily_case_quota",
+            ),
+            (
+                "daily_case_quota=True",
+                lambda r: r["volumes"][0].__setitem__("daily_case_quota", True),
+                "volumes[0].daily_case_quota",
+            ),
+            (
+                "fugitive_case_quota='1'",
+                lambda r: r["volumes"][0].__setitem__("fugitive_case_quota", "1"),
+                "volumes[0].fugitive_case_quota",
+            ),
+            (
+                "fugitive_case_quota=-2",
+                lambda r: r["volumes"][0].__setitem__("fugitive_case_quota", -2),
+                "volumes[0].fugitive_case_quota",
+            ),
+            (
+                "fugitive_case_quota=False",
+                lambda r: r["volumes"][0].__setitem__("fugitive_case_quota", False),
+                "volumes[0].fugitive_case_quota",
+            ),
+            (
+                "forbidden_from_prev_volume=['']",
+                lambda r: r["volumes"][0].__setitem__("forbidden_from_prev_volume", [""]),
+                "volumes[0].forbidden_from_prev_volume[0]",
+            ),
+            (
+                "forbidden_from_prev_volume=['   ']",
+                lambda r: r["volumes"][0].__setitem__("forbidden_from_prev_volume", ["   "]),
+                "volumes[0].forbidden_from_prev_volume[0]",
+            ),
+            (
+                "forbidden_from_prev_volume='bad'",
+                lambda r: r["volumes"][0].__setitem__("forbidden_from_prev_volume", "bad"),
+                "volumes[0].forbidden_from_prev_volume",
+            ),
+            (
+                "antagonist_motive=123",
+                lambda r: r["volumes"][0].__setitem__("antagonist_motive", 123),
+                "volumes[0].antagonist_motive",
+            ),
+            (
+                "new_gameplay=None",
+                lambda r: r["volumes"][0].__setitem__("new_gameplay", None),
+                "volumes[0].new_gameplay",
+            ),
+            (
+                "mainline_step=['x']",
+                lambda r: r["volumes"][0].__setitem__("mainline_step", ["x"]),
+                "volumes[0].mainline_step",
+            ),
+            (
+                "stage_arcs='bad'",
+                lambda r: r["cast"][0].__setitem__("stage_arcs", "bad"),
+                "cast[0].stage_arcs",
+            ),
+            (
+                "stage_arcs=['']",
+                lambda r: r["cast"][0].__setitem__("stage_arcs", [""]),
+                "cast[0].stage_arcs[0]",
+            ),
+            (
+                "independent_goal=42",
+                lambda r: r["cast"][0].__setitem__("independent_goal", 42),
+                "cast[0].independent_goal",
+            ),
+            (
+                "flaw_or_setback=True",
+                lambda r: r["cast"][0].__setitem__("flaw_or_setback", True),
+                "cast[0].flaw_or_setback",
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            for idx, (label, mutator, expected_path) in enumerate(cases):
+                with self.subTest(case=label):
+                    raw = _load_valid_raw()
+                    mutator(raw)
+                    p = tmp_dir / f"bad_opt_{idx}.yaml"
+                    p.write_text(
+                        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(BlueprintValidationError) as ctx:
+                        load_blueprint(p)
+                    self.assertIn(expected_path, str(ctx.exception))
 
 
 class TestBlueprintValidationRules(unittest.TestCase):
@@ -289,11 +487,11 @@ class TestBlueprintValidationRules(unittest.TestCase):
         two_vols = [replace(self.valid_bp.volumes[0]), replace(self.valid_bp.volumes[1])]
         self._assert_invalid(replace(self.valid_bp, volumes=two_vols), "volumes")
 
-        # > 12 volumes (construct 13 contiguous volumes)
-        thirteen_vols = []
-        for idx in range(1, 14):
+        # Exact MAX_VOLUMES (40) boundary passes when total chars align
+        forty_vols = []
+        for idx in range(1, 41):
             base = self.valid_bp.volumes[0 if idx == 1 else 1]
-            thirteen_vols.append(
+            forty_vols.append(
                 replace(
                     base,
                     index=idx,
@@ -304,7 +502,29 @@ class TestBlueprintValidationRules(unittest.TestCase):
                     exits=[],
                 )
             )
-        self._assert_invalid(replace(self.valid_bp, volumes=thirteen_vols), "volumes")
+        validate_blueprint(
+            replace(self.valid_bp, volumes=forty_vols, target_total_chars=40 * 30 * 2300),
+            existing_cast_names=[],
+        )
+
+        # > 40 volumes (construct 41 contiguous volumes with aligned target_total_chars)
+        forty_one_vols = list(forty_vols) + [
+            replace(
+                self.valid_bp.volumes[1],
+                index=41,
+                chapter_start=40 * 30 + 1,
+                chapter_end=41 * 30,
+                foreshadows_plant=[],
+                foreshadows_payoff=[],
+                exits=[],
+            )
+        ]
+        err_41 = self._assert_invalid(
+            replace(self.valid_bp, volumes=forty_one_vols, target_total_chars=41 * 30 * 2300),
+            "volumes",
+        )
+        self.assertIn("3..40", str(err_41))
+        self.assertIn("41", str(err_41))
 
         # Non-contiguous index + chapter gap + overlap + end < start + start != 1
         vols = list(self.valid_bp.volumes)
@@ -358,6 +578,53 @@ class TestBlueprintValidationRules(unittest.TestCase):
             "volumes[1].map.location_id",
             "volumes[1].map.name",
             "volumes[2].enters[0]",
+        )
+
+    def test_validate_blueprint_rejects_invalid_optional_volume_and_cast_fields(self) -> None:
+        vols = list(self.valid_bp.volumes)
+        vols[0] = replace(
+            vols[0],
+            antagonist_motive=123,  # type: ignore[arg-type]
+            new_gameplay=None,  # type: ignore[arg-type]
+            mainline_step=["bad"],  # type: ignore[arg-type]
+            daily_case_quota=-1,
+            fugitive_case_quota="1",  # type: ignore[arg-type]
+            forbidden_from_prev_volume=[""],
+        )
+        vols[1] = replace(
+            vols[1],
+            daily_case_quota=True,
+            fugitive_case_quota=-3,
+            forbidden_from_prev_volume="not_a_list",  # type: ignore[arg-type]
+        )
+
+        cast = list(self.valid_bp.cast)
+        cast[0] = replace(
+            cast[0],
+            independent_goal=99,  # type: ignore[arg-type]
+            flaw_or_setback=False,  # type: ignore[arg-type]
+            stage_arcs="bad",  # type: ignore[arg-type]
+        )
+        cast[1] = replace(
+            cast[1],
+            stage_arcs=["  "],
+        )
+
+        self._assert_invalid(
+            replace(self.valid_bp, volumes=vols, cast=cast),
+            "volumes[0].antagonist_motive",
+            "volumes[0].new_gameplay",
+            "volumes[0].mainline_step",
+            "volumes[0].daily_case_quota",
+            "volumes[0].fugitive_case_quota",
+            "volumes[0].forbidden_from_prev_volume[0]",
+            "volumes[1].daily_case_quota",
+            "volumes[1].fugitive_case_quota",
+            "volumes[1].forbidden_from_prev_volume",
+            "cast[0].independent_goal",
+            "cast[0].flaw_or_setback",
+            "cast[0].stage_arcs",
+            "cast[1].stage_arcs[0]",
         )
 
     def test_cast_count_id_uniqueness_volume_lifecycle_and_namer_rules(self) -> None:

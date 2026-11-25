@@ -1,0 +1,1718 @@
+premise:
+  logline: "沧江老码头古玩街的旧物修复师程远舟，掌心觉醒能映照涉案器物暗债的听铜瞳，从街头日常鉴物破局起步，把一间冷清旧铺打造成直播追凶、横跨三十座行业副本的暗夜公道直播间。"
+  selling_points:
+    - "一卷一行业副本：每卷切换全新场景与破案玩法，日常小案与通缉重案双轨并行不重复"
+    - "六大常驻配角各自背负独立执念与翻车低谷，在三十卷里分阶段兑现个人成长线"
+    - "古玩修复物理细节结合直播间实时核验，以物证闭环串联跨省黑产主线"
+  selling_point_keywords:
+    - "听铜"
+    - "鉴物"
+    - "直播"
+    - "通缉"
+    - "旧铺"
+    - "翻案"
+  benchmark_refs:
+    - title: "直播算命：我把榜一大哥送进去了"
+      why: "借用连麦破案与实时围观的强节奏爽感，并用行业物证与配角群像撑起千章长篇"
+    - title: "都市奇门小相师"
+      why: "吸收旧物器物修复质感与市井人情，同时以现实刑侦与法律程序兜住逻辑边界"
+  target_readers: "喜欢都市脑洞、一卷一副本探案、直播打假与群像长线成长的番茄男频及悬疑读者"
+
+target_total_chars: 2300000
+chapter_chars_range:
+  - 2100
+  - 2500
+
+protagonist:
+  character_id: "mc"
+  desire: "查清十年前沧江旧船厂失火与师父失踪的真相，替老码头受骗街坊追回被黑产吞掉的血汗钱"
+  flaw: "表面按件计价斤斤计较，遇上旧识卷入重案时总想先一人扛下风险，直到吃亏才学会把后背交给团队"
+  arc: "从只想守住老街旧物铺的修复学徒，成长为能统筹刑侦、法医、媒体与法援协作的三十卷破局核心"
+  voice_card:
+    speech_patterns: "说话自带修补匠的利落与冷幽默，先报修补工费再挑出器物上的反常刀痕，关键证据留到对手撒完谎再亮底牌"
+    catchphrases:
+      - "器物不会撒谎，撒谎的是经手人的指纹和账本。"
+
+golden_finger:
+  rules: "程远舟右掌心触碰含铜器物或通过高清连麦观察其金属包浆时，能感知器物上残留的最重一笔恶意交易时间、方位与关联物剪影；能力不直接吐露真凶姓名，必须靠修复取样、连麦盘问或刑侦核证形成闭环。"
+  cost: "每次强行溯源涉及命案或跨省重案的器物，右掌都会起水泡脱皮并引发四小时指尖失灵；若单日超频三次，将连续两天无法精细执刀修补。"
+  limits: "无法穿透全绝缘密封铅盒，无法对无主观恶意的意外损坏生效，严禁借能力参与赌石、彩票或二级市场投机。"
+  upgrade_path:
+    - volume: 1
+      unlock: "近距掌纹听铜：触碰旧铜器即可感应七日内的藏匿方位与最后经手人情绪波动"
+    - volume: 5
+      unlock: "隔屏反光映影：高清直播间内识别金属反光中的异常印记与伪造焊点"
+    - volume: 10
+      unlock: "残片拼图溯源：将两件涉案器物残片并置时，可还原十年前同一作坊的出厂批次"
+    - volume: 15
+      unlock: "双物对账共鸣：同时检视账册铜扣与赃物时，能锁定经手中间人的资金分流方向"
+    - volume: 20
+      unlock: "舆情暗桩嗅觉：从伪造捐赠纪念章中辨别背后同一公关金主的批次暗记"
+    - volume: 25
+      unlock: "跨省链条图谱：聚合三枚以上暗网徽记即可显影黑产上下游的权力层级差"
+    - volume: 30
+      unlock: "终局暗债清零：完整拼合沧江旧船厂铜铭牌后，映出全部涉案原始封存档案坐标"
+
+scale_rules:
+  - ledger_key: "cash"
+    policy: "bounded_realistic"
+    hard_max: 8000000
+    unit: "元"
+  - ledger_key: "followers"
+    policy: "bounded_realistic"
+    hard_max: 20000000
+    unit: "人"
+  - ledger_key: "merit_aura"
+    policy: "unbounded_fantasy"
+    hard_max: null
+    unit: "分"
+
+volumes:
+  - index: 1
+    title: "老码头铜镜初开局"
+    chapter_start: 1
+    chapter_end: 34
+    protagonist_goal: "保住沧江老街修补铺不被拆迁托儿逼退，靠三起日常鉴物小案和一桩假货销赃案立稳口碑"
+    antagonist_id: "vol01_boss"
+    cool_point_modes:
+      - "街头鉴物一语戳穿造假局"
+      - "直播间当场起获暗格赃物"
+    climax: "胡万宝带混混砸店并诬告程远舟收受盗墓铜镜，程远舟当众拆解镜背夹层露出近代机雕批号与赃款收据"
+    payoff: "保住旧铺并首播破十万在线，与严铁锋、姜可欣结成铁三角雏形"
+    enters:
+      - "mc"
+      - "ally_detective"
+      - "ally_operator"
+      - "vol01_boss"
+    exits:
+      - id: "vol01_boss"
+        how: "非法收赃与聚众滋事证据坐实，被严铁锋带队当场刑拘"
+    map: null
+    key_scenes:
+      - "梅雨夜旧铺灯光下，程远舟用放大镜指认铜镜边缘的新鲜车床毛刺"
+      - "姜可欣架起手机三脚架全程回放胡万宝夹层里的编号单"
+    foreshadows_plant:
+      - "fs_bronze_mirror"
+      - "fs_dock_manifest"
+    foreshadows_payoff: []
+    antagonist_motive: "借低价强收老街临街铺面掩护古玩市场假货倒卖仓，借拆迁补偿套利"
+    new_gameplay: "线下旧物修补台鉴真+首次手机开播连麦验货"
+    mainline_step: "从胡万宝暗格铜镜中发现十年前沧江船厂独有的三角铜印"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume: []
+
+  - index: 2
+    title: "冷库药材赝品账"
+    chapter_start: 35
+    chapter_end: 68
+    protagonist_goal: "拆穿老字号中药铺以硫熏旧材冒充年份药的骗局，追查流落冷库的失踪化验员"
+    antagonist_id: "vol02_boss"
+    cool_point_modes:
+      - "药秤铜砣听铜识破暗账"
+      - "法医物证联动现场锁凶"
+    climax: "赵德坤企图在冷库伪造意外窒息灭口，程远舟凭老药秤铜砣残影定位通风井，配合孟书瑶固定毒理样本"
+    payoff: "救出化验员并端掉假药仓储，孟书瑶正式成为固定技术协作伙伴"
+    enters:
+      - "ally_forensic"
+      - "vol02_boss"
+    exits:
+      - id: "vol02_boss"
+        how: "生产销售劣药与故意伤害未遂罪名成立被批捕"
+    map:
+      location_id: "loc_vol02_herb_coldstore"
+      name: "沧江城西中药材批发冷库"
+    key_scenes:
+      - "老药铺柜台前，程远舟敲开中空铜秤砣倒出微缩出货签"
+      - "冷库零下十度霜雾中，孟书瑶提取门把残胶锁定伪造现场时间差"
+    foreshadows_plant:
+      - "fs_mole_badge"
+    foreshadows_payoff: []
+    antagonist_motive: "因赌债亏空家族药行，改用化工染色废材冒充名贵药材牟取暴利"
+    new_gameplay: "日常鉴药识毒+法医时间线交叉核验"
+    mainline_step: "在赵德坤冷库旧铁柜夹缝里翻出七年前失踪警员编号铜徽"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止复用古玩摊砸店诬告桥段"
+      - "禁止再以铜镜夹层藏单作为终局反转"
+
+  - index: 3
+    title: "汽修黑件连环撞"
+    chapter_start: 69
+    chapter_end: 102
+    protagonist_goal: "顺着高架连环追尾案里的劣质刹车片铜铆钉，挖出城郊非法拆车翻新窝点"
+    antagonist_id: "vol03_boss"
+    cool_point_modes:
+      - "事故残件拆解反推源头作坊"
+      - "连麦车主集体维权打脸黑厂"
+    climax: "马振东在夜班拆车场准备熔毁问题批次轮毂，梁大川开拖车堵门，程远舟现场比对铆钉模具敲定铁证"
+    payoff: "查封黑件产线并救下被扣押的学徒，梁大川加入团队负责机械与载具鉴证"
+    enters:
+      - "ally_mechanic"
+      - "vol03_boss"
+    exits:
+      - id: "vol03_boss"
+        how: "在拆车场后门弃车逃逸时被围堵落网"
+    map:
+      location_id: "loc_vol03_salvage_yard"
+      name: "城南外环废旧汽配拆解场"
+    key_scenes:
+      - "梁大川徒手拆下事故车总泵，指着翻新钢印怒拍工具台"
+      - "深夜熔炉旁直播强光打亮一排尚未销毁的劣质刹车片箱"
+    foreshadows_plant:
+      - "fs_autopsy_film"
+    foreshadows_payoff: []
+    antagonist_motive: "低价收购报废事故车总成翻新冒充原厂件，给黑物流车队供货赚黑心钱"
+    new_gameplay: "机械拆解直播鉴伪+跨区物流车队轨迹追踪"
+    mainline_step: "查获的事故报废单中夹着孟书瑶父亲冷案尸检袋的编号底联"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用冷库低温困人桥段"
+      - "禁止重复药材毒理化验核心解谜"
+
+  - index: 4
+    title: "热搜水军造谣坊"
+    chapter_start: 103
+    chapter_end: 136
+    protagonist_goal: "反击针对老街商户与公益直播间的恶意抹黑通稿，端掉地下黑公关机房"
+    antagonist_id: "vol04_boss"
+    cool_point_modes:
+      - "直播间反向钓鱼揪出托儿脚本"
+      - "现场切断群控手机墙公开报价单"
+    climax: "孙广才雇人伪造受害者哭诉视频冲上同城热搜，程远舟联动姚思敏同步公开其机房IP与转账铜牌密匙"
+    payoff: "彻底洗清老街污名，姚思敏成为团队深度调查与舆论反制主力"
+    enters:
+      - "ally_reporter"
+      - "vol04_boss"
+    exits:
+      - id: "vol04_boss"
+        how: "涉嫌敲诈勒索与非法经营网络水军被经侦带走"
+    map:
+      location_id: "loc_vol04_troll_farm"
+      name: "新城写字楼地下群控机房"
+    key_scenes:
+      - "姚思敏在剪辑室逐帧核对造谣视频背景里的同一张外卖小票"
+      - "三百部群控手机同时亮屏弹出警方协查通告"
+    foreshadows_plant:
+      - "fs_fake_axle"
+    foreshadows_payoff: []
+    antagonist_motive: "靠炮制商户黑料胁迫商家交删帖保护费，同时接单打压竞争对手"
+    new_gameplay: "舆论反转双屏对峙+视频帧级穿帮取证"
+    mainline_step: "机房客户清单指向吞并地方报社的上游灰产公关总包"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用汽修拆车厂夜间强攻桥段"
+      - "禁止以机械金属模具对比作为唯一实锤"
+
+  - index: 5
+    title: "养老理疗空壳局"
+    chapter_start: 137
+    chapter_end: 170
+    protagonist_goal: "救出深陷天价磁疗床骗局的社区老人，冻结在逃主犯转移前的涉诈账款"
+    antagonist_id: "vol05_boss"
+    cool_point_modes:
+      - "拆解天价仪器露出百元电热丝"
+      - "法援律师现场申请财产保全拦截转移"
+    climax: "郭天豪在酒店庆功宴上准备卷款离境，程远舟借连麦拆机揭穿铜线圈假象，郑启明卡点递交冻结裁定"
+    payoff: "全额追回六十二户老人养老钱，郑启明正式加盟负责法律闭环与追赃"
+    enters:
+      - "ally_lawyer"
+      - "vol05_boss"
+    exits:
+      - id: "vol05_boss"
+        how: "在机场高速服务区企图换车潜逃时被截获"
+    map:
+      location_id: "loc_vol05_wellness_hall"
+      name: "江滨康养会展酒店宴会厅"
+    key_scenes:
+      - "程远舟在宴会厅大屏连麦中一字拧开理疗仪后盖，只掉出两块廉价配重铁"
+      - "郑启明赶在银行截单前三分钟签收法院财产保全回执"
+    foreshadows_plant:
+      - "fs_hotsearch_shell"
+    foreshadows_payoff: []
+    antagonist_motive: "借健康讲座情感围猎独居老人，用空壳会务公司收割养老积蓄"
+    new_gameplay: "隔屏反光映影连麦拆机+司法财产保全竞速"
+    mainline_step: "六大配角全部聚齐，并锁定空壳公司背后代持热搜壳资源的中间人"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止重复写字楼水军机房查封模式"
+      - "禁止仅靠视频剪辑穿帮作为高潮手段"
+
+  - index: 6
+    title: "旧港区货柜失踪案"
+    chapter_start: 171
+    chapter_end: 204
+    protagonist_goal: "循着第一卷码头货运清单，查破旧港区利用报废集装箱藏匿通缉犯与走私件的暗线"
+    antagonist_id: "vol06_boss"
+    cool_point_modes:
+      - "集装箱铅封听铜识破调包柜"
+      - "夜雨港区围猎两名A级通缉犯"
+    climax: "朱建华调换集装箱编号企图将涉案船员送出境，程远舟靠旧铅封铜扣定位真柜，严铁锋海陆合围"
+    payoff: "兑现第一卷码头清单伏笔，抓获港区蛇头并拿到沧江旧船厂火场第一手人证"
+    enters:
+      - "vol06_boss"
+    exits:
+      - id: "vol06_boss"
+        how: "组织偷渡与窝藏通缉犯罪名坐实，在三号码头被当场擒获"
+    map:
+      location_id: "loc_vol06_old_container_pier"
+      name: "沧江下游旧集装箱三号码头"
+    key_scenes:
+      - "千只集装箱矩阵里，程远舟仅凭铅封铜片微震点出藏人的双层冷柜"
+      - "雨幕探照灯下，旧货单上的船厂失火当夜值班表重见天日"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_dock_manifest"
+    antagonist_motive: "把持旧港区报关调度权，靠暗柜偷运违禁品与替通缉犯洗白身份抽成"
+    new_gameplay: "大型港区箱号矩阵排查+双通缉犯协同抓捕"
+    mainline_step: "确认十年前沧江旧船厂失火并非电路老化，而是有人借火灭掉走私账房"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用酒店宴会厅当众拆机桥段"
+      - "禁止复用银行截单竞速核心冲突"
+
+  - index: 7
+    title: "古镇民宿偷拍网"
+    chapter_start: 205
+    chapter_end: 238
+    protagonist_goal: "顺着女大学生连麦求助，揪出景区网红民宿群非法偷拍与暗网倒卖团伙"
+    antagonist_id: "vol07_boss"
+    cool_point_modes:
+      - "连麦隔屏识破铜插座隐蔽镜头"
+      - "景区全链条排查当晚拔除中继服务器"
+    climax: "高志勇企图远程格式化云盘并反咬求助者勒索，姜可欣提前镜像公证流量，程远舟锁定民宿阁楼铜线总闸"
+    payoff: "救下数十名受害住客，姜可欣走出姐姐遭网暴的心理阴影，正式建立公益反偷拍工具箱"
+    enters:
+      - "vol07_boss"
+    exits:
+      - id: "vol07_boss"
+        how: "非法使用窃照专用器材与传播淫秽物品牟利被当场抓获"
+    map:
+      location_id: "loc_vol07_ancient_town_inn"
+      name: "青溪古镇临水民宿集群"
+    key_scenes:
+      - "直播间千万人注视下，求助姑娘拧开铜质仿古开关露出针孔主板"
+      - "姜可欣在警车后座稳稳完成电子取证哈希封存"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "民宿经营亏损后铤而走险，与境外暗网买家合作倒卖偷拍视频分成"
+    new_gameplay: "第一视角连麦排雷+电子证据哈希即时公证"
+    mainline_step: "查出暗网结算通道与沧江地下换汇点共用同一批壳账户"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用港区集装箱排查桥段"
+      - "禁止重复码头海陆围堵收尾"
+
+  - index: 8
+    title: "校外画室保过坑"
+    chapter_start: 239
+    chapter_end: 272
+    protagonist_goal: "拆穿天价艺考保过班伪造评委关系、诱骗学生家长背负高息套路贷的黑幕"
+    antagonist_id: "vol08_boss"
+    cool_point_modes:
+      - "画室纪念铜牌戳穿假教授履历"
+      - "合同陷阱现场逐条拆解反制催收"
+    climax: "吴金福在家长宣讲会上拿出伪造高校授权铜匾稳场，程远舟当众验出翻模沙眼，郑启明同步公开套路贷关联协议"
+    payoff: "帮四十多个艺考家庭解除非法借贷合同，挖出跨省助学贷洗钱池线索"
+    enters:
+      - "vol08_boss"
+    exits:
+      - id: "vol08_boss"
+        how: "合同诈骗与勾结非法放贷被专案组带走调查"
+    map:
+      location_id: "loc_vol08_art_academy"
+      name: "大学城封闭式艺考集训基地"
+    key_scenes:
+      - "家长会大厅投影屏切换出假授权铜匾的网购订单与模具图"
+      - "郑启明逐页标红阴阳补充协议，令催收头目当场哑火"
+    foreshadows_plant:
+      - "fs_cross_province_fund"
+    foreshadows_payoff: []
+    antagonist_motive: "借家长焦虑售卖虚假名校保过名额，并与地下放贷团伙按贷额抽佣"
+    new_gameplay: "教育培训阴阳合同拆解+家长群直播反洗脑"
+    mainline_step: "发现套路贷资金池经由跨省保理公司流入沧江神秘基金会"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止重复针孔排雷或偷拍云盘取证"
+      - "禁止再以景区古镇作为主地图"
+
+  - index: 9
+    title: "拍卖行赝画洗钱局"
+    chapter_start: 273
+    chapter_end: 306
+    protagonist_goal: "揭穿地下拍卖行用高仿近代名画虚报天价成交、替在逃经济犯洗白赃款的流程"
+    antagonist_id: "vol09_boss"
+    cool_point_modes:
+      - "装裱铜轴头听铜识破流水线做旧"
+      - "拍卖槌落下前举牌亮出真品存档"
+    climax: "杨文博操控托儿把赝品拍到三千万完成过账，程远舟现场揭露轴头新焊铜钉并引出两位伪装买家的通缉犯"
+    payoff: "冻结三千万涉案资金，打通文物鉴定中心官方数据协查通道"
+    enters:
+      - "vol09_boss"
+    exits:
+      - id: "vol09_boss"
+        how: "掩饰隐瞒犯罪所得与虚假拍卖洗钱罪名坐实落网"
+    map:
+      location_id: "loc_vol09_auction_house"
+      name: "江畔国贸中心春季夜场拍卖厅"
+    key_scenes:
+      - "拍卖师落槌前一秒，程远舟举起八号牌反问画轴铜头为何带去年厂标"
+      - "宴会侧门外严铁锋同时摁住两名戴墨镜的洗钱买家"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "利用艺术品估值不透明的漏洞，按成交额抽取高额洗钱手续费"
+    new_gameplay: "高端拍卖场心理博弈+书画装裱工艺鉴伪"
+    mainline_step: "拍卖委托书签名笔迹与十年前沧江船厂变卖合同高度吻合"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用家长宣讲会或校园场景"
+      - "禁止以网购发票作为主要打脸证据"
+
+  - index: 10
+    title: "十年前船厂焦铜印"
+    chapter_start: 307
+    chapter_end: 340
+    protagonist_goal: "顺着第一卷铜镜与第九卷拍卖委托单，在沧江旧船厂遗址逼出当年纵火执行头目"
+    antagonist_id: "vol10_boss"
+    cool_point_modes:
+      - "残片拼图溯源还原十年前火场真相"
+      - "第一阶段大高潮连环掀翻地方保护网"
+    climax: "徐国梁企图爆破拆平船厂老配电楼掩埋证物，程远舟拼合两块残铜铭牌定位地沟暗箱，严铁锋带队冲破封锁"
+    payoff: "兑现铜镜来历伏笔，查明师父当年为护住原始船检簿才假死隐匿，第一大阶段圆满收官"
+    enters:
+      - "vol10_boss"
+    exits:
+      - id: "vol10_boss"
+        how: "纵火致人伤亡与毁灭证据铁证如山，在配电楼顶束手就擒"
+    map:
+      location_id: "loc_vol10_old_shipyard"
+      name: "沧江北岸废弃造船厂三号船坞"
+    key_scenes:
+      - "两块失散十年的三角铜印严丝合缝贴合，映出地沟防水铁盒坐标"
+      - "程远舟在焦黑船坞里读出师父留在铁盒内壁的求生暗语"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_bronze_mirror"
+    antagonist_motive: "十年前拿钱替幕后金主烧毁问题货轮档案，如今已成工程承建商怕旧案重提"
+    new_gameplay: "残片拼图溯源+废墟拆迁爆破倒计时抢证"
+    mainline_step: "第一大阶段总收束：证实师父尚在人世，幕后黑手已迁往省城与沿江商盟"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用高端拍卖举牌桥段"
+      - "禁止在室内宴会厅完成终局对峙"
+
+  - index: 11
+    title: "省城古籍修复骗局"
+    chapter_start: 341
+    chapter_end: 373
+    protagonist_goal: "初入省城立足，拆穿名门藏书阁调包捐赠古籍并私刻藏书印牟利的黑手"
+    antagonist_id: "vol11_boss"
+    cool_point_modes:
+      - "旧纸浆与铜盒扣双验识破调包计"
+      - "省城首播立威打脸学术圈傲慢大佬"
+    climax: "黄永昌当着文博评审团污蔑程远舟弄坏善本，程远舟当场展示真本铜锁锈纹并从夹层取出原馆藏微标"
+    payoff: "在省城旧书街站稳脚跟，拿到印有隐秘水印的商盟往来旧账纸"
+    enters:
+      - "vol11_boss"
+    exits:
+      - id: "vol11_boss"
+        how: "职务侵占珍贵古籍并倒卖获利被文旅与警方联合控制"
+    map:
+      location_id: "loc_vol11_provincial_library"
+      name: "省城青羊巷私立藏书阁"
+    key_scenes:
+      - "评审桌紫光灯下，藏书阁暗印与真本装订线孔位相差三毫米"
+      - "程远舟借善本铜函盒盖上的磨损沟槽指出失踪原件的转运柜"
+    foreshadows_plant:
+      - "fs_ledger_watermark"
+    foreshadows_payoff: []
+    antagonist_motive: "贪图海外私人藏家高价，利用修复主管身份将捐赠真本调包成高仿影印本"
+    new_gameplay: "古籍纸张显微鉴真+文博评审听证现场翻盘"
+    mainline_step: "开启省城篇：发现暗账专用水印纸产自某沿江特种造纸厂"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用废墟爆破倒计时桥段"
+      - "禁止重复造船厂旧案回忆杀作为主线推动"
+
+  - index: 12
+    title: "高速货运暗轴失踪"
+    chapter_start: 374
+    chapter_end: 406
+    protagonist_goal: "顺着第四卷假车轴线索，帮梁大川找回失联三年的徒弟并端掉跨省改装黑车厂"
+    antagonist_id: "vol12_boss"
+    cool_point_modes:
+      - "梁大川单人卧底修车厂摸清焊点暗记"
+      - "高速服务区合围截停改装运赃车"
+    climax: "邓世明发觉梁大川身份后欲制造液压顶坠落事故，梁大川反卡安全阀并配合程远舟通过直播连麦锁定货箱暗仓"
+    payoff: "兑现假车轴伏笔，梁大川救出徒弟解开心结，转型为专案组特邀车辆物证顾问"
+    enters:
+      - "vol12_boss"
+    exits:
+      - id: "vol12_boss"
+        how: "非法改装走私车辆与非法拘禁工匠被高速公路警队截获"
+    map:
+      location_id: "loc_vol12_highway_garage"
+      name: "省际物流园夜间重卡改装厂"
+    key_scenes:
+      - "地沟液压千斤顶突然失压瞬间，梁大川用撬棍反顶住保险销"
+      - "暗仓打开后，失联三年的徒弟举着刻满车牌的铜垫片冲出人群"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_fake_axle"
+    antagonist_motive: "控制省际重卡暗仓改装业务，靠隐藏夹层运输走私品并软禁掌握工艺的技工"
+    new_gameplay: "配角主场卧底拆局+高速卡口动态追踪"
+    mainline_step: "从改装重卡暗仓的铜垫片记录中拿到三处跨省中转仓编号"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用文博评审听证室场景"
+      - "禁止以纸张水印显微比对作为破局核心"
+
+  - index: 13
+    title: "非遗银楼掺假案"
+    chapter_start: 407
+    chapter_end: 439
+    protagonist_goal: "拆穿百年非遗金银楼以包铜注铅手镯冒充足银传家宝、坑害婚庆家庭的骗局"
+    antagonist_id: "vol13_boss"
+    cool_point_modes:
+      - "声波听铜辨出银镯内芯夹层"
+      - "非遗工坊公开熔验当场揭皮"
+    climax: "彭长顺搬出行业协会施压要告程远舟毁谤老字号，程远舟当众请市监局抽检剪开三枚镇店手镯露出注铅铜芯"
+    payoff: "帮百余户新人全额三倍退赔，收获省城手工匠人行会大力支持"
+    enters:
+      - "vol13_boss"
+    exits:
+      - id: "vol13_boss"
+        how: "生产销售伪劣贵金属制品数额特别巨大被依法刑拘"
+    map:
+      location_id: "loc_vol13_silver_workshop"
+      name: "省城老钟楼百年金银锻造工坊"
+    key_scenes:
+      - "银锤轻敲三下，程远舟听出闷响并精准标出铅芯注口位置"
+      - "直播镜头特写下，液压剪切开足银印记露出灰白铅柱"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "银价暴涨后为维持铺面奢华排场，勾结代工厂在空心银饰内灌铅配重"
+    new_gameplay: "金工声学听铜+市监局现场随机抽检公证"
+    mainline_step: "查明代工厂冶炼炉同时替神秘商盟铸造特种青铜徽章"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用高速重卡追击桥段"
+      - "禁止重复配角卧底险遭工伤的模式"
+
+  - index: 14
+    title: "玉石公盘赌石局"
+    chapter_start: 440
+    chapter_end: 472
+    protagonist_goal: "破获借边境翡翠原石公盘做局、用注胶贴皮原石联合地下钱庄宰客的诈骗团伙"
+    antagonist_id: "vol14_boss"
+    cool_point_modes:
+      - "拒靠神棍赌石，纯用铜卡尺与胶缝物证反杀"
+      - "切石机下揭穿双层贴皮并揪出两名在逃金主"
+    climax: "曾宪武激程远舟赌掌上台切石企图逼其违背底线，程远舟拒绝押注只凭原石托盘铜扣暗债指向贴皮拼接线"
+    payoff: "守住不借金手指赌博铁律，抓获两名潜伏公盘的通缉犯"
+    enters:
+      - "vol14_boss"
+    exits:
+      - id: "vol14_boss"
+        how: "诈骗与开设地下非法对赌盘口被经侦和特警联合控制"
+    map:
+      location_id: "loc_vol14_jade_expo"
+      name: "南郊国际珠宝玉石交易公盘馆"
+    key_scenes:
+      - "全场哄笑起哄押注时，程远舟退后半步只把强光灯照向原石底座焊缝"
+      - "水切锯切开两厘米后，工业树脂层在高清直播间里一目了然"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "利用玉石交易信息不对称制造一夜暴富假象，联合私募托儿收割中小企业主"
+    new_gameplay: "反套路拒赌破局+公盘托儿资金链当场复盘"
+    mainline_step: "抓获的逃犯供出七年前警局内鬼曾帮公盘金主销毁边控记录"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用液压剪抽检金银桥段"
+      - "禁止以老字号行业协会施压作为主要阻力"
+
+  - index: 15
+    title: "警徽蒙尘七年债"
+    chapter_start: 473
+    chapter_end: 505
+    protagonist_goal: "顺着第二卷失踪警徽与第十四卷逃犯口供，协助严铁锋拔出盘踞系统七年的内鬼"
+    antagonist_id: "vol15_boss"
+    cool_point_modes:
+      - "双物对账共鸣锁定泄密链路"
+      - "严铁锋亲手清理门户高燃收网"
+    climax: "田庆丰趁督察进驻前设局栽赃严铁锋泄密，程远舟用失踪警徽与旧档案柜铜扣共鸣定位真泄密终端"
+    payoff: "兑现内鬼警徽伏笔，严铁锋洗清七年心病并获晋升专案总协调，中段核心大高潮落地"
+    enters:
+      - "vol15_boss"
+    exits:
+      - id: "vol15_boss"
+        how: "徇私枉法与收受黑产贿赂铁证确凿，被纪检与专案组当场留置"
+    map:
+      location_id: "loc_vol15_archive_annex"
+      name: "市局老档案库与专案督察驻点"
+    key_scenes:
+      - "严铁锋在停职听证会前夜反手交出加密调档日志"
+      - "七年前失踪老警员的铜徽重新摆回荣誉陈列柜"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_mole_badge"
+    antagonist_motive: "早年因家人重病收受黑产巨额医药费，此后步步沦陷成为沿江暗网保护伞"
+    new_gameplay: "双物对账共鸣+系统内部反侦察暗战"
+    mainline_step: "清除公安线暗桩，正式进入反击省城上游资本与暗网金主的中后段"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用公开商业展馆直播围观桥段"
+      - "禁止重复公盘赌石或托儿叫价冲突"
+
+  - index: 16
+    title: "旧书院伪禅修营"
+    chapter_start: 506
+    chapter_end: 538
+    protagonist_goal: "救出被封闭式高价灵修书院精神控制并转移房产的受害家庭"
+    antagonist_id: "vol16_boss"
+    cool_point_modes:
+      - "拆穿熏香致幻与铜磬声学催眠把戏"
+      - "家属联合直播现场清醒醒悟"
+    climax: "董宏伟在山中书院闭关夜以签字赠与仪式逼学员交出房产证，程远舟借山泉停电揭穿铜磬夹层扩音器与致幻香灰"
+    payoff: "全员解救受害学员，并在密室香案底座发现一枚刻有港口冷库编号的青铜钥匙"
+    enters:
+      - "vol16_boss"
+    exits:
+      - id: "vol16_boss"
+        how: "利用迷信精神控制与非法侵占财产被当场控制"
+    map:
+      location_id: "loc_vol16_mountain_retreat"
+      name: "西山半坡封闭式禅修书院"
+    key_scenes:
+      - "孟书瑶当场化验焚香灰烬检出违禁镇静剂成分"
+      - "香案铜底座拧开后滑出一把带港区编码的异形铜钥匙"
+    foreshadows_plant:
+      - "fs_harbor_vault_key"
+    foreshadows_payoff: []
+    antagonist_motive: "包装心灵导师人设，利用封闭环境与药物熏香瓦解富裕学员判断力骗取资产"
+    new_gameplay: "密闭山庄心理破咒+香灰毒理与声学双拆解"
+    mainline_step: "获得的异形铜钥匙指向沿江深水港秘密金库"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用警局档案库内审模式"
+      - "禁止重复体制内停职反杀套路"
+
+  - index: 17
+    title: "剧本杀密室黑贷局"
+    chapter_start: 539
+    chapter_end: 571
+    protagonist_goal: "揭穿沉浸式推理密室馆借高额充值卡与局中局诱导年轻人背负连环借条的骗局"
+    antagonist_id: "vol17_boss"
+    cool_point_modes:
+      - "以真实刑侦逻辑反杀老板设计的假密室剧本"
+      - "直播间当场拆穿道具暗格里的阴阳借据"
+    climax: "韩立军借密室机关扣留报警大学生，程远舟凭门锁铜铰链磨痕反向破解机关并公开监控底片"
+    payoff: "追回年轻玩家全部预付款，破获一条专门诱导高校生的地下借贷引流链"
+    enters:
+      - "vol17_boss"
+    exits:
+      - id: "vol17_boss"
+        how: "非法拘禁与敲诈勒索团伙成员全员落网"
+    map:
+      location_id: "loc_vol17_escape_room"
+      name: "商贸地下二层沉浸式密室公馆"
+    key_scenes:
+      - "程远舟摸着民国风黄铜门环，三分钟反向打开老板藏账本的暗门"
+      - "密室NPC演员当场反水交出诱导签字的培训话术本"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "实体密室投资失败后，与地下网贷中介合谋用高消费返利局拉年轻人下水"
+    new_gameplay: "密室机关逆向解谜+局中局反客为主直播"
+    mainline_step: "查明网贷引流话术由同一家黑产数据公司统一派发"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用山庄熏香或精神控制元素"
+      - "禁止以药物化验作为核心反转"
+
+  - index: 18
+    title: "冷案底片复明夜"
+    chapter_start: 572
+    chapter_end: 604
+    protagonist_goal: "循着第三卷尸检袋底联，协助孟书瑶追回父亲遗失的冷案尸检底片并翻案"
+    antagonist_id: "vol18_boss"
+    cool_point_modes:
+      - "法医主场重现十五年前医疗事故真凶"
+      - "铜制底片筒映出被篡改的签收人"
+    climax: "吕宗仁企图在私立司法鉴定所焚毁原始玻璃底片，孟书瑶与程远舟抢在高温炉合闸前截获铜筒原件"
+    payoff: "兑现冷案尸检底片伏笔，孟书瑶替父正名，克服不敢主刀重案尸检的心魔"
+    enters:
+      - "vol18_boss"
+    exits:
+      - id: "vol18_boss"
+        how: "出具虚假鉴定证明与包庇重案真凶被依法逮捕"
+    map:
+      location_id: "loc_vol18_private_lab"
+      name: "高新区私立医学司法鉴定中心"
+    key_scenes:
+      - "暗房红灯下，尘封十五年的底片显影出被人为抹去的致死钝器痕"
+      - "孟书瑶亲手在复核意见书上签下自己与父亲并列的名字"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_autopsy_film"
+    antagonist_motive: "当年收受财团重金篡改法医鉴定结论换取私立机构牌照，多年持续替黑产洗白伤情"
+    new_gameplay: "法医暗房底片显影复核+司法鉴定听证反杀"
+    mainline_step: "查清当年被篡改死因的受害者正是十年前揭发船厂走私的检验员"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用密室机关逃脱桥段"
+      - "禁止重复高校借贷话术反转"
+
+  - index: 19
+    title: "老剧团戏服盗卖案"
+    chapter_start: 605
+    chapter_end: 637
+    protagonist_goal: "追查地方老戏班百件绣金戏服与铜锣失窃案，揪出专偷民间民俗文物的跨境盗销团伙"
+    antagonist_id: "vol19_boss"
+    cool_point_modes:
+      - "戏台铜锣震音识破暗舱藏品"
+      - "民间艺人全城联动围堵盗销货车"
+    climax: "丁鹤年伪装成非遗纪录片导演将戏服装箱外运，程远舟借老铜锣残音认出夹带在摄影器材箱里的传世点翠头面"
+    payoff: "全数追回老剧团传家行头，帮老戏班通过公益直播重获年轻观众打赏续命"
+    enters:
+      - "vol19_boss"
+    exits:
+      - id: "vol19_boss"
+        how: "涉嫌倒卖珍贵民俗文物在省界高速口被截获"
+    map:
+      location_id: "loc_vol19_opera_theater"
+      name: "老城区红星戏院与后台道具仓"
+    key_scenes:
+      - "老剧团旦角在舞台追光下亲手打开被偷换夹层的摄影器材箱"
+      - "程远舟一锤敲响后台老铜锣，震出隐藏在道具箱底的跨境快递单"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "借拍摄民俗纪录片博取老艺人信任，暗中调包倒卖珍贵戏服和老乐器给境外买家"
+    new_gameplay: "戏曲道具暗箱识别+跨城民间线索接力直播"
+    mainline_step: "跨境快递收件代理与沿江商盟的海外离岸仓为同一主体"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用医学鉴定室或暗房洗片场景"
+      - "禁止重复法医历史旧案翻案结构"
+
+  - index: 20
+    title: "热搜帝国崩塌夜"
+    chapter_start: 638
+    chapter_end: 670
+    protagonist_goal: "顺着第五卷热搜壳资源伏笔，协助姚思敏扳倒操纵舆论并吞并地方媒体的灰产传媒巨头"
+    antagonist_id: "vol20_boss"
+    cool_point_modes:
+      - "舆情暗桩嗅觉锁定假公益纪念章源头"
+      - "姚思敏直播间面对面采访反杀公关教父"
+    climax: "任光耀在全网峰会上宣布封杀程远舟矩阵并起诉姚思敏，两人同步亮出其操纵热搜撤稿与买通水军的完整账链"
+    payoff: "兑现热搜壳资源伏笔，姚思敏夺回老报社公共档案并建立独立调查工作室，第二大阶段收官"
+    enters:
+      - "vol20_boss"
+    exits:
+      - id: "vol20_boss"
+        how: "商业贿赂、非法删帖与敲诈上市公司多罪并罚被捕"
+    map:
+      location_id: "loc_vol20_media_summit"
+      name: "省城国际新媒体峰会演播大厅"
+    key_scenes:
+      - "峰会全网同步转播画面中，姚思敏举起旧报社工牌亮出七年撤稿清单"
+      - "程远舟把峰会铜质公益勋章放上投影仪，背面暗记与涉诈壳公司印章完全一致"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_hotsearch_shell"
+    antagonist_motive: "靠控制热搜榜与黑稿产业链勒索企业并替幕后商盟压制负面舆情"
+    new_gameplay: "舆情暗桩嗅觉+大型峰会直播演播厅正面辩杀"
+    mainline_step: "第二大阶段总收束：打碎幕后商盟的舆论防火墙，直指沿江跨省黑产主网"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用戏院民俗文物盗窃桥段"
+      - "禁止重复伪装纪录片剧组作案手法"
+
+  - index: 21
+    title: "农资假种断粮局"
+    chapter_start: 671
+    chapter_end: 703
+    protagonist_goal: "深入沿江县域农业合作社，查破高价假杂交稻种导致千亩绝收背后的农资串货网"
+    antagonist_id: "vol21_boss"
+    cool_point_modes:
+      - "田间粮仓铜磅秤揭开掉包种子库"
+      - "助农直播同步完成取证与紧急补种筹款"
+    climax: "卢守业把绝收锅甩给天气并威胁维权农户，程远舟凭仓库铜锁残影起获未拆封的真种转卖单"
+    payoff: "替三百户粮农追回赔款并保住晚稻抢种期，在账箱夹层发现一枚神秘青铜大印拓片"
+    enters:
+      - "vol21_boss"
+    exits:
+      - id: "vol21_boss"
+        how: "生产销售伪劣种子罪名成立被跨县联合抓捕"
+    map:
+      location_id: "loc_vol21_grain_coop"
+      name: "沿江平原县农业农资中转粮仓"
+    key_scenes:
+      - "烈日晒谷场旁，程远舟当众拆开同一批次两袋种子对比发芽率测试盘"
+      - "账箱夹层掉出的青铜印拓片首次显露沿江总舵主徽记"
+    foreshadows_plant:
+      - "fs_grand_patron_seal"
+    foreshadows_payoff: []
+    antagonist_motive: "高价转卖正品良种套利，把过期陈种重新拌药染色卖给偏远合作社"
+    new_gameplay: "县域田间地头实勘+农资批次溯源助农直播"
+    mainline_step: "开启第三阶段终局追击：首次拿到幕后终极大佬的青铜总舵徽记拓片"
+    daily_case_quota: 2
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用新媒体峰会演播厅辩论模式"
+      - "禁止重复热搜公关撤稿对抗"
+
+  - index: 22
+    title: "旧厂房危废暗排案"
+    chapter_start: 704
+    chapter_end: 736
+    protagonist_goal: "追查沿江鱼塘一夜翻塘的污染源，揪出夜间偷排工业危废的地下化工作坊"
+    antagonist_id: "vol22_boss"
+    cool_point_modes:
+      - "暗管铜阀门听铜追踪三公里排污口"
+      - "无人机热成像配合环保检测现场锁证"
+    climax: "崔宝山企图放清水冲稀排污沟并封死暗阀，梁大川改造水下探测车拍下偷排口，程远舟定位伪装泵房"
+    payoff: "彻底封堵危废暗管，促成沿江流域生态损害公益诉讼落地"
+    enters:
+      - "vol22_boss"
+    exits:
+      - id: "vol22_boss"
+        how: "严重污染环境罪证据确凿，在泵房控制室被当场控制"
+    map:
+      location_id: "loc_vol22_chemical_park"
+      name: "沿江废弃印染厂区与暗排河段"
+    key_scenes:
+      - "深夜河堤边，水下探测车镜头照亮藏在水面下两米的暗排铜阀"
+      - "环保快检试纸在直播镜头前十秒内由浅黄变深紫"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "非法承接化工厂高危废液处置外包，省下处理费直接夜间暗管直排牟利"
+    new_gameplay: "水下暗管排污测绘+环保公益诉讼取证"
+    mainline_step: "查出偷排危废里含特种造纸漂白剂，直指商盟水印账纸生产点"
+    daily_case_quota: 3
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用农资种子库或晒谷场场景"
+      - "禁止重复发芽率检测核心解谜"
+
+  - index: 23
+    title: "慈善募捐截留局"
+    chapter_start: 737
+    chapter_end: 769
+    protagonist_goal: "拆穿以大病儿童众筹为名、按七成比例抽取暗佣的职业筹款黑中介"
+    antagonist_id: "vol23_boss"
+    cool_point_modes:
+      - "病房外铜功德箱戳穿假病历流水线"
+      - "直播间全网对账把善款直达真正患儿家庭"
+    climax: "钟明达雇水军反骂程远舟挡患儿救命钱，程远舟当众请出三位被截留善款的家长与银行真实流水对照"
+    payoff: "捣毁跨省黑众筹窝点，推动平台建立直付医院账户透明公示规则"
+    enters:
+      - "vol23_boss"
+    exits:
+      - id: "vol23_boss"
+        how: "诈骗爱心善款与侵占救助资金被多地警方联合收网"
+    map:
+      location_id: "loc_vol23_hospital_plaza"
+      name: "中心医院周边众筹中介写字楼"
+    key_scenes:
+      - "程远舟把三份雷同到连错别字都一样的求助文案并排投屏"
+      - "真正的大病患儿母亲在直播连麦里第一次看清账户里曾到账的善款总额"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "利用公众善心把绝症家庭当成流量工具，靠编造极端惨状和私下截留善款暴富"
+    new_gameplay: "众筹文本雷同比对+银行善款流向逐笔公示"
+    mainline_step: "黑众筹资金流向与第八卷跨省涉诈保理池汇流"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用水下探测车或环保排污场景"
+      - "禁止重复野外夜间勘察收尾"
+
+  - index: 24
+    title: "跨省保理追赃战"
+    chapter_start: 770
+    chapter_end: 802
+    protagonist_goal: "顺着第八卷跨省涉诈资金池，协助郑启明完成跨省冻结与先行返还机制首案落地"
+    antagonist_id: "vol24_boss"
+    cool_point_modes:
+      - "四省同步冻结截断地下保理清算"
+      - "郑启明庭审现场反制资本豪华律师团"
+    climax: "谭耀祖利用跨省管辖时间差企图将八千万赃款转入离岸信托，郑启明靠前期预置的协查令与程远舟实锤当庭封账"
+    payoff: "兑现跨省资金池伏笔，郑启明亲手推动跨省涉诈赃款先行返还机制正式试行"
+    enters:
+      - "vol24_boss"
+    exits:
+      - id: "vol24_boss"
+        how: "协助组织洗钱与非法经营金融业务被跨省专案组批捕"
+    map:
+      location_id: "loc_vol24_financial_tower"
+      name: "自贸区商业保理清算大厦"
+    key_scenes:
+      - "四地法院与银行电子协查窗口在同一分钟全部回传冻结回执"
+      - "郑启明合上厚重卷宗，把首笔先行返还凭证递给受害老人家属"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_cross_province_fund"
+    antagonist_motive: "以商业保理和供应链金融外壳替诈骗及地下灰产拆分洗白大额赃款"
+    new_gameplay: "法援律师主场多省金融协查+庭审辩论压制"
+    mainline_step: "切断沿江商盟的境内主要现金回流管道，逼出幕后核心干将"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用医院众筹文案比对桥段"
+      - "禁止以煽情受害者控诉替代硬核金融证据"
+
+  - index: 25
+    title: "海上邮轮公海局"
+    chapter_start: 803
+    chapter_end: 835
+    protagonist_goal: "登船追击两名为躲避收网潜逃公海邮轮的暗网骨干，并在封船断网中识破邮轮地下赌厅"
+    antagonist_id: "vol25_boss"
+    cool_point_modes:
+      - "跨省链条图谱解锁识破船舱权力层级"
+      - "公海线前十二海里强行收网带回通缉犯"
+    climax: "汪承恩企图拖过领海线并销毁船长室密账，程远舟利用三枚暗网铜筹码激活图谱锁定真账柜，严铁锋海警接应登船"
+    payoff: "在领海线内精准抓获目标，首次拼出幕后商盟完整组织架构树"
+    enters:
+      - "vol25_boss"
+    exits:
+      - id: "vol25_boss"
+        how: "在领海线内被海警与重案组联合控制押解靠岸"
+    map:
+      location_id: "loc_vol25_cruise_ship"
+      name: "东海航线星辰号豪华邮轮"
+    key_scenes:
+      - "船舱卫星信号被干扰的深夜，姜可欣用船载应急短波发出加密坐标"
+      - "甲板海风里，三枚青铜筹码拼出沿江商盟四大堂主层级"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "经营公海擦边邮轮赌厅与私密会所，为黑产高层提供脱身航道和现金交割场"
+    new_gameplay: "跨省链条图谱解锁+封闭邮轮领海线限时追凶"
+    mainline_step: "掌握沿江商盟四名核心高层真实身份，进入最终五卷总攻"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用写字楼保理庭审场景"
+      - "禁止重复银行电子冻结竞速套路"
+
+  - index: 26
+    title: "暗账水印造纸厂"
+    chapter_start: 836
+    chapter_end: 868
+    protagonist_goal: "顺着第十一卷水印纸与第二十二卷漂白剂线索，端掉为暗网印制密账与假证的特种造纸厂"
+    antagonist_id: "vol26_boss"
+    cool_point_modes:
+      - "造纸铜网辊筒直接还原商盟十年暗账底版"
+      - "水陆两路堵截销毁铜辊车队"
+    climax: "范敬亭在暴雨夜卸下水印铜网辊准备沉江，梁大川开工程吊车拦路，程远舟当场拓印出十年完整交易名录"
+    payoff: "兑现水印账纸伏笔，彻底坐实商盟近十年涉案往来铁证"
+    enters:
+      - "vol26_boss"
+    exits:
+      - id: "vol26_boss"
+        how: "伪造重要票证及参与有组织犯罪集团被当场擒获"
+    map:
+      location_id: "loc_vol26_paper_mill"
+      name: "沿江支流深谷特种造纸厂"
+    key_scenes:
+      - "暴雨倾盆的装货坪上，重达半吨的水印铜辊被吊车钢缆稳稳锁在半空"
+      - "程远舟在防雨棚下现场手拓铜辊纹路，显出二十七家空壳企业编号"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_ledger_watermark"
+    antagonist_motive: "掌管商盟唯一特种防伪造纸产线，靠垄断密账与假证纸基成为核心大管家"
+    new_gameplay: "特种造纸铜网辊拓印复原+暴雨山谷拦截战"
+    mainline_step: "拿到全网总账实体母版，商盟四大高层仅剩最后三位"
+    daily_case_quota: 1
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用邮轮公海断网桥段"
+      - "禁止重复海警登船收尾"
+
+  - index: 27
+    title: "古建修缮回扣局"
+    chapter_start: 869
+    chapter_end: 901
+    protagonist_goal: "查清沿江百年廊桥修缮工程偷工减料导致险情背后的招投标围标与工程回扣黑幕"
+    antagonist_id: "vol27_boss"
+    cool_point_modes:
+      - "桥墩古铜钉听铜识破劣质混泥土灌浆"
+      - "防汛夜抢险与公堂亮标双线并进"
+    climax: "石开元买通验收组企图在洪峰前强行签字过审，程远舟联合梁大川超声探伤测出空心桥墩并公开围标串通记录"
+    payoff: "及时加固百年廊桥避免塌桥惨剧，拔掉商盟在基建工程线的最后金库"
+    enters:
+      - "vol27_boss"
+    exits:
+      - id: "vol27_boss"
+        how: "串通投标与重大工程安全事故隐患责任人被依法批捕"
+    map:
+      location_id: "loc_vol27_covered_bridge"
+      name: "沧江上游百年木石廊桥修缮工地"
+    key_scenes:
+      - "洪峰预警拉响前两小时，超声探伤仪屏幕跳出桥墩内部大片空洞波形"
+      - "程远舟从施工方送来的纪念铜镇纸里抠出暗藏的回扣分账芯片"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "靠围标垄断沿江古建与市政修缮项目，用劣质建材套取财政拨款输血商盟"
+    new_gameplay: "古建工程超声探伤实测+防汛抢险与反围标双线"
+    mainline_step: "彻底断绝商盟的工程现金流，逼迫港口金库看守提前转移底档"
+    daily_case_quota: 2
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用造纸厂铜辊拓印桥段"
+      - "禁止重复暴雨山谷拦截货车"
+
+  - index: 28
+    title: "深水港地下铜库"
+    chapter_start: 902
+    chapter_end: 934
+    protagonist_goal: "带着第十六卷异形铜钥匙，抢在转移前攻破深水港地下金库并寻回失踪十年的师父下落"
+    antagonist_id: "vol28_boss"
+    cool_point_modes:
+      - "异形铜钥匙开启地下防潮暗库"
+      - "旧物残账与师父手书现场会师"
+    climax: "廖景山启动港库海水倒灌阀门欲与证物同毁，程远舟借掌纹听铜定位备用手动泄压阀并保住原始船检簿"
+    payoff: "兑现港口金库钥匙伏笔，找到隐姓埋名十年的师父并拿到直指终极大佬的原始手书"
+    enters:
+      - "vol28_boss"
+    exits:
+      - id: "vol28_boss"
+        how: "在深水港暗库出口被严铁锋率特警当场擒获"
+    map:
+      location_id: "loc_vol28_deepwater_vault"
+      name: "沧江出海口深水港地下防潮金库"
+    key_scenes:
+      - "海水漫过脚踝时，程远舟盲摸三秒扳动藏在铁门后的青铜泄压轮"
+      - "铁箱开启瞬间，师父十年前留下的那把旧刻刀静静压在原始船检簿上"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_harbor_vault_key"
+    antagonist_motive: "作为商盟大总管掌管深水港秘密金库，妄图销毁全部纸质原始证物换取外逃退路"
+    new_gameplay: "地下金库泄压抢险+师门旧案真相全量解锁"
+    mainline_step: "查清师父当年假死潜伏全貌，终极黑手身份彻底浮出水面"
+    daily_case_quota: 1
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用桥梁超声探伤或工程招投标桥段"
+      - "禁止重复防汛抢险叙事"
+
+  - index: 29
+    title: "商盟白手套末路"
+    chapter_start: 935
+    chapter_end: 967
+    protagonist_goal: "拔除终极黑手身前最后一道慈善资本屏障，阻止其利用离岸基金金蝉脱壳"
+    antagonist_id: "vol29_boss"
+    cool_point_modes:
+      - "六大配角全线联动跨行业合围"
+      - "慈善晚会同步公开二十九卷涉案闭环图"
+    climax: "贾伯通动用资本与律师团发动全网封杀和诉讼围剿，团队六人各司其职在直播间逐一击穿其离岸股权代持网"
+    payoff: "白手套彻底崩盘反水供出最终交易地，为第三十卷总清算扫清全部外围障碍"
+    enters:
+      - "vol29_boss"
+    exits:
+      - id: "vol29_boss"
+        how: "企图乘私人游艇外逃时被边防与专案组联合拦截"
+    map:
+      location_id: "loc_vol29_charity_gala"
+      name: "滨江金融中心顶层慈善拍卖厅"
+    key_scenes:
+      - "六块分屏直播同时亮出刑侦、法医、汽修、调查、法援与电子公证六条证据链"
+      - "贾伯通签字认罪时亲手交出终极金主邀约程远舟赴约的青铜请柬"
+    foreshadows_plant: []
+    foreshadows_payoff: []
+    antagonist_motive: "充当终极大佬前台资本白手套，妄图在主子退隐前将脏钱洗成合法慈善信托"
+    new_gameplay: "六配角全员高光分屏协同+离岸信托穿透对质"
+    mainline_step: "扫清全部羽翼，终极对手韦仲平无路可退，相约老码头决战"
+    daily_case_quota: 1
+    fugitive_case_quota: 2
+    forbidden_from_prev_volume:
+      - "禁止使用地下金库海水倒灌桥段"
+      - "禁止重复单人盲摸机关逃生"
+
+  - index: 30
+    title: "沧江总账归清流"
+    chapter_start: 968
+    chapter_end: 1000
+    protagonist_goal: "在沧江老码头与商盟终极幕后韦仲平完成总对决，平反十年前旧船厂冤案并收束全书千章因果"
+    antagonist_id: "vol30_boss"
+    cool_point_modes:
+      - "终局暗债清零映出全部封存原档"
+      - "千章群像回归老码头共迎公道大结局"
+    climax: "韦仲平在大雾封航夜企图烧毁最后一枚青铜总舵印并胁迫证人，程远舟以完整船厂铜铭牌映出暗柜铁证，全队合围令其当众伏法"
+    payoff: "兑现终极青铜总舵印伏笔，十年前冤案昭雪，程远舟听铜瞳暗债清零，旧物铺升格为公益反诈鉴证馆"
+    enters:
+      - "vol30_boss"
+    exits:
+      - id: "vol30_boss"
+        how: "组织领导黑产集团与十年前纵火主谋罪名坐实，在老码头堤坝依法收押"
+    map:
+      location_id: "loc_vol30_old_ferry_finale"
+      name: "沧江老码头一号旧渡口与修补铺"
+    key_scenes:
+      - "江雾散尽的清晨，程远舟将青铜总舵印与原始船检簿一并移交公诉人"
+      - "老街修补铺重新挂牌，六位同伴各自带着兑现的承诺回铺喝下一杯清茶"
+    foreshadows_plant: []
+    foreshadows_payoff:
+      - "fs_grand_patron_seal"
+    antagonist_motive: "二十年前靠吞并改制船厂与黑产起家，如今已成沿江名流商绅，为保家族百年清名企图彻底抹掉历史原罪"
+    new_gameplay: "终局暗债清零+千章跨卷物证总闭环公审"
+    mainline_step: "全书总清算：三十卷一卷一副本全部闭环，六大配角独立成长线圆满落地"
+    daily_case_quota: 0
+    fugitive_case_quota: 1
+    forbidden_from_prev_volume:
+      - "禁止使用顶层慈善晚宴或游艇逃亡桥段"
+      - "禁止再引入新外围反派分散终局聚焦"
+
+cast:
+  - id: "mc"
+    name: "程远舟"
+    role: "沧江老街旧物修复师兼反诈公益直播间主理人（主角，26岁）"
+    first_volume: 1
+    exit_volume: null
+    appearance_card: "一米八零清瘦身形，常穿深灰帆布围裙配立领旧工装，右掌虎口有修补铜器留下的薄茧与淡色烫痕，目光沉静锐利"
+    voice_card:
+      speech_patterns: "平实利落带点市井冷幽默，看人先看随身物件的磨损痕迹，从不装神弄鬼喊口号"
+      catchphrases:
+        - "器物不会撒谎，撒谎的是经手人的指纹和账本。"
+    arc: "从独守老街旧铺的小修补匠成长为联动六大专业同伴撕破沿江暗网的破局核心"
+    independent_goal: "查明十年前沧江旧船厂失火与师父失踪真相，把老街修补铺做成帮普通人守住公道的鉴证驿站"
+    flaw_or_setback: "前期习惯单打独斗且因过度使用听铜瞳数次导致右掌失灵，在中段被设局反咬后学会信任团队分工"
+    stage_arcs:
+      - "第一阶段（第1-10卷）：靠线下修补与直播鉴物立足老码头，揭开旧船厂纵火执行层"
+      - "第二阶段（第11-20卷）：挺进省城直面跨行业黑产与舆论围剿，补齐团队专业拼图"
+      - "第三阶段（第21-30卷）：顺着沿江资金与暗账总母版穿透保护伞，迎来师门昭雪与暗债清零"
+
+  - id: "ally_detective"
+    name: "严铁锋"
+    role: "沧江市局刑侦支队副大队长（36岁，核心官面搭档，六大配角之一）"
+    first_volume: 1
+    exit_volume: null
+    appearance_card: "平头方脸，下颌线凌厉，左腕戴一块表壳磨花的旧机械表，常穿藏青战术夹克，鞋底总沾着外勤泥灰"
+    voice_card:
+      speech_patterns: "短促干脆重程序，嘴上嫌直播间喧闹，却总在出警前先把现场封控图提前发给团队核对"
+      catchphrases:
+        - "程序走稳，证据锁死，剩下的交给手铐。"
+    arc: "从孤身暗查内鬼、处处提防民间线索的硬派刑警，成长为善用多专业协查体系的专案核心指挥官"
+    independent_goal: "查清七年前老搭档失踪与市局内部泄密案，亲手把警队叛徒送上法庭"
+    flaw_or_setback: "因执念于七年前旧案在第15卷遭内鬼反咬险被停职，靠冷静自证和团队物证才逆转绝境"
+    stage_arcs:
+      - "第1-6卷：从怀疑程远舟私查越界到建立线下线索核验默契，拿下港区大案"
+      - "第7-15卷：循着失踪警徽逆向排查系统泄密，顶住停职风暴亲手清理门户"
+      - "第16-30卷：升任跨省专案总协调，带领公海围捕与老码头终局收网"
+
+  - id: "ally_operator"
+    name: "姜可欣"
+    role: "直播间总导演兼电子证据归档师（23岁，核心运营搭档，六大配角之一）"
+    first_volume: 1
+    exit_volume: null
+    appearance_card: "齐肩短发别一枚银色工牌夹，背一只装满备用电池与便携补光灯的黑色双肩包，指尖常年敲击时间轴快捷键"
+    voice_card:
+      speech_patterns: "语速明快条理清晰，擅长把复杂物证拆成三点弹幕看板，关键时刻比谁都冷静"
+      catchphrases:
+        - "画面切特写，时间戳已哈希存证。"
+    arc: "从因姐姐遭网暴退圈而畏惧镜头的剪辑助理，蜕变为掌控千万级反诈直播矩阵的证据总控"
+    independent_goal: "替遭黑公关构陷退圈的姐姐洗清冤屈，建起普通人免费可用的反诈电子取证档案库"
+    flaw_or_setback: "早期面对水军恶意举报与人肉骚扰曾险些崩溃关播，在第7卷民宿案中独自扛住取证压力彻底蜕变"
+    stage_arcs:
+      - "第1-7卷：从零搭建旧铺直播间，在古镇偷拍案里首次独立完成电子证据哈希公证"
+      - "第8-20卷：与姚思敏联手打穿热搜水军生态，正式洗清姐姐多年网暴污名"
+      - "第21-30卷：升级为跨省公益反诈取证中枢，在邮轮断网夜用短波挽救全盘行动"
+
+  - id: "ally_forensic"
+    name: "孟书瑶"
+    role: "市局法医室主检法医（29岁，法医物证核心，六大配角之一）"
+    first_volume: 2
+    exit_volume: null
+    appearance_card: "低马尾戴细框金丝眼镜，白大褂内搭深色高领毛衣，口袋里永远插着两支不同色号的记号笔和低温样本标签"
+    voice_card:
+      speech_patterns: "语气温和但结论斩钉截铁，习惯用毫米、小时和试剂显色结果替代一切情绪化判断"
+      catchphrases:
+        - "伤口和试剂不会替谁圆谎。"
+    arc: "从被父亲旧案阴影压得不敢接重案主检的年轻法医，成长为在司法鉴定听证会上力挽狂澜的权威专家"
+    independent_goal: "追回父亲十五年前被调包遗失的冷案尸检底片，还父亲一生清白"
+    flaw_or_setback: "曾因怕重蹈父亲覆辙在面对医疗鉴定黑幕时一度犹豫退缩，直到第18卷险失原片才迎难而上"
+    stage_arcs:
+      - "第2-10卷：从冷库毒理案切入团队，在汽修与船厂旧案中逐步拼出冷案底片去向"
+      - "第11-18卷：直面私立鉴定所黑幕，亲手显影十五年前玻璃底片替父正名"
+      - "第19-30卷：担任跨省疑难物证首席复核人，坐实多起伪造意外灭口重案"
+
+  - id: "ally_mechanic"
+    name: "梁大川"
+    role: "城南汽修厂老板兼机械结构鉴证专家（41岁，硬核技术支援，六大配角之一）"
+    first_volume: 3
+    exit_volume: null
+    appearance_card: "敦实壮硕，常穿袖口卷至小臂的深蓝机修服，前臂有老焊疤，腰间工具带挂满游标卡尺与套筒扳手"
+    voice_card:
+      speech_patterns: "嗓门洪亮直爽，嘴上爱拿螺丝和轴承打比方，碰到坑害普通工人的黑心老板当场就炸"
+      catchphrases:
+        - "铁疙瘩装没装反，上手一拧就露馅。"
+    arc: "从背负徒弟失联愧疚的粗犷修车汉，成长为能改装探测装备与破解工业暗箱的硬核工程专家"
+    independent_goal: "找回三年前因假配件事故卷入黑厂失联的关门徒弟，守住城南老汽修厂的口碑招牌"
+    flaw_or_setback: "脾气火爆曾在第12卷单枪匹马卧底改装厂差点命丧液压千斤顶，脱险后学会严格按预案协同"
+    stage_arcs:
+      - "第3-12卷：顺着劣质刹车片一路追到省际改装黑厂，拼命救出失联徒弟解开心结"
+      - "第13-22卷：把汽修厂扩建成机械物证拆解间，亲手改装水下探测车揪出危废暗管"
+      - "第23-30卷：在造纸厂暴雨吊车拦截与廊桥超声探伤中屡建奇功"
+
+  - id: "ally_reporter"
+    name: "姚思敏"
+    role: "深度调查记者兼公益纪实栏目主理人（28岁，舆论与暗访主力，六大配角之一）"
+    first_volume: 4
+    exit_volume: null
+    appearance_card: "利落马尾穿卡其色风衣，斜挎一只旧皮质采访包，录音笔与便携防抖云台随身不离手"
+    voice_card:
+      speech_patterns: "追问犀利层层递进，擅长用前后两句对方原话自己打脸，文字稿件克制而极有穿透力"
+      catchphrases:
+        - "别急着发律师函，先回答时间线对不上的这三分钟。"
+    arc: "从老报社被资本吞并后四处碰壁的失业记者，成长为击碎黑公关帝国的独立调查标杆"
+    independent_goal: "查出当年恶意收购并毁掉老报社纸质档案的幕后传媒黑手，重建公益深度调查栏目"
+    flaw_or_setback: "前期因急于抢独家险些轻信对方放出的假爆料，吃亏后建立起三重交叉信源铁律"
+    stage_arcs:
+      - "第4-10卷：在水军造谣坊一战打响反制名号，成为团队核心信源交叉核验官"
+      - "第11-20卷：死咬热搜壳资源账链，在国际新媒体峰会当众扳倒黑公关教父夺回旧报社档案"
+      - "第21-30卷：深入县域农资、危废与慈善黑产一线，用公益长片推动多项行业透明整改"
+
+  - id: "ally_lawyer"
+    name: "郑启明"
+    role: "法律援助中心公益律师（33岁，追赃与程序闭环核心，六大配角之一）"
+    first_volume: 5
+    exit_volume: null
+    appearance_card: "中等身材戴黑框方镜，深灰西装总是熨得笔挺，手提一只边角磨损的黑色牛皮公文包，里面装满标注彩色便签的法条册"
+    voice_card:
+      speech_patterns: "温润克制却绵里藏针，开口先引具体法条编号与时效节点，最擅长把嚣张对手拖进无懈可击的程序陷阱"
+      catchphrases:
+        - "情理归情理，咱们先按法条把冻结手续办完。"
+    arc: "从总被资本律师团以管辖拖延压得喘不过气的基层法援，成长为推动跨省涉诈赃款先行返还机制落地的实务标杆"
+    independent_goal: "打通跨省涉诈赃款快速冻结与受害者先行返还机制，不让老百姓赢了官司却拿不回钱"
+    flaw_or_setback: "曾因过于拘泥单地流程在早期差点让涉诈资金顺着时差溜走，复盘后练就多地同步保全的雷霆打法"
+    stage_arcs:
+      - "第5-14卷：从养老理疗骗局卡点冻结起步，连破套路贷阴阳合同与拍卖洗钱壁垒"
+      - "第15-24卷：深耕跨省资金池穿透取证，在自贸区保理案中促成先行返还机制首案落地"
+      - "第25-30卷：全程把关终局公诉证据链与离岸信托穿透，让全部涉案赃款归还苦主"
+
+  - id: "vol01_boss"
+    name: "胡万宝"
+    role: "老码头古玩街摊霸兼假货销赃头目（45岁，第一卷反派）"
+    first_volume: 1
+    exit_volume: 1
+    appearance_card: "矮壮圆脸，脖子挂一条粗金链，左眉尾有一道旧磕疤，常夹一只鼓囊囊的黑色手包"
+    voice_card:
+      speech_patterns: "油滑横蛮，开口就是老街规矩与面子钱，理亏时立刻拍桌喊人围堵"
+      catchphrases: []
+    arc: "企图霸占旧铺掩盖假货仓库，被程远舟当众拆镜揭底入狱"
+    independent_goal: "吞并老码头整排临街铺位垄断旧货销赃渠道"
+    flaw_or_setback: "贪小利在夹层保留进货单据导致一击致命"
+    stage_arcs:
+      - "第1卷：逼迁旧铺栽赃不成反自曝暗格赃物落网"
+
+  - id: "vol02_boss"
+    name: "赵德坤"
+    role: "城西中药冷库老板兼假药批发商（51岁，第二卷反派）"
+    first_volume: 2
+    exit_volume: 2
+    appearance_card: "瘦长颧骨高，常穿暗褐绸面马褂，指缝沾着洗不净的硫黄药渍"
+    voice_card:
+      speech_patterns: "满口老字号祖训，暗地里算盘打得比谁都狠"
+      catchphrases: []
+    arc: "为堵赌债倒卖劣质药材并企图冷库灭口，被物证毒理锁死罪责"
+    independent_goal: "靠劣药暴利填平家族药行巨额赌债亏空"
+    flaw_or_setback: "迷信冷库低温能毁灭指纹却忽视门把残胶与铜秤暗账"
+    stage_arcs:
+      - "第2卷：造假售劣并设冷库灭口局终被抓捕"
+
+  - id: "vol03_boss"
+    name: "马振东"
+    role: "城南非法拆车翻新厂老板（44岁，第三卷反派）"
+    first_volume: 3
+    exit_volume: 3
+    appearance_card: "皮肤黝黑粗壮，右手缺半截小指，总披一件油渍斑驳的迷彩夹克"
+    voice_card:
+      speech_patterns: "粗声大气不耐烦，动辄拿行规恐吓下游修车小工"
+      catchphrases: []
+    arc: "翻新事故车刹车片牟利并扣押学徒，终在夜班熔炉旁人赃并获"
+    independent_goal: "垄断城郊黑物流车队低价配件供应网"
+    flaw_or_setback: "不舍得提前报废昂贵铆钉模具留下致命钢印铁证"
+    stage_arcs:
+      - "第3卷：毁证未遂在拆车场被拖车堵门落网"
+
+  - id: "vol04_boss"
+    name: "孙广才"
+    role: "地下黑公关水军机房操盘手（37岁，第四卷反派）"
+    first_volume: 4
+    exit_volume: 4
+    appearance_card: "戴无框眼镜留油头，袖口总露出高仿名表，手指习惯快速敲击手机群控屏"
+    voice_card:
+      speech_patterns: "满嘴流量生意与公关预算，笃信只要水军够多黑的也能刷成白的"
+      catchphrases: []
+    arc: "造谣围攻老街商户反被姚思敏逐帧拆穿机房地址"
+    independent_goal: "借热搜抹黑业务吞并全市中小商户公关保护费市场"
+    flaw_or_setback: "为省道具钱重复使用同一批群演与小票暴露造假痕迹"
+    stage_arcs:
+      - "第4卷：抹黑直播间反被双屏反杀并端掉机房"
+
+  - id: "vol05_boss"
+    name: "郭天豪"
+    role: "空壳康养会务公司董事长（48岁，第五卷反派）"
+    first_volume: 5
+    exit_volume: 5
+    appearance_card: "染得乌黑的偏分头，白西装别红丝巾，见老人便满脸堆笑鞠躬喊叔姨"
+    voice_card:
+      speech_patterns: "极富煽动力的成功学演讲腔，善用亲情焦虑逼单刷卡"
+      catchphrases: []
+    arc: "靠百元假理疗床收割老人养老金，潜逃前夜遭财产保全截胡落网"
+    independent_goal: "收割完本季六千万会费后经香港转逃海外"
+    flaw_or_setback: "贪图办豪华庆功宴再捞最后一波导致给郑启明留出冻结窗口"
+    stage_arcs:
+      - "第5卷：庆功宴连麦拆机败露，高速换车潜逃被截"
+
+  - id: "vol06_boss"
+    name: "朱建华"
+    role: "旧港区三号码头调度头目（49岁，第六卷反派）"
+    first_volume: 6
+    exit_volume: 6
+    appearance_card: "穿反光背心套防雨冲锋衣，嗓音嘶哑，颈侧常挂一枚铜哨"
+    voice_card:
+      speech_patterns: "话少冷硬，全用货柜编号和潮汐时间暗语指挥手下"
+      catchphrases: []
+    arc: "替黑产与通缉犯偷运暗柜，终在雨夜码头被铅封铜扣锁定翻车"
+    independent_goal: "在旧港区搬迁前捞够最后三笔偷渡重金隐退"
+    flaw_or_setback: "自恃雨夜箱号混乱却未料程远舟能凭铅封铜扣直指真柜"
+    stage_arcs:
+      - "第6卷：雨夜暗柜偷运被海陆合围落网"
+
+  - id: "vol07_boss"
+    name: "高志勇"
+    role: "青溪古镇网红民宿链老板（38岁，第七卷反派）"
+    first_volume: 7
+    exit_volume: 7
+    appearance_card: "蓄络腮胡穿棉麻立领衫，总端着一杯手冲咖啡装文艺主理人"
+    voice_card:
+      speech_patterns: "轻柔虚伪，惯用隐私和名声威逼发现偷拍的年轻住客闭嘴"
+      catchphrases: []
+    arc: "在民宿仿古插座藏偷拍头倒卖暗网，被姜可欣哈希存证钉死"
+    independent_goal: "借暗网定制偷拍视频迅速还清扩张民宿的民间高利贷"
+    flaw_or_setback: "误以为远程清空云端就能脱罪，忽略路由器局域网日志镜像"
+    stage_arcs:
+      - "第7卷：插座针孔败露后删档未遂被当场抓获"
+
+  - id: "vol08_boss"
+    name: "吴金福"
+    role: "封闭艺考集训基地校长（46岁，第八卷反派）"
+    first_volume: 8
+    exit_volume: 8
+    appearance_card: "腆着微凸肚腩，穿深紫羊绒背心配金边老花镜，常端着保温杯摆名师架子"
+    voice_card:
+      speech_patterns: "开口闭口名校指标和内部人脉，专挑家长望子成龙的痛点下套"
+      catchphrases: []
+    arc: "用假高校铜匾和阴阳套路贷坑害艺考家庭，宣讲会当场翻车"
+    independent_goal: "把集训基地做成地下放贷团伙的稳定获客入口"
+    flaw_or_setback: "高调展示翻模伪造铜匾被程远舟当众验出低劣沙眼"
+    stage_arcs:
+      - "第8卷：家长会现场合同与假匾双双穿帮被带走"
+
+  - id: "vol09_boss"
+    name: "杨文博"
+    role: "江畔夜场拍卖行首席掌眼兼老板（52岁，第九卷反派）"
+    first_volume: 9
+    exit_volume: 9
+    appearance_card: "银边眼镜配定制炭灰长衫，双手保养白净，常戴白丝手套持折扇"
+    voice_card:
+      speech_patterns: "斯文矜持善用收藏术语抬价，暗地里用眼神示意托儿举牌"
+      catchphrases: []
+    arc: "借高仿书画天价成交替通缉犯洗钱，被程远舟举牌拆穿画轴新焊点"
+    independent_goal: "把春拍夜场打造成沿江黑产资金合规过账的固定通道"
+    flaw_or_setback: "轻敌忽略新装裱轴头铜钉留下去年厂家批次钢印"
+    stage_arcs:
+      - "第9卷：三千万赝画过账前被当场叫停并一锅端"
+
+  - id: "vol10_boss"
+    name: "徐国梁"
+    role: "市政拆迁工程承包商兼旧船厂纵火执行人（54岁，第十卷反派）"
+    first_volume: 10
+    exit_volume: 10
+    appearance_card: "戴白色安全帽的宽肩壮汉，右耳垂有旧烧伤疤，说话时习惯摩挲打火机"
+    voice_card:
+      speech_patterns: "豪横霸道，惯用工程安全和工期当挡箭牌赶走调查人员"
+      catchphrases: []
+    arc: "十年前纵火烧毁船厂账房换取起家资本，企图爆破毁证时人赃并获"
+    independent_goal: "借旧船厂整体爆破彻底抹平十年前纵火残留的铁箱证物"
+    flaw_or_setback: "过度依赖爆破倒计时反暴露配电楼地沟暗箱的准确方位"
+    stage_arcs:
+      - "第10卷：爆破毁证失败，供出幕后纵火雇主线索"
+
+  - id: "vol11_boss"
+    name: "黄永昌"
+    role: "青羊巷私立藏书阁修复主管（57岁，第十一卷反派）"
+    first_volume: 11
+    exit_volume: 11
+    appearance_card: "瘦削清高，常穿灰蓝长衫戴圆框玳瑁镜，指尖常沾浆糊碎屑"
+    voice_card:
+      speech_patterns: "居高临下爱以学术资历压人，最厌恶外行质疑其专业权威"
+      catchphrases: []
+    arc: "调包捐赠善本私卖海外，在文博听证会上反被真本微标打脸"
+    independent_goal: "借私人藏书阁修复项目私吞五部孤本换取退休养老巨款"
+    flaw_or_setback: "企图嫁祸程远舟弄坏古籍反倒促成当场紫光验真"
+    stage_arcs:
+      - "第11卷：听证会调包真相败露并牵出水印暗账纸线索"
+
+  - id: "vol12_boss"
+    name: "邓世明"
+    role: "省际重卡改装黑厂幕后老板（47岁，第十二卷反派）"
+    first_volume: 12
+    exit_volume: 12
+    appearance_card: "精瘦干练，常穿深黑皮夹克配金属扣皮带，走起路来悄无声息"
+    voice_card:
+      speech_patterns: "冷漠克制，对工人只讲价码和保密规矩，翻脸极快"
+      catchphrases: []
+    arc: "改装走私暗仓重卡并软禁技工，被梁大川反杀并堵截车队"
+    independent_goal: "为沿江商盟维持高隐蔽度的省际陆运暗仓专线"
+    flaw_or_setback: "轻视梁大川对重卡液压系统的肌肉记忆反遭锁死退路"
+    stage_arcs:
+      - "第12卷：暗杀卧底失败，黑厂与暗仓重卡全数被扣"
+
+  - id: "vol13_boss"
+    name: "彭长顺"
+    role: "老钟楼金银锻造工坊继承人（50岁，第十三卷反派）"
+    first_volume: 13
+    exit_volume: 13
+    appearance_card: "圆润富态，双手戴三枚雕花银戒，笑起来总先拱手自报家门字号"
+    voice_card:
+      speech_patterns: "满口百年非遗与匠心传承，被质疑时立刻搬出协会头衔威慑"
+      catchphrases: []
+    arc: "在足银婚庆手镯内暗灌铅铜芯牟利，被市监局当场剪镯揭皮"
+    independent_goal: "借老字号溢价与灌铅成本差撑住扩张门店的巨额租金"
+    flaw_or_setback: "低估程远舟听铜辨音本事竟主动答应现场随机抽检"
+    stage_arcs:
+      - "第13卷：当众剪开镇店银镯露出铅芯被刑拘"
+
+  - id: "vol14_boss"
+    name: "曾宪武"
+    role: "南郊玉石交易公盘操盘人（43岁，第十四卷反派）"
+    first_volume: 14
+    exit_volume: 14
+    appearance_card: "寸头戴粗黑框墨镜，颈间挂一块满绿仿翠平安扣，总握着强光手电筒"
+    voice_card:
+      speech_patterns: "极善烘托赌石狂热气氛，惯用激将法逼人当场押注签单"
+      catchphrases: []
+    arc: "用注胶贴皮原石联合私募托儿宰客，被拒赌拆穿胶缝一网打尽"
+    independent_goal: "通过公盘对赌局帮逃犯洗钱并收割中小企业主现金"
+    flaw_or_setback: "笃定程远舟会贪功赌掌押注，没料对方只验托盘和胶缝"
+    stage_arcs:
+      - "第14卷：水切机切出工业树脂层，现场与逃犯一并落网"
+
+  - id: "vol15_boss"
+    name: "田庆丰"
+    role: "市局老档案科主管兼七年潜伏内鬼（53岁，第十五卷反派）"
+    first_volume: 15
+    exit_volume: 15
+    appearance_card: "微胖和善，鬓角花白，总提着一只旧帆布保温袋，逢人便笑眯眯递热茶"
+    voice_card:
+      speech_patterns: "老好人腔调滴水不漏，实则每句寒暄都在打探专案组最新布控"
+      catchphrases: []
+    arc: "受贿沦为黑产保护伞七年，栽赃严铁锋不成反被双物共鸣锁死"
+    independent_goal: "在退休前彻底销毁调档记录并把泄密黑锅扣到严铁锋头上"
+    flaw_or_setback: "伪造调档日志时忽略加密副本与档案柜铜扣残留记录"
+    stage_arcs:
+      - "第15卷：听证会反杀败露被纪检当场留置"
+
+  - id: "vol16_boss"
+    name: "董宏伟"
+    role: "西山封闭禅修书院导师（49岁，第十六卷反派）"
+    first_volume: 16
+    exit_volume: 16
+    appearance_card: "留齐肩灰发穿宽大素白道袍，手持铜磬，眼神刻意营造慈悲疏离感"
+    voice_card:
+      speech_patterns: "慢条斯理夹杂空洞哲理，善用否定学员原生家庭制造精神依赖"
+      catchphrases: []
+    arc: "借致幻熏香与声学催眠骗取富商房产，被拆穿香灰与铜磬机关"
+    independent_goal: "通过闭关仪式批量收割学员名下不动产并替商盟保管密匙"
+    flaw_or_setback: "过度依赖封闭断网和熏香控场，断电瞬间全部机关穿帮"
+    stage_arcs:
+      - "第16卷：山庄停电夜机关败露并缴获港口金库异形钥匙"
+
+  - id: "vol17_boss"
+    name: "韩立军"
+    role: "地下沉浸式密室公馆老板（35岁，第十七卷反派）"
+    first_volume: 17
+    exit_volume: 17
+    appearance_card: "染浅棕挑染短发，穿复古格子马甲，腰间挂着一串民国风黄铜总控钥匙"
+    voice_card:
+      speech_patterns: "爱拿推理术语和规则免责条款绕晕大学生，翻脸后态度极嚣张"
+      catchphrases: []
+    arc: "借密室储值局勾结地下网贷坑害大学生，反被程远舟反向破译机关"
+    independent_goal: "用密室高端场景包装成拉人头借贷的合法娱乐外衣"
+    flaw_or_setback: "苛待兼职NPC演员导致关键时刻手下当场反水交出话术本"
+    stage_arcs:
+      - "第17卷：密室暗格借据曝光，团伙全员落网"
+
+  - id: "vol18_boss"
+    name: "吕宗仁"
+    role: "私立司法医学鉴定中心主任（58岁，第十八卷反派）"
+    first_volume: 18
+    exit_volume: 18
+    appearance_card: "梳理齐整的白发背头，穿昂贵羊绒西装外罩白大褂，手腕戴一块黄金表"
+    voice_card:
+      speech_patterns: "傲慢冷酷，惯用权威机构资质和程序时效压制受害人家属申诉"
+      catchphrases: []
+    arc: "十五年前篡改冷案鉴定结论并借此起家，焚毁原片前夜被孟书瑶截获"
+    independent_goal: "彻底烧毁当年留作筹码的玻璃底片，永绝翻案后患"
+    flaw_or_setback: "多年把底片当筹码锁在铜筒里没舍得销毁，最终成了铁证"
+    stage_arcs:
+      - "第18卷：暗房原片复明，虚假鉴定罪名坐实被捕"
+
+  - id: "vol19_boss"
+    name: "丁鹤年"
+    role: "伪装纪录片导演的跨境文物盗销头目（44岁，第十九卷反派）"
+    first_volume: 19
+    exit_volume: 19
+    appearance_card: "戴鸭舌帽配多口袋摄影背心，脖子挂一台单反相机，言谈举止极有亲和力"
+    voice_card:
+      speech_patterns: "满口抢救性记录非遗文化，哄骗老艺人毫无防备打开道具库"
+      catchphrases: []
+    arc: "借拍纪录片盗走老戏班传家戏服外运，被铜锣残音识破器材夹箱"
+    independent_goal: "将百件古戏服与点翠头面经离岸仓高价销往海外收藏圈"
+    flaw_or_setback: "把老铜锣随手塞进夹箱垫底反而触发程远舟听铜定位"
+    stage_arcs:
+      - "第19卷：省界高速口截车起赃落网"
+
+  - id: "vol20_boss"
+    name: "任光耀"
+    role: "星潮传媒集团董事长兼黑公关教父（50岁，第二十卷反派）"
+    first_volume: 20
+    exit_volume: 20
+    appearance_card: "定制黑色高领毛衣配深灰西装，目光如鹰，上台从不带讲稿"
+    voice_card:
+      speech_patterns: "极具压迫感的资本话语权腔调，擅长用封杀和天价索赔吓退调查者"
+      catchphrases: []
+    arc: "吞并老报社并垄断热搜灰产，在新媒体峰会直播间被姚思敏当众击穿"
+    independent_goal: "借年度峰会彻底封杀公益反诈矩阵，稳固商盟舆论霸权"
+    flaw_or_setback: "迷信全网控评能力竟亲自登台辩论，结果实锤同步冲上全国热榜"
+    stage_arcs:
+      - "第20卷：峰会演播厅公开对账崩盘被捕"
+
+  - id: "vol21_boss"
+    name: "卢守业"
+    role: "县域农资中转站霸主（48岁，第二十一卷反派）"
+    first_volume: 21
+    exit_volume: 21
+    appearance_card: "国字脸皮肤粗糙，穿旧夹克蹬胶靴，左手常拎着一串叮当作响的仓库铜钥匙"
+    voice_card:
+      speech_patterns: "满嘴乡土老哥客套，一出问题就推给天灾并雇人恐吓领头农户"
+      catchphrases: []
+    arc: "倒卖真良种并以染色陈种坑农，被田间实勘拆穿粮仓暗账"
+    independent_goal: "靠春耕假种暴利向商盟上供换取沿江农资总代理权"
+    flaw_or_setback: "将真种转卖单与商盟拓片锁在同一旧铁箱导致拔出萝卜带出泥"
+    stage_arcs:
+      - "第21卷：晒谷场发芽实测打脸，供出青铜总舵印拓片"
+
+  - id: "vol22_boss"
+    name: "崔宝山"
+    role: "地下危废处置承包商（46岁，第二十二卷反派）"
+    first_volume: 22
+    exit_volume: 22
+    appearance_card: "面色泛灰偏瘦，常戴橡胶手套和防毒半面罩，衣领沾有刺鼻溶剂味"
+    voice_card:
+      speech_patterns: "冷血算计，张口闭口处置成本与环保巡检空窗期"
+      catchphrases: []
+    arc: "夜间借暗管偷排工业危废毁掉千亩鱼塘，被水下探测车铁证锁死"
+    independent_goal: "靠零成本偷排危废承揽沿江黑工厂全部废液外包业务"
+    flaw_or_setback: "以为放清水冲洗即可掩盖排污口，未防梁大川水下直拍铜阀开关"
+    stage_arcs:
+      - "第22卷：泵房控制室被环保与警方联合收网"
+
+  - id: "vol23_boss"
+    name: "钟明达"
+    role: "跨省大病黑众筹中介头目（39岁，第二十三卷反派）"
+    first_volume: 23
+    exit_volume: 23
+    appearance_card: "清秀白净穿浅蓝衬衫，胸前挂一枚伪造公益志愿者胸牌，笑起来极具欺骗性"
+    voice_card:
+      speech_patterns: "温柔共情极具煽动性，背地里把患儿病情按流量转化率标价"
+      catchphrases: []
+    arc: "靠雷同惨案模板截留七成救命善款，被全网对账彻底拆穿"
+    independent_goal: "把医院周边黑众筹地推模式复制到全国十二座三甲医院"
+    flaw_or_setback: "批量套用同一份错别字卖惨模板被网友与程远舟一眼抓包"
+    stage_arcs:
+      - "第23卷：善款银行流水公示后被跨省联合抓获"
+
+  - id: "vol24_boss"
+    name: "谭耀祖"
+    role: "自贸区商业保理清算公司总裁（51岁，第二十四卷反派）"
+    first_volume: 24
+    exit_volume: 24
+    appearance_card: "金丝无框眼镜配定制三件套西装，随身携带三部加密商务手机"
+    voice_card:
+      speech_patterns: "满口合规架构和金融创新术语，笃信法律程序永远追不上资金流转速度"
+      catchphrases: []
+    arc: "运营跨省黑产洗钱保理池，在郑启明四省联动保全下当庭败北"
+    independent_goal: "利用跨省时差把八千万涉诈资金拆分洗入离岸信托"
+    flaw_or_setback: "小看基层法援的跨省协作执行力，被四地同步冻结截断退路"
+    stage_arcs:
+      - "第24卷：清算大厦封账落网，商盟境内回流通道断绝"
+
+  - id: "vol25_boss"
+    name: "汪承恩"
+    role: "星辰号邮轮地下贵宾厅幕后操盘手（55岁，第二十五卷反派）"
+    first_volume: 25
+    exit_volume: 25
+    appearance_card: "白色双排扣海员式礼服，左手食指戴一枚锚形青铜戒，步态从容"
+    voice_card:
+      speech_patterns: "儒雅老练带点海上江湖气，总爱拿公海管辖权当护身符"
+      catchphrases: []
+    arc: "替通缉犯提供公海避风港与现金交割场，在领海线前被海警强行截停"
+    independent_goal: "拖延时间驶出领海线护送两名核心逃犯脱身"
+    flaw_or_setback: "低估姜可欣应急短波通讯能力与程远舟筹码图谱锁定速度"
+    stage_arcs:
+      - "第25卷：公海线前被海警登船控制，供出商盟高层架构"
+
+  - id: "vol26_boss"
+    name: "范敬亭"
+    role: "沿江深谷特种造纸厂厂长（56岁，第二十六卷反派）"
+    first_volume: 26
+    exit_volume: 26
+    appearance_card: "身形清瘦微驼，穿深蓝防静电工装，指腹因常年摸纸浆显得苍白粗糙"
+    voice_card:
+      speech_patterns: "惜字如金阴沉谨慎，任何纸页编号都只记在脑子里"
+      catchphrases: []
+    arc: "垄断暗网水印账纸生产十年，暴雨夜沉江毁辊失败被捕"
+    independent_goal: "在专案组合围前将刻有十年暗账的水印铜网辊沉入深潭"
+    flaw_or_setback: "暴雨山路泥泞导致运输车打滑，被梁大川吊车拦腰锁死"
+    stage_arcs:
+      - "第26卷：铜网辊当场拓印出全网交易名录，本人落网"
+
+  - id: "vol27_boss"
+    name: "石开元"
+    role: "沿江古建市政集团副总（49岁，第二十七卷反派）"
+    first_volume: 27
+    exit_volume: 27
+    appearance_card: "体格魁梧戴金表，穿冲锋衣配皮鞋，总拿着红蓝铅笔在施工图上大笔一挥"
+    voice_card:
+      speech_patterns: "豪爽讲义气作派，实则对工程质量草菅人命只认回扣点数"
+      catchphrases: []
+    arc: "围标侵吞百年廊桥修缮款致桥墩空心，洪峰前被超声探伤当场拆穿"
+    independent_goal: "赶在洪峰到来前逼迫验收组签字结清最后两千万工程尾款"
+    flaw_or_setback: "习惯把分账加密芯片藏在自制纪念铜镇纸里被程远舟一眼识破"
+    stage_arcs:
+      - "第27卷：防汛夜桥墩实测败露，围标回扣铁证坐实"
+
+  - id: "vol28_boss"
+    name: "廖景山"
+    role: "深水港秘密金库大总管（59岁，第二十八卷反派）"
+    first_volume: 28
+    exit_volume: 28
+    appearance_card: "满脸风霜皱纹，穿灰黑双排扣呢子大衣，右手虎口刻有旧港口锚印"
+    voice_card:
+      speech_patterns: "沉稳狠辣，像守墓人般忠于商盟旧主，关键时刻敢玉石俱焚"
+      catchphrases: []
+    arc: "看守深水港地下原始档案金库十年，引海水灭证未遂被擒"
+    independent_goal: "宁可淹毁地下金库也绝不让十年前原始船检簿落入警方之手"
+    flaw_or_setback: "忘记老船厂出身的程远舟对港口手动青铜泄压阀结构了如指掌"
+    stage_arcs:
+      - "第28卷：暗库倒灌抢险失败被擒，师父与原档双双获救"
+
+  - id: "vol29_boss"
+    name: "贾伯通"
+    role: "滨江慈善信托基金理事长兼终极白手套（54岁，第二十九卷反派）"
+    first_volume: 29
+    exit_volume: 29
+    appearance_card: "银灰定制礼服配领结，常面带慈善家微笑举起香槟杯，眼神却冷得像账单"
+    voice_card:
+      speech_patterns: "滴水不漏的精英法律公关辞令，动辄以跨国法务团队和公益名誉施压"
+      catchphrases: []
+    arc: "替终极大佬把黑产巨款洗入离岸慈善信托，在六配角全线合围下崩盘反水"
+    independent_goal: "借慈善拍卖夜完成最后一笔离岸股权置换并乘游艇逃离"
+    flaw_or_setback: "高估资本封口能力，被六大专业线同步公开穿透报告击溃防线"
+    stage_arcs:
+      - "第29卷：游艇外逃被拦截，交出终极金主青铜请柬"
+
+  - id: "vol30_boss"
+    name: "韦仲平"
+    role: "沿江商会名誉会长兼沧江暗网终极幕后主谋（64岁，第三十卷终极反派）"
+    first_volume: 30
+    exit_volume: 30
+    appearance_card: "身形清癯穿藏青立领中山装，手捻一枚包浆温润的旧铜镇纸，神态宛如退隐儒商"
+    voice_card:
+      speech_patterns: "慢条斯理带着上位者的居高临下，习惯把二十年罪孽轻描淡写成时代必然代价"
+      catchphrases: []
+    arc: "二十年前吞并改制船厂建起沿江暗网，终在沧江老码头大雾中被千章物证彻底钉死"
+    independent_goal: "毁掉最后一枚青铜总舵印与原始船检簿，以德高望重商绅身份体面退场"
+    flaw_or_setback: "一生算尽人心与资本，却低估了普通修补匠与六位同伴守望千章的韧性"
+    stage_arcs:
+      - "第30卷：老码头大雾终局对决败北，全部黑产原罪公审清算"
+
+foreshadow_plan:
+  - id: "fs_bronze_mirror"
+    title: "第一卷古玩暗格铜镜背面的十年前沧江旧船厂三角铜印"
+    plant_volume: 1
+    payoff_volume: 10
+  - id: "fs_dock_manifest"
+    title: "胡万宝旧账夹里夹带的三号码头异常冷柜货运清单"
+    plant_volume: 1
+    payoff_volume: 6
+  - id: "fs_mole_badge"
+    title: "药材冷库铁柜夹缝中七年前失踪老警员的铜质警徽"
+    plant_volume: 2
+    payoff_volume: 15
+  - id: "fs_autopsy_film"
+    title: "报废重卡事故单夹层里的十五年前冷案尸检袋底联"
+    plant_volume: 3
+    payoff_volume: 18
+  - id: "fs_fake_axle"
+    title: "造谣机房客户名单关联的省际重卡暗仓改造车轴订单"
+    plant_volume: 4
+    payoff_volume: 12
+  - id: "fs_hotsearch_shell"
+    title: "空壳康养会务公司背后代持热搜壳资源的传媒总包"
+    plant_volume: 5
+    payoff_volume: 20
+  - id: "fs_cross_province_fund"
+    title: "艺考套路贷流入跨省商业保理洗钱池的清算编号"
+    plant_volume: 8
+    payoff_volume: 24
+  - id: "fs_ledger_watermark"
+    title: "省城藏书阁旧账中带特种防伪暗纹的沿江造纸厂水印纸"
+    plant_volume: 11
+    payoff_volume: 26
+  - id: "fs_harbor_vault_key"
+    title: "西山禅修书院香案铜底座内藏的深水港地下金库异形钥匙"
+    plant_volume: 16
+    payoff_volume: 28
+  - id: "fs_grand_patron_seal"
+    title: "县域农资账箱夹层里显露的沿江商盟青铜总舵印拓片"
+    plant_volume: 21
+    payoff_volume: 30
+
+ending: "三十卷沿江暗网连根拔除，终极主谋韦仲平与全部保护伞依法公审定罪，十年前沧江旧船厂冤案彻底平反，师父重归老街；程远舟右掌听铜瞳完成最后一次暗债清算后归于常人，他把沧江老码头修补铺升格为公益反诈鉴证馆，与严铁锋、姜可欣、孟书瑶、梁大川、姚思敏、郑启明六位各自兑现独立人生目标的同伴继续守望烟火人间。"
+
+style:
+  genre_id: "urban_brainhole"
+  allow_pov_inner_monologue: true
+  humor: true
+  narration_rules: "坚持一卷一行业副本与日常小案加通缉重案双轨节奏，每卷必须落到具体器物工艺细节、物理取证与法律程序闭环；六大配角严禁沦为捧哏工具人，必须在各自专业领域拥有独立行动、试错低谷与阶段高光。"
+  sample_text: |
+    沧江老码头的梅雨刚歇，程远舟把修补台上的黄铜放大镜推到灯下，指腹轻轻刮过那面号称清代传家宝的菱花铜镜边缘。
+    站在柜台外的大金链子男人抱起胳膊冷笑：“小子，别装模作样了，这镜子你要么五万块收下赔罪，要么今天把铺子钥匙交出来。”
+    程远舟头也没抬，用小镊子顺着镜背云纹轻轻一挑，一截泛着机油亮的现代车床毛刺当场弹在白瓷盘里：“胡老板，清代工匠要是用得上数控铣床，你后腰手包里那张上周五的假货提货单，是不是也能算百年文物？”
+    镜头后面，姜可欣顺手把手机焦距拉满，直播间在线人数瞬间跳过了两万。
+
+adaptation:
+  visual_hook: "老码头青石板雨夜暖黄台灯下，青年指尖轻触古旧铜器刹那，铜面水波般映出涉案暗债的时间刻度与器物残影"
+  protagonist_look: "二十六岁清瘦青年，深灰帆布修补围裙配立领旧工装，右掌虎口带细微烫茧，眼神冷静笃定"
