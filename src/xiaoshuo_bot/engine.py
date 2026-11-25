@@ -56,6 +56,14 @@ from .state import (
     WorldStateError,
     WorldStateManager,
 )
+from .volume_health import (
+    LOCK_STATE_PASSED,
+    VolumeHealthLockError,
+    VolumeHealthReport,
+    assert_previous_volume_unlocked,
+    load_volume_locks,
+    run_volume_health_check,
+)
 
 ProgressCallback = Callable[[str, Dict[str, Any]], None]
 
@@ -394,6 +402,8 @@ class NovelGenerationEngine:
         arc_review_interval: int = 10,
         trial_checkpoint_interval: Optional[int] = None,
         max_consecutive_failures: int = 2,
+        volume_health_judge: Optional[PairwiseJudge] = None,
+        enforce_volume_health_gate: Optional[bool] = None,
     ) -> None:
         if blueprint is not None and not isinstance(blueprint, BookBlueprint):
             raise ValueError(
@@ -410,6 +420,48 @@ class NovelGenerationEngine:
             raise ValueError(
                 "arc_judge must implement arc_review(chapters, volume_card) -> ArcVerdict."
             )
+        if volume_health_judge is not None and not isinstance(volume_health_judge, PairwiseJudge):
+            raise ValueError(
+                "volume_health_judge must be a PairwiseJudge instance or None, "
+                f"got {type(volume_health_judge).__name__}."
+            )
+        if enforce_volume_health_gate is not None and not isinstance(
+            enforce_volume_health_gate, bool
+        ):
+            raise ValueError(
+                "enforce_volume_health_gate must be a bool or None, "
+                f"got {type(enforce_volume_health_gate).__name__}."
+            )
+        if enforce_volume_health_gate is True:
+            if blueprint is None:
+                raise ValueError(
+                    "enforce_volume_health_gate=True requires blueprint to be provided."
+                )
+            if volume_health_judge is None and arc_judge is None:
+                raise ValueError(
+                    "enforce_volume_health_gate=True requires volume_health_judge or arc_judge to be provided."
+                )
+            effective_enforce_volume_health_gate = True
+        elif enforce_volume_health_gate is False:
+            effective_enforce_volume_health_gate = False
+        else:
+            effective_enforce_volume_health_gate = bool(
+                blueprint is not None and volume_health_judge is not None
+            )
+
+        resolved_volume_health_judge: Optional[PairwiseJudge] = (
+            volume_health_judge
+            if volume_health_judge is not None
+            else (arc_judge if effective_enforce_volume_health_gate else None)
+        )
+        if effective_enforce_volume_health_gate and not isinstance(
+            resolved_volume_health_judge, PairwiseJudge
+        ):
+            raise ValueError(
+                "Volume health gate requires a PairwiseJudge instance for volume_health_judge/arc_judge, "
+                f"got {type(resolved_volume_health_judge).__name__}."
+            )
+
         validated_arc_interval = _validate_positive_int(
             arc_review_interval, name="arc_review_interval"
         )
@@ -469,6 +521,8 @@ class NovelGenerationEngine:
         self.arc_review_interval: int = validated_arc_interval
         self.trial_checkpoint_interval: Optional[int] = validated_trial_interval
         self.max_consecutive_failures: int = validated_max_consecutive
+        self.enforce_volume_health_gate: bool = effective_enforce_volume_health_gate
+        self.volume_health_judge: Optional[PairwiseJudge] = resolved_volume_health_judge
         self.incidents: List[ProductionIncident] = []
 
     def _emit(
@@ -644,6 +698,128 @@ class NovelGenerationEngine:
         }
         _write_json_atomic(arc_audit_path, arc_record)
         return arc_record
+
+    def _run_volume_health_checkpoint(
+        self,
+        *,
+        vol_spec: VolumeSpec,
+        chapters_dir: Path,
+        audit_dir: Path,
+    ) -> VolumeHealthReport:
+        if self.blueprint is None or self.volume_health_judge is None:
+            raise ValueError(
+                "blueprint and volume_health_judge are both required for volume health check."
+            )
+        missing_chapters: List[int] = []
+        vol_chapters: List[Tuple[int, str]] = []
+        for ch_no in range(vol_spec.chapter_start, vol_spec.chapter_end + 1):
+            ch_path = resolve_chapter_path(chapters_dir, ch_no)
+            if ch_path is None or not ch_path.is_file():
+                missing_chapters.append(ch_no)
+                continue
+            text = ch_path.read_text(encoding="utf-8").strip()
+            if not text:
+                raise ProductionGateFailure(
+                    f"Volume {vol_spec.index} health check aborted: chapter {ch_no:04d} file "
+                    f"'{ch_path}' is empty."
+                )
+            vol_chapters.append((ch_no, text))
+        if missing_chapters:
+            raise ProductionGateFailure(
+                f"Cannot run volume {vol_spec.index} health check: missing chapter file(s) "
+                f"{missing_chapters} in '{chapters_dir}' "
+                f"(expected complete range {vol_spec.chapter_start}..{vol_spec.chapter_end})."
+            )
+
+        prev_vol: Optional[VolumeSpec] = None
+        prior_chapters: List[Tuple[int, str]] = []
+        if vol_spec.index > 1:
+            for candidate in self.blueprint.volumes:
+                if candidate.index == vol_spec.index - 1:
+                    prev_vol = candidate
+                    break
+            if prev_vol is not None:
+                for ch_no in range(prev_vol.chapter_start, prev_vol.chapter_end + 1):
+                    prev_path = resolve_chapter_path(chapters_dir, ch_no)
+                    if prev_path is not None and prev_path.is_file():
+                        prev_text = prev_path.read_text(encoding="utf-8").strip()
+                        if prev_text:
+                            prior_chapters.append((ch_no, prev_text))
+
+        return run_volume_health_check(
+            volume_spec=vol_spec,
+            chapters=vol_chapters,
+            world_state_snapshot=self.state.snapshot_dict(),
+            project=self.project,
+            blueprint=self.blueprint,
+            judge=self.volume_health_judge,
+            audit_dir=audit_dir,
+            prev_volume_spec=prev_vol,
+            core_selling_point_keywords=self.core_selling_point_keywords,
+            prior_volume_chapters=prior_chapters or None,
+        )
+
+    def _try_load_passed_volume_health_report(
+        self,
+        audit_dir: Path,
+        volume_index: int,
+    ) -> Optional[Dict[str, Any]]:
+        locks = load_volume_locks(audit_dir)
+        entry = locks["volumes"].get(str(volume_index))
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("lock_state") != LOCK_STATE_PASSED or entry.get("verdict") != "PASS":
+            return None
+        report_file_str = entry.get("report_file")
+        if not isinstance(report_file_str, str) or not report_file_str.strip():
+            return None
+        report_path = Path(report_file_str)
+        if not report_path.is_file() and not report_path.is_absolute():
+            candidate = audit_dir / report_path
+            if candidate.is_file():
+                report_path = candidate
+        if not report_path.is_file():
+            return None
+        try:
+            assert_previous_volume_unlocked(audit_dir, volume_index + 1)
+        except VolumeHealthLockError:
+            return None
+        return dict(json.loads(report_path.read_text(encoding="utf-8")))
+
+    def _execute_and_enforce_volume_health_gate(
+        self,
+        *,
+        vol_spec: VolumeSpec,
+        chapters_dir: Path,
+        audit_dir: Path,
+        volume_health_reports: List[Dict[str, Any]],
+    ) -> VolumeHealthReport:
+        report = self._run_volume_health_checkpoint(
+            vol_spec=vol_spec,
+            chapters_dir=chapters_dir,
+            audit_dir=audit_dir,
+        )
+        volume_health_reports.append(report.to_dict())
+        failed_checks = [c.id for c in report.checks if c.status != "PASS"]
+        print(
+            f"[Engine] Volume {vol_spec.index} ({vol_spec.title}) 6-point health check: "
+            f"verdict={report.verdict}, lock_state={report.lock_state}, "
+            f"failed_checks={failed_checks}, report={report.report_file}",
+            flush=True,
+        )
+        if report.verdict != "PASS":
+            raise VolumeHealthLockError(
+                f"第 {vol_spec.index} 卷《{vol_spec.title}》卷末六项体检未通过"
+                f"（verdict={report.verdict}, lock_state={report.lock_state}, "
+                f"failed_checks={failed_checks}），已锁卷停机，禁止进入第 {vol_spec.index + 1} 卷。"
+                f"体检报告：{report.report_file}",
+                volume_index=vol_spec.index,
+                failed_checks=failed_checks,
+                lock_file=report.lock_file,
+                report_file=report.report_file,
+                repair_actions=report.repair_actions,
+            )
+        return report
 
     def _record_degradation(
         self,
@@ -864,6 +1040,7 @@ class NovelGenerationEngine:
         failed_chapter_set: set[int] = set()
         failed_chapter_errors: List[Dict[str, Any]] = []
         arc_reviews: List[Dict[str, Any]] = []
+        volume_health_reports: List[Dict[str, Any]] = []
         paused_for_review: bool = False
         checkpoint_chapter: Optional[int] = None
         started_at = _now_shanghai_iso()
@@ -871,6 +1048,12 @@ class NovelGenerationEngine:
 
         try:
             for scene in scenes:
+                scene_vol_spec: Optional[VolumeSpec] = None
+                if self.enforce_volume_health_gate:
+                    scene_vol_spec = self._resolve_blueprint_volume(scene)
+                    if scene_vol_spec.index > 1:
+                        assert_previous_volume_unlocked(audit_dir, scene_vol_spec.index)
+
                 # Enforce N-1 world-state snapshot continuity whenever starting at or jumping to N > 1
                 # (unless N-1 just failed in this run under brake_on_consecutive_failures=True).
                 if (
@@ -959,6 +1142,29 @@ class NovelGenerationEngine:
                                 "state_transitions": state_diff,
                             }
                         )
+                        if (
+                            self.enforce_volume_health_gate
+                            and scene_vol_spec is not None
+                            and scene.chapter == scene_vol_spec.chapter_end
+                        ):
+                            reused_report = self._try_load_passed_volume_health_report(
+                                audit_dir, scene_vol_spec.index
+                            )
+                            if reused_report is not None:
+                                volume_health_reports.append(reused_report)
+                                print(
+                                    f"[Engine] Volume {scene_vol_spec.index} ({scene_vol_spec.title}) "
+                                    f"health check reused verified {LOCK_STATE_PASSED} report: "
+                                    f"{reused_report.get('report_file')}",
+                                    flush=True,
+                                )
+                            else:
+                                self._execute_and_enforce_volume_health_gate(
+                                    vol_spec=scene_vol_spec,
+                                    chapters_dir=chapters_dir,
+                                    audit_dir=audit_dir,
+                                    volume_health_reports=volume_health_reports,
+                                )
                         continue
                     if is_locked and not unlock:
                         raise LockedChapterError(
@@ -1050,6 +1256,18 @@ class NovelGenerationEngine:
                         )
 
                 if (
+                    self.enforce_volume_health_gate
+                    and scene_vol_spec is not None
+                    and scene.chapter == scene_vol_spec.chapter_end
+                ):
+                    self._execute_and_enforce_volume_health_gate(
+                        vol_spec=scene_vol_spec,
+                        chapters_dir=chapters_dir,
+                        audit_dir=audit_dir,
+                        volume_health_reports=volume_health_reports,
+                    )
+
+                if (
                     effective_checkpoint_interval is not None
                     and scene.chapter % effective_checkpoint_interval == 0
                 ):
@@ -1101,8 +1319,10 @@ class NovelGenerationEngine:
         )
 
         total_chars = sum(c["char_count"] for c in chapter_summaries)
-        all_gates_ok = (len(failed_chapters) == 0) and all(
-            r.get("verdict") == "PASS" for r in arc_reviews
+        all_gates_ok = (
+            (len(failed_chapters) == 0)
+            and all(r.get("verdict") == "PASS" for r in arc_reviews)
+            and all(r.get("verdict") == "PASS" for r in volume_health_reports)
         )
         manifest: Dict[str, Any] = {
             "project": self.project.meta.to_dict(),
@@ -1119,6 +1339,7 @@ class NovelGenerationEngine:
             "failed_chapters": list(failed_chapters),
             "failed_chapter_errors": list(failed_chapter_errors),
             "arc_reviews": list(arc_reviews),
+            "volume_health_reports": list(volume_health_reports),
             "chapters": chapter_summaries,
             "incidents": [inc.to_dict() for inc in self.incidents],
             "final_world_state": self.state.snapshot_dict(),
