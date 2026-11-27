@@ -502,5 +502,13 @@ class NewBookWizard:
         worker.start()
         return accepted_view
 
+    def close(self, timeout: float = 5.0) -> None:
+        """Wait for any in-flight background planning thread to finish (idempotent)."""
+        worker = self._planning_thread
+        if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=timeout)
+        if worker is not None and not worker.is_alive():
+            self._planning_thread = None
+
 
 __all__ = ["MIN_TARGET_TOTAL_CHARS", "NewBookWizard", "WizardConflictError", "WizardError", "WIZARD_STEPS"]

@@ -161,6 +161,7 @@ class StockpileDB:
         self._now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
         self.safety_cushion_target = int(safety_cushion_target)
         self._lock = threading.RLock()
+        self._closed = False
         self._conn = sqlite3.connect(
             str(self.db_path),
             timeout=30.0,
@@ -168,11 +169,29 @@ class StockpileDB:
             isolation_level=None,
         )
         self._conn.row_factory = sqlite3.Row
-        self._init_schema()
+        try:
+            self._init_schema()
+        except Exception:
+            self.close()
+            raise
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._conn.close()
+
+    def __enter__(self) -> StockpileDB:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
 
     def _now_dt(self) -> datetime:
         return shanghai_now(self._now_fn)
@@ -460,6 +479,7 @@ class StockpileDB:
                 cur.execute(
                     "ALTER TABLE model_switch_events ADD COLUMN wait_seconds REAL NOT NULL DEFAULT 0.0"
                 )
+            cur.close()
             self._migrate_legacy_manual_pause_books_unlocked()
 
     def _migrate_legacy_manual_pause_books_unlocked(self) -> int:

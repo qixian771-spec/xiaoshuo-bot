@@ -206,6 +206,9 @@ class MatrixHTTPServer(ThreadingHTTPServer):
         self.now_fn = now_fn or (lambda: datetime.now(SHANGHAI_TZ))
         self.telegram_bot = telegram_bot
         self.stop_event = threading.Event()
+        self._lifecycle_lock = threading.Lock()
+        self._serving = False
+        self._closed = False
         self.wizard = NewBookWizard(
             db=scheduler.db,
             provider_fn=self._require_llm_provider,
@@ -231,19 +234,47 @@ class MatrixHTTPServer(ThreadingHTTPServer):
             self.telegram_bot.stop(timeout=timeout)
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
+        with self._lifecycle_lock:
+            if self.stop_event.is_set() or self._closed:
+                return
         self.start_telegram_bot()
+        with self._lifecycle_lock:
+            if self.stop_event.is_set() or self._closed:
+                should_serve = False
+            else:
+                self._serving = True
+                should_serve = True
         try:
-            super().serve_forever(poll_interval=poll_interval)
+            if should_serve:
+                super().serve_forever(poll_interval=poll_interval)
         finally:
+            with self._lifecycle_lock:
+                self._serving = False
             self.stop_telegram_bot()
 
     def shutdown_and_close(self) -> None:
-        self.stop_event.set()
-        self.scheduler.event_broker.notify_poll_waiters()
-        self.stop_telegram_bot()
-        self.scheduler.stop_background_loop()
-        self.shutdown()
-        self.server_close()
+        with self._lifecycle_lock:
+            self.stop_event.set()
+            self._closed = True
+            should_shutdown = self._serving
+        try:
+            self.scheduler.event_broker.notify_poll_waiters()
+            self.stop_telegram_bot()
+            self.scheduler.stop_background_loop()
+            if should_shutdown:
+                self.shutdown()
+        finally:
+            try:
+                self.server_close()
+            finally:
+                try:
+                    self.wizard.close()
+                finally:
+                    try:
+                        self.scheduler.close()
+                    finally:
+                        if self.db is not self.scheduler.db:
+                            self.db.close()
 
 
 class MatrixRequestHandler(BaseHTTPRequestHandler):
@@ -1028,6 +1059,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
                 self.server.scheduler.event_broker.wait_for_poll_wakeup(
                     remaining, stop_event=self.server.stop_event
                 )
+                if self.server.stop_event.is_set():
+                    break
                 tasks = self.server.db.poll_available_tasks(
                     req.account_id, book_ids=req.book_ids or None
                 )
@@ -1184,6 +1217,8 @@ class MatrixRequestHandler(BaseHTTPRequestHandler):
             while not self.server.stop_event.is_set():
                 try:
                     evt = q.get(timeout=0.5)
+                    if self.server.stop_event.is_set():
+                        break
                     if public:
                         titles = {b["book_id"]: b["title"] for b in self.server.db.list_books()}
                         is_replay = bool(
@@ -1279,40 +1314,46 @@ def create_server(
             )
         verify_router_models_against_cpa(router_obj, catalog=router_obj.workbuddy_catalog)
 
-    if scheduler is None:
-        db = StockpileDB(db_path, now_fn=now_fn)
-        scheduler = MatrixScheduler(
-            db=db,
-            projects_root=projects_root,
-            provider=provider,
-            cpa_client=cpa_client,
-            motif_store=motif_store,
+    created_db: Optional[StockpileDB] = None
+    try:
+        if scheduler is None:
+            created_db = StockpileDB(db_path, now_fn=now_fn)
+            scheduler = MatrixScheduler(
+                db=created_db,
+                projects_root=projects_root,
+                provider=provider,
+                cpa_client=cpa_client,
+                motif_store=motif_store,
+                now_fn=now_fn,
+                export_only=export_only,
+                planner_max_consecutive_same_location=planner_max_consecutive_same_location,
+            )
+
+        admin_auth = AdminAuthManager(
+            admin_token=resolved_token,
+            monotonic_fn=monotonic_fn,
             now_fn=now_fn,
-            export_only=export_only,
-            planner_max_consecutive_same_location=planner_max_consecutive_same_location,
+        )
+        companion_auth = CompanionAuthManager(
+            companion_secret=resolved_secret,
+            now_fn=now_fn,
         )
 
-    admin_auth = AdminAuthManager(
-        admin_token=resolved_token,
-        monotonic_fn=monotonic_fn,
-        now_fn=now_fn,
-    )
-    companion_auth = CompanionAuthManager(
-        companion_secret=resolved_secret,
-        now_fn=now_fn,
-    )
-
-    return MatrixHTTPServer(
-        (host, int(port)),
-        scheduler=scheduler,
-        admin_auth=admin_auth,
-        companion_auth=companion_auth,
-        cpa_client=cpa_client or scheduler.cpa_client,
-        static_dir=static_dir,
-        sse_heartbeat_sec=sse_heartbeat_sec,
-        now_fn=now_fn,
-        telegram_bot=telegram_bot,
-    )
+        return MatrixHTTPServer(
+            (host, int(port)),
+            scheduler=scheduler,
+            admin_auth=admin_auth,
+            companion_auth=companion_auth,
+            cpa_client=cpa_client or scheduler.cpa_client,
+            static_dir=static_dir,
+            sse_heartbeat_sec=sse_heartbeat_sec,
+            now_fn=now_fn,
+            telegram_bot=telegram_bot,
+        )
+    except Exception:
+        if created_db is not None:
+            created_db.close()
+        raise
 
 
 __all__ = [
