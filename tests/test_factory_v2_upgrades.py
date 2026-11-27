@@ -351,32 +351,35 @@ class TestPillar2CommercialTitlesAndWizardLongForm(unittest.TestCase):
         provider = _FnProvider(_fake_llm)
         with tempfile.TemporaryDirectory() as tmp:
             db = StockpileDB(Path(tmp) / "stockpile.db")
-            created_reqs: List[Any] = []
-            wizard = NewBookWizard(
-                db=db,
-                provider_fn=lambda: provider,
-                create_book_fn=lambda req: created_reqs.append(req) or type("S", (), {"book_id": req.project_id})(),
-            )
-            view = wizard.start("下山道士直播算命抓通缉犯")
-            sid = view["session_id"]
-            for _ in range(3):
-                view = wizard.answer(sid, {"choice": 0})
-            scale_prompt = captured_prompts["wizard_scale"]
-            self.assertIn("lv2_plus", scale_prompt)
-            self.assertIn("三点十七分", scale_prompt)
-            self.assertIn("让你送外卖，没让你买下整条街", scale_prompt)
+            try:
+                created_reqs: List[Any] = []
+                wizard = NewBookWizard(
+                    db=db,
+                    provider_fn=lambda: provider,
+                    create_book_fn=lambda req: created_reqs.append(req) or type("S", (), {"book_id": req.project_id})(),
+                )
+                view = wizard.start("下山道士直播算命抓通缉犯")
+                sid = view["session_id"]
+                for _ in range(3):
+                    view = wizard.answer(sid, {"choice": 0})
+                scale_prompt = captured_prompts["wizard_scale"]
+                self.assertIn("lv2_plus", scale_prompt)
+                self.assertIn("三点十七分", scale_prompt)
+                self.assertIn("让你送外卖，没让你买下整条街", scale_prompt)
 
-            # Invalid title_override (>15 chars) rejected cleanly
-            with self.assertRaises(WizardError):
-                wizard.answer(sid, {"choice": 0, "title_override": "这个自定义书名故意超过十五个字限制了"})
+                # Invalid title_override (>15 chars) rejected cleanly
+                with self.assertRaises(WizardError):
+                    wizard.answer(sid, {"choice": 0, "title_override": "这个自定义书名故意超过十五个字限制了"})
 
-            # Valid title_override applied and forwarded into AutoCreateBookRequest
-            view = wizard.answer(sid, {"choice": 0, "title_override": "一卦算哭首富，巡捕连夜借人"})
-            self.assertEqual(view["status"], "READY_TO_CONFIRM")
-            wizard.confirm(sid, pen_name="青崖居士")
-            self.assertEqual(len(created_reqs), 1)
-            self.assertEqual(created_reqs[0].author_level, "lv2_plus")
-            self.assertIn("书名必须为：一卦算哭首富，巡捕连夜借人", created_reqs[0].creative_brief)
+                # Valid title_override applied and forwarded into AutoCreateBookRequest
+                view = wizard.answer(sid, {"choice": 0, "title_override": "一卦算哭首富，巡捕连夜借人"})
+                self.assertEqual(view["status"], "READY_TO_CONFIRM")
+                wizard.confirm(sid, pen_name="青崖居士")
+                self.assertEqual(len(created_reqs), 1)
+                self.assertEqual(created_reqs[0].author_level, "lv2_plus")
+                self.assertIn("书名必须为：一卦算哭首富，巡捕连夜借人", created_reqs[0].creative_brief)
+            finally:
+                db.close()
 
     def test_planner_title_block_forbids_bland_literary_titles(self) -> None:
         block = _format_recipe_title_and_blurb_block(get_genre("urban_brainhole"))
@@ -674,59 +677,11 @@ class TestSelfHealingAndAntiPingPongLength(unittest.TestCase):
         clock = [datetime(2026, 11, 21, 8, 0, 0, tzinfo=SHANGHAI_TZ)]
         with tempfile.TemporaryDirectory() as tmp:
             db = StockpileDB(Path(tmp) / "m.db", now_fn=lambda: clock[0])
-            db.register_book(book_id="b_len", project_dir=Path(tmp) / "p1", title="算卦长篇", total_chapters=315)
-            db.register_book(book_id="b_state", project_dir=Path(tmp) / "p2", title="状态死锁书", total_chapters=30)
-            db.register_book(book_id="b_manual", project_dir=Path(tmp) / "p3", title="手动暂停书", total_chapters=30)
+            try:
+                db.register_book(book_id="b_len", project_dir=Path(tmp) / "p1", title="算卦长篇", total_chapters=315)
+                db.register_book(book_id="b_state", project_dir=Path(tmp) / "p2", title="状态死锁书", total_chapters=30)
+                db.register_book(book_id="b_manual", project_dir=Path(tmp) / "p3", title="手动暂停书", total_chapters=30)
 
-            db.update_book_status(
-                "b_len",
-                BookRunStatus.ISOLATED_GATE_FAILURE,
-                paused_reason="Chapter 308 gate failure",
-                isolation_detail={
-                    "chapter": 308,
-                    "error_type": "ProductionGateFailure",
-                    "violations": [{"rule_id": "LEN_001", "severity": "CRITICAL"}],
-                    "isolated_at": clock[0].isoformat(),
-                },
-            )
-            db.update_book_status(
-                "b_state",
-                BookRunStatus.ISOLATED_GATE_FAILURE,
-                paused_reason="Chapter 18 gate failure",
-                isolation_detail={
-                    "chapter": 18,
-                    "error_type": "ProductionGateFailure",
-                    "violations": [{"rule_id": "STATE_OVERDRAFT", "severity": "CRITICAL"}],
-                    "isolated_at": clock[0].isoformat(),
-                },
-            )
-            db.update_book_status("b_manual", BookRunStatus.PAUSED_MANUAL, paused_reason="Manually paused")
-
-            sched = MatrixScheduler(
-                db=db,
-                projects_root=Path(tmp),
-                export_only=True,
-                now_fn=lambda: clock[0],
-                auto_heal_cooldown_secs=(120, 300, 900),
-            )
-
-            # Before 120s cooldown -> nothing healed yet
-            clock[0] += timedelta(seconds=60)
-            self.assertEqual(sched.run_self_healing_pass(), [])
-            self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
-
-            # After 125s -> attempt 1/3 heals b_len only; b_state & b_manual stay untouched!
-            clock[0] += timedelta(seconds=65)
-            res1 = sched.run_self_healing_pass()
-            self.assertEqual(len(res1), 1)
-            self.assertEqual(res1[0]["book_id"], "b_len")
-            self.assertEqual(res1[0]["attempt"], 1)
-            self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ACTIVE.value)
-            self.assertEqual(db.get_book("b_state")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
-            self.assertEqual(db.get_book("b_manual")["status"], BookRunStatus.PAUSED_MANUAL.value)
-
-            # Simulate failing 2 more times -> heals on 300s and 900s, then caps permanently at 3/3
-            for wait_s, expected_attempt in ((305, 2), (905, 3)):
                 db.update_book_status(
                     "b_len",
                     BookRunStatus.ISOLATED_GATE_FAILURE,
@@ -734,53 +689,104 @@ class TestSelfHealingAndAntiPingPongLength(unittest.TestCase):
                     isolation_detail={
                         "chapter": 308,
                         "error_type": "ProductionGateFailure",
-                        "violations": [{"rule_id": "LEN_002", "severity": "CRITICAL"}],
+                        "violations": [{"rule_id": "LEN_001", "severity": "CRITICAL"}],
                         "isolated_at": clock[0].isoformat(),
                     },
                 )
-                clock[0] += timedelta(seconds=wait_s)
-                r = sched.run_self_healing_pass()
-                self.assertEqual(len(r), 1)
-                self.assertEqual(r[0]["attempt"], expected_attempt)
+                db.update_book_status(
+                    "b_state",
+                    BookRunStatus.ISOLATED_GATE_FAILURE,
+                    paused_reason="Chapter 18 gate failure",
+                    isolation_detail={
+                        "chapter": 18,
+                        "error_type": "ProductionGateFailure",
+                        "violations": [{"rule_id": "STATE_OVERDRAFT", "severity": "CRITICAL"}],
+                        "isolated_at": clock[0].isoformat(),
+                    },
+                )
+                db.update_book_status("b_manual", BookRunStatus.PAUSED_MANUAL, paused_reason="Manually paused")
 
-            # 4th failure on same ch 308 -> hits hard ceiling 3/3 and stays isolated permanently
-            db.update_book_status(
-                "b_len",
-                BookRunStatus.ISOLATED_GATE_FAILURE,
-                paused_reason="Chapter 308 gate failure",
-                isolation_detail={
-                    "chapter": 308,
-                    "error_type": "ProductionGateFailure",
-                    "violations": [{"rule_id": "LEN_001", "severity": "CRITICAL"}],
-                    "isolated_at": clock[0].isoformat(),
-                },
-            )
-            clock[0] += timedelta(seconds=3600)
-            self.assertEqual(sched.run_self_healing_pass(), [])
-            self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
-            self.assertIn("自愈已达上限 3/3", db.get_book("b_len")["paused_reason"])
+                sched = MatrixScheduler(
+                    db=db,
+                    projects_root=Path(tmp),
+                    export_only=True,
+                    now_fn=lambda: clock[0],
+                    auto_heal_cooldown_secs=(120, 300, 900),
+                )
 
-            # 3. Quota reset auto-resume (when reset_at has passed by >= 60s)
-            db.upsert_model_quota(
-                model="wb/hy4flash-free",
-                percent=100.0,
-                reset_at=(clock[0] - timedelta(minutes=5)).isoformat(),
-                reset_at_raw="",
-                raw_model="hy4-flash",
-                shared_models=[],
-                role="writer",
-            )
-            db.register_book(book_id="b_quota", project_dir=Path(tmp) / "p4", title="额度恢复书", total_chapters=30)
-            db.update_book_status(
-                "b_quota",
-                BookRunStatus.PAUSED_QUOTA_EXHAUSTED,
-                paused_reason="All whitelist models exhausted (HTTP 429)",
-            )
-            clock[0] += timedelta(seconds=90)
-            rq = sched.run_self_healing_pass()
-            self.assertEqual(len(rq), 1)
-            self.assertEqual(rq[0]["book_id"], "b_quota")
-            self.assertEqual(db.get_book("b_quota")["status"], BookRunStatus.ACTIVE.value)
+                # Before 120s cooldown -> nothing healed yet
+                clock[0] += timedelta(seconds=60)
+                self.assertEqual(sched.run_self_healing_pass(), [])
+                self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
+
+                # After 125s -> attempt 1/3 heals b_len only; b_state & b_manual stay untouched!
+                clock[0] += timedelta(seconds=65)
+                res1 = sched.run_self_healing_pass()
+                self.assertEqual(len(res1), 1)
+                self.assertEqual(res1[0]["book_id"], "b_len")
+                self.assertEqual(res1[0]["attempt"], 1)
+                self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ACTIVE.value)
+                self.assertEqual(db.get_book("b_state")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
+                self.assertEqual(db.get_book("b_manual")["status"], BookRunStatus.PAUSED_MANUAL.value)
+
+                # Simulate failing 2 more times -> heals on 300s and 900s, then caps permanently at 3/3
+                for wait_s, expected_attempt in ((305, 2), (905, 3)):
+                    db.update_book_status(
+                        "b_len",
+                        BookRunStatus.ISOLATED_GATE_FAILURE,
+                        paused_reason="Chapter 308 gate failure",
+                        isolation_detail={
+                            "chapter": 308,
+                            "error_type": "ProductionGateFailure",
+                            "violations": [{"rule_id": "LEN_002", "severity": "CRITICAL"}],
+                            "isolated_at": clock[0].isoformat(),
+                        },
+                    )
+                    clock[0] += timedelta(seconds=wait_s)
+                    r = sched.run_self_healing_pass()
+                    self.assertEqual(len(r), 1)
+                    self.assertEqual(r[0]["attempt"], expected_attempt)
+
+                # 4th failure on same ch 308 -> hits hard ceiling 3/3 and stays isolated permanently
+                db.update_book_status(
+                    "b_len",
+                    BookRunStatus.ISOLATED_GATE_FAILURE,
+                    paused_reason="Chapter 308 gate failure",
+                    isolation_detail={
+                        "chapter": 308,
+                        "error_type": "ProductionGateFailure",
+                        "violations": [{"rule_id": "LEN_001", "severity": "CRITICAL"}],
+                        "isolated_at": clock[0].isoformat(),
+                    },
+                )
+                clock[0] += timedelta(seconds=3600)
+                self.assertEqual(sched.run_self_healing_pass(), [])
+                self.assertEqual(db.get_book("b_len")["status"], BookRunStatus.ISOLATED_GATE_FAILURE.value)
+                self.assertIn("自愈已达上限 3/3", db.get_book("b_len")["paused_reason"])
+
+                # 3. Quota reset auto-resume (when reset_at has passed by >= 60s)
+                db.upsert_model_quota(
+                    model="wb/hy4flash-free",
+                    percent=100.0,
+                    reset_at=(clock[0] - timedelta(minutes=5)).isoformat(),
+                    reset_at_raw="",
+                    raw_model="hy4-flash",
+                    shared_models=[],
+                    role="writer",
+                )
+                db.register_book(book_id="b_quota", project_dir=Path(tmp) / "p4", title="额度恢复书", total_chapters=30)
+                db.update_book_status(
+                    "b_quota",
+                    BookRunStatus.PAUSED_QUOTA_EXHAUSTED,
+                    paused_reason="All whitelist models exhausted (HTTP 429)",
+                )
+                clock[0] += timedelta(seconds=90)
+                rq = sched.run_self_healing_pass()
+                self.assertEqual(len(rq), 1)
+                self.assertEqual(rq[0]["book_id"], "b_quota")
+                self.assertEqual(db.get_book("b_quota")["status"], BookRunStatus.ACTIVE.value)
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":
