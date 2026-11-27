@@ -442,40 +442,42 @@ class TestWizardConfirm(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="xsb_t2c_"))
         try:
             db = StockpileDB(tmp / "m.db")
-            created: List[AutoCreateBookRequest] = []
+            try:
+                created: List[AutoCreateBookRequest] = []
 
-            class _Summary:
-                book_id = "book_created"
+                class _Summary:
+                    book_id = "book_created"
 
-            def create(req: AutoCreateBookRequest) -> _Summary:
-                created.append(req)
-                return _Summary()
+                def create(req: AutoCreateBookRequest) -> _Summary:
+                    created.append(req)
+                    return _Summary()
 
-            provider = FakeWizardLLM()
-            wiz = NewBookWizard(db=db, provider_fn=lambda: provider, create_book_fn=create)
-            view = wiz.start("外卖小哥捡到能看见明天新闻的手机")
-            sid = view["session_id"]
-            with self.assertRaises(WizardError):
-                wiz.confirm(sid)
-            wiz.answer(sid, {"choice": 1})
-            wiz.answer(sid, {"custom": "主角是个话很少的退伍兵"})
-            wiz.answer(sid, {"choice": 0})
-            wiz.answer(sid, {"choice": 0})
-            view = wiz.confirm(sid, pen_name="雾山")
-            self.assertEqual(view["status"], "CREATED")
-            self.assertEqual(view["book_id"], "book_created")
-            self.assertEqual(len(created), 1)
-            req = created[0]
-            self.assertEqual(req.genre_id, GENRE_ID)
-            self.assertEqual(req.author_level, "lv0_1")
-            self.assertEqual(req.target_chapters, 80)
-            self.assertEqual(req.pen_name, "雾山")
-            self.assertIn("书名必须为：雾港夜行0", req.creative_brief)
-            self.assertIn("主角是个话很少的退伍兵", req.creative_brief)
-            self.assertIn("方向1", req.creative_brief)
-            with self.assertRaises(WizardError):
-                wiz.confirm(sid)
-            db.close()
+                provider = FakeWizardLLM()
+                wiz = NewBookWizard(db=db, provider_fn=lambda: provider, create_book_fn=create)
+                view = wiz.start("外卖小哥捡到能看见明天新闻的手机")
+                sid = view["session_id"]
+                with self.assertRaises(WizardError):
+                    wiz.confirm(sid)
+                wiz.answer(sid, {"choice": 1})
+                wiz.answer(sid, {"custom": "主角是个话很少的退伍兵"})
+                wiz.answer(sid, {"choice": 0})
+                wiz.answer(sid, {"choice": 0})
+                view = wiz.confirm(sid, pen_name="雾山")
+                self.assertEqual(view["status"], "CREATED")
+                self.assertEqual(view["book_id"], "book_created")
+                self.assertEqual(len(created), 1)
+                req = created[0]
+                self.assertEqual(req.genre_id, GENRE_ID)
+                self.assertEqual(req.author_level, "lv0_1")
+                self.assertEqual(req.target_chapters, 80)
+                self.assertEqual(req.pen_name, "雾山")
+                self.assertIn("书名必须为：雾港夜行0", req.creative_brief)
+                self.assertIn("主角是个话很少的退伍兵", req.creative_brief)
+                self.assertIn("方向1", req.creative_brief)
+                with self.assertRaises(WizardError):
+                    wiz.confirm(sid)
+            finally:
+                db.close()
         finally:
             shutil.rmtree(tmp)
 
@@ -485,17 +487,63 @@ class TestProductionKpi(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="xsb_t2k_"))
         try:
             db = StockpileDB(tmp / "m.db")
-            self.assertEqual(db.get_production_kpi()["chapters"], 0)
-            db.record_production_stat("b1", 1, duration_sec=60, attempts_used=1, rewrites_triggered=0, char_count=3000)
-            db.record_production_stat("b1", 2, duration_sec=120, attempts_used=3, rewrites_triggered=2, char_count=3200)
-            kpi = db.get_production_kpi()
-            self.assertEqual(kpi["chapters"], 2)
-            self.assertEqual(kpi["avg_duration_sec"], 90.0)
-            self.assertEqual(kpi["rewrite_rate"], 0.5)
-            self.assertEqual(kpi["avg_attempts"], 2.0)
-            self.assertEqual(kpi["total_chars"], 6200)
-            self.assertEqual(db.get_production_kpi("other")["chapters"], 0)
-            db.close()
+            try:
+                self.assertEqual(db.get_production_kpi()["chapters"], 0)
+                db.record_production_stat("b1", 1, duration_sec=60, attempts_used=1, rewrites_triggered=0, char_count=3000)
+                db.record_production_stat("b1", 2, duration_sec=120, attempts_used=3, rewrites_triggered=2, char_count=3200)
+                kpi = db.get_production_kpi()
+                self.assertEqual(kpi["chapters"], 2)
+                self.assertEqual(kpi["avg_duration_sec"], 90.0)
+                self.assertEqual(kpi["rewrite_rate"], 0.5)
+                self.assertEqual(kpi["avg_attempts"], 2.0)
+                self.assertEqual(kpi["total_chars"], 6200)
+                self.assertEqual(db.get_production_kpi("other")["chapters"], 0)
+            finally:
+                db.close()
+        finally:
+            shutil.rmtree(tmp)
+
+
+class TestServerShutdownIdempotency(unittest.TestCase):
+    def test_shutdown_and_close_releases_sqlite_and_is_idempotent(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_t2s_"))
+        try:
+            srv = create_server(
+                host="127.0.0.1",
+                port=0,
+                db_path=tmp / "matrix.db",
+                projects_root=tmp / "projects",
+                admin_token=ADMIN_TOKEN,
+                companion_secret="t2-companion-secret-0123456789",
+            )
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            host, port = srv.server_address[:2]
+            code, _, _ = _http(f"http://{host}:{port}/api/health")
+            self.assertEqual(code, 200)
+            srv.shutdown_and_close()
+            t.join(timeout=5)
+            self.assertTrue(srv.db.closed)
+            # Calling shutdown_and_close() again must be a safe no-op.
+            srv.shutdown_and_close()
+            self.assertTrue(srv.db.closed)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_shutdown_and_close_without_serve_forever_closes_sqlite(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="xsb_t2n_"))
+        try:
+            srv = create_server(
+                host="127.0.0.1",
+                port=0,
+                db_path=tmp / "matrix.db",
+                projects_root=tmp / "projects",
+                admin_token=ADMIN_TOKEN,
+                companion_secret="t2-companion-secret-0123456789",
+            )
+            srv.shutdown_and_close()
+            self.assertTrue(srv.db.closed)
+            srv.shutdown_and_close()
         finally:
             shutil.rmtree(tmp)
 

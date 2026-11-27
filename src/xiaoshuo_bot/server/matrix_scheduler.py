@@ -1515,6 +1515,13 @@ class MatrixScheduler:
             self._bg_thread.join(timeout=timeout_sec)
         self._bg_thread = None
 
+    def close(self, timeout_sec: float = 5.0) -> None:
+        """Stop the background loop and close the underlying StockpileDB (idempotent)."""
+        try:
+            self.stop_background_loop(timeout_sec=timeout_sec)
+        finally:
+            self.db.close()
+
     # -----------------------------------------------------------------------
     # Helpers for Chapter Lock, Extend, Export, Cover & CPA Bindings
     # -----------------------------------------------------------------------
